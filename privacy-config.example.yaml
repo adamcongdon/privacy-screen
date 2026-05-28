@@ -1,0 +1,34 @@
+# PrivacyScreen — PII Anonymization Configuration
+# Copy this to PRIVACY_CONFIG.yaml and fill in your values.
+# PRIVACY_CONFIG.yaml is .gitignored — never commit it.
+---
+version: "1.0"
+
+# FQDNs to never tokenize (public vendor infrastructure).
+# The built-in allowlist already covers: veeam.com, github.com, anthropic.com,
+# microsoft.com, amazonaws.com, azure.com, nuget.org, cloudflare.com.
+# Add deployment-specific extras here.
+fqdn_allowlist_extra:
+  - .helios.veeam.com
+  - .chocolatey.org
+
+# Known customer names — always tokenized as CUST_N regardless of confidence.
+# Add customer names as you start working on their environments.
+customer_names: []
+# Example:
+#   - "Acme Corporation"
+#   - "Contoso Bank"
+
+# Confidence threshold — detections below this go to the review queue and block.
+# Range 0.0–1.0. Default 0.70.
+fail_open_confidence: 0.70
+
+# Categories always blocked regardless of confidence. Never remove 'credential'.
+fail_closed_categories:
+  - credential
+  - ip
+  - email
+  - domain_user
+
+# SQLite DB path. Leave empty for default: $HOME/.claude/PAI/MEMORY/SCRUBBER/vocab.db
+db_path: ~
