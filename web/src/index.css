@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Global resets & base styles for privacy-screen.
+ * Dark mode is the default; the <html> tag carries the `dark` class.
+ */
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    font-family:
+      ui-sans-serif,
+      system-ui,
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      Roboto,
+      'Helvetica Neue',
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Custom scrollbar styling — dark, subtle, doesn't fight the UI. */
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: rgb(63 63 70 / 0.6);
+    border-radius: 9999px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgb(82 82 91 / 0.8);
+  }
+
+  /* Focus rings — visible in dark mode. */
+  :focus-visible {
+    outline: 2px solid rgb(99 102 241);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+@layer components {
+  /* Token pill — used by PreviewPane for inline highlighting. */
+  .token-pill {
+    @apply inline-block rounded px-1 font-mono text-[0.85em] leading-tight;
+    cursor: help;
+  }
+}
+
+/* Radix Dialog overlay — fade in. */
+[data-state='open'].radix-overlay {
+  animation: fade-in 120ms ease-out;
+}

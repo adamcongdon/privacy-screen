@@ -4,31 +4,56 @@
 ---
 version: "1.0"
 
+# Operating mode. Start in 'observe' for any new install — see SAFETY_CHECKLIST.md.
+#   disabled  — hook returns immediately, no-op.
+#   observe   — detect + log to stderr, do NOT block or mutate.
+#   enforce   — full block (UserPromptSubmit) + mutate (PreToolUse) + warn (PostToolUse).
+mode: observe
+
 # FQDNs to never tokenize (public vendor infrastructure).
-# The built-in allowlist already covers: veeam.com, github.com, anthropic.com,
-# microsoft.com, amazonaws.com, azure.com, nuget.org, cloudflare.com.
-# Add deployment-specific extras here.
+# Built-in: veeam.com, microsoft.com, amazonaws.com, azure.com, github.com,
+# nuget.org, anthropic.com, cloudflare.com, openai.com, googleapis.com.
 fqdn_allowlist_extra:
   - .helios.veeam.com
   - .chocolatey.org
 
-# Known customer names — always tokenized as CUST_N regardless of confidence.
+# Known customer names — always tokenized as {CUSTOMER}/{CUSTOMER_N}.
 # Add customer names as you start working on their environments.
 customer_names: []
 # Example:
 #   - "Acme Corporation"
 #   - "Contoso Bank"
 
-# Confidence threshold — detections below this go to the review queue and block.
+# Known person names — always pre-minted as {PERSON}/{PERSON_N}.
+# Use this for colleagues / contacts who should always be tokenized,
+# even when they don't appear in an email header slot.
+person_names: []
+# Example:
+#   - "Vincent Tidwell"
+#   - "Mike Bova"
+
+# Names that should NOT be tokenized despite matching the detection heuristics.
+# Useful for: your own name, public figures quoted in text, fictional examples.
+# Comparison is case-insensitive.
+name_allowlist: []
+# Example:
+#   - "Adam Congdon"
+#   - "Linus Torvalds"
+
+# Confidence threshold — detections below this go to the review queue.
 # Range 0.0–1.0. Default 0.70.
 fail_open_confidence: 0.70
 
 # Categories always blocked regardless of confidence. Never remove 'credential'.
 fail_closed_categories:
   - credential
-  - ip
-  - email
-  - domain_user
 
-# SQLite DB path. Leave empty for default: $HOME/.claude/PAI/MEMORY/SCRUBBER/vocab.db
+# Tool input fields to NEVER scrub. Scrubbing these breaks the tool's
+# string-match semantics (Edit can't find a tokenized old_string in the file).
+# Built-in defaults cover Edit/MultiEdit/Grep/Glob/NotebookEdit — extend here.
+skip_scrub_fields:
+  # Example:
+  # CustomTool: ["query", "pattern"]
+
+# SQLite DB path. Leave empty / ~ for default: $HOME/.claude/PAI/MEMORY/SCRUBBER/vocab.db
 db_path: ~

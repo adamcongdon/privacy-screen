@@ -5,7 +5,18 @@
     "moduleResolution": "bundler",
     "strict": true,
     "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "types": ["bun-types"]
   },
-  "include": ["src/**/*", "hooks/**/*", "cli/**/*", "tests/**/*"]
+  "include": [
+    "src/**/*",
+    "hooks/**/*",
+    "cli/**/*",
+    "tests/**/*",
+    "server/**/*",
+    "web/**/*"
+  ],
+  "exclude": ["node_modules", "web/dist"]
 }
