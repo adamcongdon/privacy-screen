@@ -83,23 +83,47 @@ vocabRoute.post('/', async (c) => {
   return c.json({ realValue: real, token: r.token, isNew: r.isNew });
 });
 
+const ALLOWLIST_MIN_LEN = 4;
+
 vocabRoute.delete('/:realValue', (c) => {
+  if (rateLimited(getClientIp(c))) return c.json({ error: 'rate limited' }, 429);
   const v = decodeURIComponent(c.req.param('realValue'));
+  if (!v) return c.json({ error: 'realValue required' }, 400);
+  if (v.length > 200) return c.json({ error: 'realValue too long' }, 400);
+  if (CONTROL_CHAR_RE.test(v)) return c.json({ error: 'control characters not allowed' }, 400);
+  CRED_RE.lastIndex = 0;
+  if (CRED_RE.test(v)) return c.json({ error: 'credential-shape rejected' }, 400);
+
   const ok = getVocab().forgetReal(v);
-  if (ok) {
-    // Also add to allowlist so future scrubs leave the value plain.
+  if (ok && v.length >= ALLOWLIST_MIN_LEN) {
     getVocab().addAllowlist(v, false, 'forget-action: user clicked forget');
   }
-  // Reset the cached ScrubMap so the deletion is reflected immediately
   resetVocab();
   return c.json({ ok });
 });
 
 vocabRoute.post('/allowlist', async (c) => {
+  if (rateLimited(getClientIp(c))) return c.json({ error: 'rate limited' }, 429);
   const body = await c.req.json().catch(() => ({}));
   const pattern = String(body.pattern ?? '').trim();
+  const isRegex = !!body.isRegex;
   if (!pattern) return c.json({ error: 'pattern required' }, 400);
-  getVocab().addAllowlist(pattern, !!body.isRegex, body.reason ?? null);
+  if (pattern.length < (isRegex ? 6 : ALLOWLIST_MIN_LEN)) {
+    return c.json({ error: 'pattern too short' }, 400);
+  }
+  if (pattern.length > 200) return c.json({ error: 'pattern too long' }, 400);
+  if (CONTROL_CHAR_RE.test(pattern)) return c.json({ error: 'control characters not allowed' }, 400);
+  CRED_RE.lastIndex = 0;
+  if (CRED_RE.test(pattern)) return c.json({ error: 'credential-shape rejected' }, 400);
+  if (isRegex) {
+    try {
+      const r = new RegExp(pattern);
+      if (r.test('')) return c.json({ error: 'pattern matches empty string' }, 400);
+    } catch {
+      return c.json({ error: 'invalid regex pattern' }, 400);
+    }
+  }
+  getVocab().addAllowlist(pattern, isRegex, body.reason ?? null);
   resetVocab();
   return c.json({ ok: true });
 });
