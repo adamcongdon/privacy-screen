@@ -177,8 +177,20 @@ async function cmdScrub(): Promise<void> {
       console.log(`  ${token.padEnd(14)} → "${realValue}"${isNew ? ' (new)' : ''}`);
     }
   }
+  if (result.unsureSpans.length > 0) {
+    console.log('\n── Review queue (heuristic — not auto-tokenized) ─');
+    for (const { span, suggestedCategory, confidence } of result.unsureSpans) {
+      console.log(
+        `  "${span}"  [${suggestedCategory ?? '?'} @ ${(confidence * 100).toFixed(0)}%] — confirm via \`cli review\``,
+      );
+    }
+    console.log('  In enforce mode this would BLOCK the prompt.');
+  }
   if (result.hasCredentials) {
     console.log('\n⚠️  CREDENTIAL DETECTED — would block in hook.');
+    if (result.credentialSnippets.length > 0) {
+      console.log(`  Detected: ${result.credentialSnippets.join(', ')}`);
+    }
   }
 }
 
