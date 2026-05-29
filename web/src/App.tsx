@@ -23,21 +23,19 @@ function useAppSyncScroll() {
   const previewRef = useRef<HTMLDivElement | null>(null);
   const isSyncing = useRef(false);
 
+  const mirror = (dst: HTMLElement | null, srcTop: number) => {
+    if (!dst || dst.scrollTop === srcTop) return;
+    isSyncing.current = true;
+    dst.scrollTop = srcTop;
+    requestAnimationFrame(() => { isSyncing.current = false; });
+  };
   const onComposerScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
     if (isSyncing.current) return;
-    const dst = previewRef.current;
-    if (!dst) return;
-    isSyncing.current = true;
-    dst.scrollTop = e.currentTarget.scrollTop;
-    requestAnimationFrame(() => { isSyncing.current = false; });
+    mirror(previewRef.current, e.currentTarget.scrollTop);
   };
   const onPreviewScroll = (e: React.UIEvent<HTMLDivElement>) => {
     if (isSyncing.current) return;
-    const dst = composerRef.current;
-    if (!dst) return;
-    isSyncing.current = true;
-    dst.scrollTop = e.currentTarget.scrollTop;
-    requestAnimationFrame(() => { isSyncing.current = false; });
+    mirror(composerRef.current, e.currentTarget.scrollTop);
   };
 
   return { composerRef, previewRef, onComposerScroll, onPreviewScroll };

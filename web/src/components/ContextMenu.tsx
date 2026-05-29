@@ -8,6 +8,7 @@
 
 import { useEffect, useRef } from 'react';
 import { useContextMenu } from '../lib/useContextMenu';
+import { truncate } from '../lib/truncate';
 import { useStore } from '../store';
 
 const isMac =
@@ -107,7 +108,3 @@ export function ContextMenu(): JSX.Element | null {
   );
 }
 
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return `${s.slice(0, max - 1)}…`;
-}
