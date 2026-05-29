@@ -1,9 +1,17 @@
-import { useMemo, Fragment } from 'react';
+import { useCallback, useMemo, Fragment, type RefObject } from 'react';
 import { ShieldAlert } from 'lucide-react';
 import { useStore } from '../store';
 import { getCategoryStyle } from '../lib/colors';
+import { useContextMenu } from '../lib/useContextMenu';
 import type { Token } from '../api';
 import { cn } from '../lib/cn';
+
+type PreviewPaneProps = {
+  /** Optional shared ref for the scrolling container (sync-scroll). */
+  scrollRef?: RefObject<HTMLDivElement>;
+  /** Optional scroll handler — owner manages sync. */
+  onScroll?: (e: React.UIEvent<HTMLDivElement>) => void;
+};
 
 /**
  * Tokenize the scrubbed text into runs of (plain | token) for rendering.
@@ -62,7 +70,7 @@ function TokenPill({ run }: { run: Extract<Run, { type: 'token' }> }) {
   );
 }
 
-export function PreviewPane(): JSX.Element {
+export function PreviewPane({ scrollRef, onScroll }: PreviewPaneProps = {}): JSX.Element {
   const scrubbed = useStore((s) => s.scrubbed);
   const tokens = useStore((s) => s.tokens);
   const composerText = useStore((s) => s.composerText);
@@ -70,9 +78,20 @@ export function PreviewPane(): JSX.Element {
   const hasCredentials = useStore((s) => s.hasCredentials);
   const credentialSnippets = useStore((s) => s.credentialSnippets);
   const scrubError = useStore((s) => s.scrubError);
+  const openMenu = useContextMenu((s) => s.openMenu);
 
   const runs = useMemo(() => tokenizeForRender(scrubbed, tokens), [scrubbed, tokens]);
   const isIdle = !composerText.trim() && files.length === 0;
+
+  const onContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const sel = window.getSelection()?.toString().trim() ?? '';
+      if (sel.length < 2) return;
+      e.preventDefault();
+      openMenu(e.clientX, e.clientY, sel);
+    },
+    [openMenu],
+  );
 
   return (
     <section className="flex h-full min-h-0 flex-col gap-3 p-4">
@@ -110,6 +129,9 @@ export function PreviewPane(): JSX.Element {
       )}
 
       <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        onContextMenu={onContextMenu}
         className={cn(
           'flex-1 min-h-0 overflow-auto rounded-md border bg-zinc-900/40 p-3 font-mono text-sm leading-relaxed',
           hasCredentials ? 'border-red-900/60' : 'border-zinc-800',
