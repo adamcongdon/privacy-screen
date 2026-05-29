@@ -18,9 +18,13 @@ const RL_MAX = 10;
 const RL_MAX_IPS = 1024;
 const rlBuckets = new Map<string, number[]>();
 
+const TRUST_XFF = process.env.TRUST_XFF === '1';
+
 function getClientIp(c: any): string {
-  const xff = c.req.header('x-forwarded-for');
-  if (xff) return String(xff).split(',')[0].trim();
+  if (TRUST_XFF) {
+    const xff = c.req.header('x-forwarded-for');
+    if (xff) return String(xff).split(',')[0].trim();
+  }
   const remote = (c.env as any)?.incoming?.socket?.remoteAddress;
   return remote ? String(remote) : 'unknown';
 }
@@ -43,7 +47,7 @@ function rateLimited(ip: string): boolean {
 }
 
 const CATEGORY_RE = /^[a-z][a-z0-9_]{0,15}$/;
-const CONTROL_CHAR_RE = /[\x00-\x1f]/;
+const CONTROL_CHAR_RE = /[\x00-\x1f\u200b-\u200f\ufeff]/;
 const CRED_RE = mkCredential();
 
 vocabRoute.get('/', (c) => {
@@ -60,7 +64,7 @@ vocabRoute.post('/', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({}));
-  const real = String(body.realValue ?? '').trim();
+  const real = String(body.realValue ?? '').normalize('NFKC').trim();
   const categoryRaw = String(body.category ?? 'customer');
 
   if (!real) return c.json({ error: 'realValue required' }, 400);
@@ -87,7 +91,7 @@ const ALLOWLIST_MIN_LEN = 4;
 
 vocabRoute.delete('/:realValue', (c) => {
   if (rateLimited(getClientIp(c))) return c.json({ error: 'rate limited' }, 429);
-  const v = decodeURIComponent(c.req.param('realValue'));
+  const v = decodeURIComponent(c.req.param('realValue')).normalize('NFKC');
   if (!v) return c.json({ error: 'realValue required' }, 400);
   if (v.length > 200) return c.json({ error: 'realValue too long' }, 400);
   if (CONTROL_CHAR_RE.test(v)) return c.json({ error: 'control characters not allowed' }, 400);
@@ -105,7 +109,7 @@ vocabRoute.delete('/:realValue', (c) => {
 vocabRoute.post('/allowlist', async (c) => {
   if (rateLimited(getClientIp(c))) return c.json({ error: 'rate limited' }, 429);
   const body = await c.req.json().catch(() => ({}));
-  const pattern = String(body.pattern ?? '').trim();
+  const pattern = String(body.pattern ?? '').normalize('NFKC').trim();
   const isRegex = !!body.isRegex;
   if (!pattern) return c.json({ error: 'pattern required' }, 400);
   if (pattern.length < (isRegex ? 6 : ALLOWLIST_MIN_LEN)) {

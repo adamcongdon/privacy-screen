@@ -50,6 +50,26 @@ reportClaudeCodeStatus();
 
 const app = new Hono();
 
+const HOST_ALLOWLIST = new Set([
+  `127.0.0.1:${PORT}`,
+  `localhost:${PORT}`,
+  `127.0.0.1`,
+  `localhost`,
+]);
+
+// Defense in depth: reject requests whose Host header isn't loopback.
+// Defeats DNS rebinding against 127.0.0.1:31338 — even if a malicious page
+// resolves a name to our loopback IP, the Host header it sends is the
+// attacker's domain, not ours. Process-internal calls (Bun.serve→app.fetch
+// in tests) carry no Host header; those pass through.
+app.use('/api/*', async (c, next) => {
+  const host = c.req.header('host');
+  if (host && !HOST_ALLOWLIST.has(host)) {
+    return c.json({ error: 'forbidden host' }, 403);
+  }
+  return next();
+});
+
 // CORS only allow same-origin in production; the local Vite dev server
 // proxies through, so it always presents as the same origin.
 app.use(

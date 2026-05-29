@@ -43,6 +43,9 @@ beforeAll(async () => {
       ...process.env,
       PRIVACY_SCREEN_CONFIG: configPath,
       PRIVACY_SCREEN_PORT: String(PORT),
+      // Tests use x-forwarded-for headers to give each test its own rate-limit
+      // bucket. Production defaults to TRUST_XFF=0 (loopback has no real proxy).
+      TRUST_XFF: '1',
     },
   });
   await waitForHealth();
@@ -65,6 +68,26 @@ describe('server smoke — health + binding', () => {
     const j = (await r.json()) as { ok: boolean };
     expect(j.ok).toBe(true);
   });
+
+  test('API requests with foreign Host header are rejected (DNS-rebind defense)', async () => {
+    const r = await fetch(api('/api/vocab'), { headers: { Host: 'evil.example.com' } });
+    expect(r.status).toBe(403);
+    const j = (await r.json()) as { error: string };
+    expect(j.error).toBe('forbidden host');
+  });
+
+  test('POST /api/vocab rejects realValue containing zero-width chars', async () => {
+    // Inject a credential prefix with a ZWSP — caught by expanded CONTROL_CHAR_RE.
+    // Runs BEFORE the XFF-burst test so the rate-limit bucket has headroom.
+    const sneaky = 'sk​-ant-abcdefghijklmnopqrstuvwx';
+    const r = await fetch(api('/api/vocab'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ realValue: sneaky, category: 'customer' }),
+    });
+    expect(r.status).toBe(400);
+  });
+
 });
 
 describe('server smoke — /api/scrub', () => {
