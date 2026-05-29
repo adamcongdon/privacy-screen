@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useContextMenu } from '../lib/useContextMenu';
 import { useStore } from '../store';
 import { cn } from '../lib/cn';
+import { truncate } from '../lib/truncate';
 
 const VALID = /^[A-Z][A-Z0-9_]{1,15}$/;
 
@@ -123,7 +124,3 @@ export function CustomCategoryDialog(): JSX.Element | null {
   );
 }
 
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return `${s.slice(0, max - 1)}…`;
-}

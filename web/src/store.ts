@@ -339,10 +339,7 @@ export const useStore = create<State>((set, get) => ({
   reviewAction: async (id, action, type) => {
     try {
       await api.reviewAction(id, action, type);
-      await get().refreshReview();
-      await get().refreshVocab();
-      // Re-scrub: confirming a name in review introduces a new token.
-      await get().refreshScrub();
+      await Promise.all([get().refreshReview(), get().refreshVocab(), get().refreshScrub()]);
       get().pushToast('success', `review item ${action}d`);
     } catch (err) {
       get().pushToast('error', `review action failed: ${err instanceof Error ? err.message : err}`);
@@ -350,19 +347,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   addCustomerName: async (name) => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    try {
-      await api.addVocab(trimmed, 'customer');
-      await get().refreshVocab();
-      await get().refreshScrub();
-      get().pushToast('success', `added customer "${trimmed}"`);
-    } catch (err) {
-      get().pushToast(
-        'error',
-        `add customer failed: ${err instanceof Error ? err.message : err}`,
-      );
-    }
+    await get().mintSelection(name, 'customer');
   },
 
   mintSelection: async (value, category) => {
@@ -373,8 +358,7 @@ export const useStore = create<State>((set, get) => ({
     try {
       const res = await api.addVocab(trimmed, cat);
       get().pushToast('success', `Added '${trimmed}' as ${res.token}`);
-      await get().refreshVocab();
-      await get().refreshScrub();
+      await Promise.all([get().refreshVocab(), get().refreshScrub()]);
     } catch (err) {
       get().pushToast(
         'error',
@@ -386,8 +370,7 @@ export const useStore = create<State>((set, get) => ({
   forgetVocab: async (realValue) => {
     try {
       await api.forgetVocab(realValue);
-      await get().refreshVocab();
-      await get().refreshScrub();
+      await Promise.all([get().refreshVocab(), get().refreshScrub()]);
       get().pushToast('success', `forgot "${realValue}"`);
     } catch (err) {
       get().pushToast(
