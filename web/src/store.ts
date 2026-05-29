@@ -114,6 +114,8 @@ type State = {
   ) => Promise<void>;
   addCustomerName: (name: string) => Promise<void>;
   forgetVocab: (realValue: string) => Promise<void>;
+  /** Mint a selected span as a specific category — drives the context-menu UX. */
+  mintSelection: (value: string, category: string) => Promise<void>;
 
   send: () => Promise<void>;
   abortSend: () => void;
@@ -359,6 +361,24 @@ export const useStore = create<State>((set, get) => ({
       get().pushToast(
         'error',
         `add customer failed: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  },
+
+  mintSelection: async (value, category) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const cat = category.trim().toLowerCase();
+    if (!cat) return;
+    try {
+      const res = await api.addVocab(trimmed, cat);
+      get().pushToast('success', `Added '${trimmed}' as ${res.token}`);
+      await get().refreshVocab();
+      await get().refreshScrub();
+    } catch (err) {
+      get().pushToast(
+        'error',
+        `mint failed: ${err instanceof Error ? err.message : err}`,
       );
     }
   },

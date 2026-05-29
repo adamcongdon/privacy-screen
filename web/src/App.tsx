@@ -1,13 +1,47 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Shield, CircleDot, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Composer } from './components/Composer';
 import { PreviewPane } from './components/PreviewPane';
 import { TokenMap } from './components/TokenMap';
 import { ReviewQueue } from './components/ReviewQueue';
 import { ResponseStream } from './components/ResponseStream';
 import { SettingsDrawer } from './components/SettingsDrawer';
+import { ContextMenu } from './components/ContextMenu';
+import { CustomCategoryDialog } from './components/CustomCategoryDialog';
+import { useContextMenuShortcuts } from './lib/useContextMenu';
 import { useStore, type ToastEntry } from './store';
 import { cn } from './lib/cn';
+
+/**
+ * Sync-scroll plumbing — refs and handlers shared by the Composer textarea
+ * and the Scrubbed Preview pane. Hoisted to App because both panes live in
+ * separate sub-trees but should scroll together.
+ */
+function useAppSyncScroll() {
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const isSyncing = useRef(false);
+
+  const onComposerScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
+    if (isSyncing.current) return;
+    const dst = previewRef.current;
+    if (!dst) return;
+    isSyncing.current = true;
+    dst.scrollTop = e.currentTarget.scrollTop;
+    requestAnimationFrame(() => { isSyncing.current = false; });
+  };
+  const onPreviewScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (isSyncing.current) return;
+    const dst = composerRef.current;
+    if (!dst) return;
+    isSyncing.current = true;
+    dst.scrollTop = e.currentTarget.scrollTop;
+    requestAnimationFrame(() => { isSyncing.current = false; });
+  };
+
+  return { composerRef, previewRef, onComposerScroll, onPreviewScroll };
+}
 
 export default function App(): JSX.Element {
   const refreshHealth = useStore((s) => s.refreshHealth);
@@ -18,6 +52,12 @@ export default function App(): JSX.Element {
   const settings = useStore((s) => s.settings);
   const toasts = useStore((s) => s.toasts);
   const dismissToast = useStore((s) => s.dismissToast);
+
+  // Global keyboard shortcuts for the mint-selection workflow.
+  useContextMenuShortcuts();
+
+  // Sync-scroll plumbing for Compose ↔ Scrubbed Preview.
+  const sync = useAppSyncScroll();
 
   // Boot — pull everything once.
   useEffect(() => {
@@ -47,22 +87,54 @@ export default function App(): JSX.Element {
         </div>
       </header>
 
-      {/* Three-pane grid */}
-      <main className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(320px,1fr)_minmax(360px,1.2fr)_minmax(320px,1fr)] divide-x divide-zinc-800">
-        <div className="flex min-h-0 flex-col">
-          <Composer />
-        </div>
-        <div className="flex min-h-0 flex-col">
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <PreviewPane />
-            <TokenMap />
-            <ReviewQueue />
-          </div>
-        </div>
-        <div className="flex min-h-0 flex-col">
-          <ResponseStream />
-        </div>
+      {/* Three-column layout — horizontally resizable. */}
+      <main className="flex min-h-0 flex-1">
+        <PanelGroup direction="horizontal" autoSaveId="ps-columns">
+          <Panel defaultSize={28} minSize={18}>
+            <div className="flex h-full min-h-0 flex-col">
+              <Composer
+                textareaRef={sync.composerRef}
+                onScroll={sync.onComposerScroll}
+              />
+            </div>
+          </Panel>
+
+          <PanelResizeHandle className="w-[4px] bg-transparent hover:bg-zinc-700 data-[resize-handle-active]:bg-zinc-600 cursor-col-resize transition-colors" />
+
+          <Panel defaultSize={44} minSize={28}>
+            <div className="flex h-full min-h-0 flex-col">
+              <PanelGroup direction="vertical" autoSaveId="ps-middle-column">
+                <Panel defaultSize={30} minSize={15}>
+                  <PreviewPane
+                    scrollRef={sync.previewRef}
+                    onScroll={sync.onPreviewScroll}
+                  />
+                </Panel>
+                <PanelResizeHandle className="h-[4px] bg-transparent hover:bg-zinc-700 data-[resize-handle-active]:bg-zinc-600 cursor-row-resize transition-colors" />
+                <Panel defaultSize={45} minSize={20}>
+                  <TokenMap />
+                </Panel>
+                <PanelResizeHandle className="h-[4px] bg-transparent hover:bg-zinc-700 data-[resize-handle-active]:bg-zinc-600 cursor-row-resize transition-colors" />
+                <Panel defaultSize={25} minSize={15}>
+                  <ReviewQueue />
+                </Panel>
+              </PanelGroup>
+            </div>
+          </Panel>
+
+          <PanelResizeHandle className="w-[4px] bg-transparent hover:bg-zinc-700 data-[resize-handle-active]:bg-zinc-600 cursor-col-resize transition-colors" />
+
+          <Panel defaultSize={28} minSize={18}>
+            <div className="flex h-full min-h-0 flex-col">
+              <ResponseStream />
+            </div>
+          </Panel>
+        </PanelGroup>
       </main>
+
+      {/* Global overlays */}
+      <ContextMenu />
+      <CustomCategoryDialog />
 
       {/* Toast stack */}
       <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-80 flex-col gap-2">
