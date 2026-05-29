@@ -217,6 +217,94 @@ describe('server smoke — /api/vocab', () => {
     expect(sj.scrubbed).toContain(value);
     expect(sj.tokens.some((t) => t.realValue === value)).toBe(false);
   });
+
+  test('DELETE rejects credential-shaped value', async () => {
+    const ipHeader = '203.0.113.21';
+    const cred = 'sk-' + 'ant-' + 'abc123def456ghi789jklmnop';
+    const r = await fetch(api(`/api/vocab/${encodeURIComponent(cred)}`), {
+      method: 'DELETE',
+      headers: { 'x-forwarded-for': ipHeader },
+    });
+    expect(r.status).toBe(400);
+    const j = (await r.json()) as { error: string };
+    expect(j.error).toBe('credential-shape rejected');
+  });
+
+  test('DELETE rejects control chars and too-long values', async () => {
+    const ipHeader = '203.0.113.22';
+    const bad = await fetch(api(`/api/vocab/${encodeURIComponent('bad\x01value')}`), {
+      method: 'DELETE',
+      headers: { 'x-forwarded-for': ipHeader },
+    });
+    expect(bad.status).toBe(400);
+
+    const long = 'a'.repeat(205);
+    const tooLong = await fetch(api(`/api/vocab/${encodeURIComponent(long)}`), {
+      method: 'DELETE',
+      headers: { 'x-forwarded-for': ipHeader },
+    });
+    expect(tooLong.status).toBe(400);
+  });
+
+  test('DELETE does not allowlist values shorter than 4 chars', async () => {
+    const ipHeader = '203.0.113.23';
+    const short = 'ab';
+    await fetch(api('/api/vocab'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-forwarded-for': ipHeader },
+      body: JSON.stringify({ realValue: short, category: 'customer' }),
+    });
+    const del = await fetch(api(`/api/vocab/${encodeURIComponent(short)}`), {
+      method: 'DELETE',
+      headers: { 'x-forwarded-for': ipHeader },
+    });
+    expect(del.status).toBe(200);
+    // Scrub text where the would-be substring "ab" appears as part of another word —
+    // it must NOT be treated as allowlisted, so other detections still fire.
+    const scrub = await fetch(api('/api/scrub'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-forwarded-for': ipHeader },
+      body: JSON.stringify({ text: 'Visit https://about-something.example.com today.', persist: false }),
+    });
+    const sj = (await scrub.json()) as { tokens: Array<{ realValue: string; category: string }> };
+    expect(sj.tokens.some((t) => t.category === 'fqdn' || t.category === 'url')).toBe(true);
+  });
+
+  test('POST /allowlist rejects regex that matches empty string', async () => {
+    const ipHeader = '203.0.113.24';
+    const r = await fetch(api('/api/vocab/allowlist'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-forwarded-for': ipHeader },
+      body: JSON.stringify({ pattern: '.*', isRegex: true }),
+    });
+    expect(r.status).toBe(400);
+  });
+
+  test('POST /allowlist rejects too-short pattern', async () => {
+    const ipHeader = '203.0.113.25';
+    const r = await fetch(api('/api/vocab/allowlist'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-forwarded-for': ipHeader },
+      body: JSON.stringify({ pattern: 'ab', isRegex: false }),
+    });
+    expect(r.status).toBe(400);
+  });
+});
+
+describe('vocab — allowlist semantics (Silas HIGH 1 regression)', () => {
+  test('literal allowlist is exact match, not substring', async () => {
+    const { VocabStore } = await import('../src/vocab');
+    const { tmpdir } = await import('os');
+    const { join } = await import('path');
+    const path = join(tmpdir(), `vocab-exact-${Date.now()}.db`);
+    const v = new VocabStore(path);
+    v.addAllowlist('ab', false);
+    expect(v.isAllowlisted('ab')).toBe(true);
+    expect(v.isAllowlisted('AB')).toBe(true);
+    expect(v.isAllowlisted('about-something.example.com')).toBe(false);
+    expect(v.isAllowlisted('grab a cab')).toBe(false);
+    v.close();
+  });
 });
 
 describe('server smoke — /api/settings', () => {

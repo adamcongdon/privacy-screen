@@ -167,7 +167,7 @@ export class VocabStore {
           // malformed regex in DB — skip
         }
       } else {
-        if (lower.includes(pattern.toLowerCase())) return true;
+        if (lower === pattern.toLowerCase()) return true;
       }
     }
     return false;
