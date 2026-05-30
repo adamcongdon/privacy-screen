@@ -1,0 +1,11 @@
+version: 2
+paths:
+  ignore:
+    - path: tests/
+      description: "Test fixtures contain fake/example secrets to validate PII detection logic"
+    - path: SAFETY_CHECKLIST.md
+      description: "Documentation examples of PII patterns — not real credentials"
+    - path: SAFETY_CHECKLIST_APP.md
+      description: "Documentation examples of PII patterns — not real credentials"
+    - path: README.md
+      description: "Documentation table showing example PII patterns"
