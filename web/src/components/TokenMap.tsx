@@ -4,7 +4,14 @@ import { useStore } from '../store';
 import { getCategoryStyle } from '../lib/colors';
 import { cn } from '../lib/cn';
 
-export function TokenMap(): JSX.Element {
+/**
+ * Content-only body of the token map — search, add-customer, list.
+ *
+ * Extracted from the legacy `<TokenMap>` so the new `<TokenMapDrawer>` can host
+ * the same UX inside a Radix dialog without inheriting the outer
+ * `border-t` / panel padding that made sense in the middle-column layout.
+ */
+export function TokenMapBody(): JSX.Element {
   const tokens = useStore((s) => s.tokens);
   const tokenUnion = useStore((s) => s.tokenUnion);
   const vocab = useStore((s) => s.vocab);
@@ -14,9 +21,6 @@ export function TokenMap(): JSX.Element {
   const [query, setQuery] = useState('');
   const [newCustomer, setNewCustomer] = useState('');
 
-  // Merge tokens active in the current preview with the cross-session union.
-  // Current-preview tokens display first so the user immediately sees what's
-  // in their composer; vocab fills the long tail.
   const rows = useMemo(() => {
     const seen = new Set<string>();
     type Row = { token: string; realValue: string; category: string; fromCurrent: boolean };
@@ -36,7 +40,6 @@ export function TokenMap(): JSX.Element {
       seen.add(tok);
       out.push({ token: tok, realValue: t.realValue, category: t.category, fromCurrent: false });
     }
-    // Anything in vocab DB that we haven't already seen (older sessions).
     for (const v of vocab) {
       if (seen.has(v.token)) continue;
       seen.add(v.token);
@@ -58,15 +61,12 @@ export function TokenMap(): JSX.Element {
   }, [tokens, tokenUnion, vocab, query]);
 
   return (
-    <section className="flex min-h-0 flex-col gap-2 border-t border-zinc-800 p-4">
-      <header className="flex items-center justify-between">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
-          Token map
-        </h2>
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
+      <div className="flex items-center justify-between">
         <span className="text-[11px] uppercase tracking-wider text-zinc-500">
-          {rows.length} entries
+          {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
         </span>
-      </header>
+      </div>
 
       <div className="flex gap-2">
         <div className="relative flex-1">
@@ -115,7 +115,13 @@ export function TokenMap(): JSX.Element {
 
       <div className="min-h-0 flex-1 overflow-auto rounded-md border border-zinc-800 bg-zinc-900/30">
         {rows.length === 0 ? (
-          <p className="p-3 text-xs text-zinc-500">No tokens yet.</p>
+          <div className="flex h-full min-h-[160px] flex-col items-center justify-center gap-2 p-6 text-center">
+            <p className="text-sm text-zinc-400">No tokens yet</p>
+            <p className="max-w-[280px] text-xs text-zinc-500">
+              Tokens appear here when names, emails, IPs, or other PII are detected. Or add
+              a customer name above to mint one now.
+            </p>
+          </div>
         ) : (
           <ul className="divide-y divide-zinc-800">
             {rows.map((r) => {
@@ -166,6 +172,23 @@ export function TokenMap(): JSX.Element {
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Legacy panel wrapper — kept for back-compat / tests, no longer used in App.
+ * The token map now lives in `<TokenMapDrawer>`.
+ */
+export function TokenMap(): JSX.Element {
+  return (
+    <section className="flex min-h-0 flex-col gap-2 border-t border-zinc-800 p-4">
+      <header className="flex items-center justify-between">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+          Token map
+        </h2>
+      </header>
+      <TokenMapBody />
     </section>
   );
 }

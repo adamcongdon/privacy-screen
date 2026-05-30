@@ -3,7 +3,7 @@ import { Shield, CircleDot, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Composer } from './components/Composer';
 import { PreviewPane } from './components/PreviewPane';
-import { TokenMap } from './components/TokenMap';
+import { TokenMapDrawer } from './components/TokenMapDrawer';
 import { ReviewQueue } from './components/ReviewQueue';
 import { ResponseStream } from './components/ResponseStream';
 import { SettingsDrawer } from './components/SettingsDrawer';
@@ -11,6 +11,7 @@ import { ContextMenu } from './components/ContextMenu';
 import { CustomCategoryDialog } from './components/CustomCategoryDialog';
 import { useContextMenuShortcuts } from './lib/useContextMenu';
 import { useStore, type ToastEntry } from './store';
+import { getPayloadKind } from './lib/payloadKind';
 import { cn } from './lib/cn';
 
 /**
@@ -50,6 +51,12 @@ export default function App(): JSX.Element {
   const settings = useStore((s) => s.settings);
   const toasts = useStore((s) => s.toasts);
   const dismissToast = useStore((s) => s.dismissToast);
+  const composerText = useStore((s) => s.composerText);
+  const files = useStore((s) => s.files);
+  const tokenMapOpen = useStore((s) => s.tokenMapOpen);
+  const setTokenMapOpen = useStore((s) => s.setTokenMapOpen);
+  const autoSetPreviewMode = useStore((s) => s.autoSetPreviewMode);
+  const resetPreviewModeOverride = useStore((s) => s.resetPreviewModeOverride);
 
   // Global keyboard shortcuts for the mint-selection workflow.
   useContextMenuShortcuts();
@@ -65,6 +72,34 @@ export default function App(): JSX.Element {
     void refreshReview();
   }, [refreshHealth, refreshSettings, refreshVocab, refreshReview]);
 
+  // Auto-default preview mode from payload kind. Honors a user override until
+  // the app returns to idle (empty composer + no files).
+  useEffect(() => {
+    const isIdle = composerText.trim().length === 0 && files.length === 0;
+    if (isIdle) {
+      resetPreviewModeOverride();
+      autoSetPreviewMode('source');
+      return;
+    }
+    const kind = getPayloadKind({ composerText, files });
+    autoSetPreviewMode(kind === 'html-dominant' ? 'rendered' : 'source');
+  }, [composerText, files, autoSetPreviewMode, resetPreviewModeOverride]);
+
+  // ⌘K / Ctrl+K — toggle the Token Map drawer when no text field is focused.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key !== 'k' && e.key !== 'K') return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
+      e.preventDefault();
+      setTokenMapOpen(!tokenMapOpen);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [tokenMapOpen, setTokenMapOpen]);
+
   return (
     <div className="flex h-screen min-h-0 flex-col bg-zinc-950 text-zinc-100">
       {/* Top bar */}
@@ -78,17 +113,18 @@ export default function App(): JSX.Element {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
           <KeyStatus />
           <HealthDot />
+          <TokenMapDrawer />
           <SettingsDrawer />
         </div>
       </header>
 
       {/* Three-column layout — horizontally resizable. */}
       <main className="flex min-h-0 flex-1">
-        <PanelGroup direction="horizontal" autoSaveId="ps-columns">
-          <Panel defaultSize={28} minSize={18}>
+        <PanelGroup direction="horizontal" autoSaveId="ps-columns-v2">
+          <Panel defaultSize={26} minSize={18}>
             <div className="flex h-full min-h-0 flex-col">
               <Composer
                 textareaRef={sync.composerRef}
@@ -99,21 +135,17 @@ export default function App(): JSX.Element {
 
           <PanelResizeHandle className="w-[4px] bg-transparent hover:bg-zinc-700 data-[resize-handle-active]:bg-zinc-600 cursor-col-resize transition-colors" />
 
-          <Panel defaultSize={44} minSize={28}>
+          <Panel defaultSize={48} minSize={28}>
             <div className="flex h-full min-h-0 flex-col">
-              <PanelGroup direction="vertical" autoSaveId="ps-middle-column">
-                <Panel defaultSize={30} minSize={15}>
+              <PanelGroup direction="vertical" autoSaveId="ps-middle-column-v2">
+                <Panel defaultSize={65} minSize={30}>
                   <PreviewPane
                     scrollRef={sync.previewRef}
                     onScroll={sync.onPreviewScroll}
                   />
                 </Panel>
                 <PanelResizeHandle className="h-[4px] bg-transparent hover:bg-zinc-700 data-[resize-handle-active]:bg-zinc-600 cursor-row-resize transition-colors" />
-                <Panel defaultSize={45} minSize={20}>
-                  <TokenMap />
-                </Panel>
-                <PanelResizeHandle className="h-[4px] bg-transparent hover:bg-zinc-700 data-[resize-handle-active]:bg-zinc-600 cursor-row-resize transition-colors" />
-                <Panel defaultSize={25} minSize={15}>
+                <Panel defaultSize={35} minSize={18}>
                   <ReviewQueue />
                 </Panel>
               </PanelGroup>
@@ -122,7 +154,7 @@ export default function App(): JSX.Element {
 
           <PanelResizeHandle className="w-[4px] bg-transparent hover:bg-zinc-700 data-[resize-handle-active]:bg-zinc-600 cursor-col-resize transition-colors" />
 
-          <Panel defaultSize={28} minSize={18}>
+          <Panel defaultSize={26} minSize={18}>
             <div className="flex h-full min-h-0 flex-col">
               <ResponseStream />
             </div>
