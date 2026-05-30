@@ -15,6 +15,12 @@ export type TokenStyle = {
   ring: string;
 };
 
+export type InlineTokenStyle = {
+  bg: string;
+  border: string;
+  text: string;
+};
+
 const PALETTE: Record<string, TokenStyle> = {
   ip: {
     bg: 'bg-blue-500/20',
@@ -99,6 +105,81 @@ const FALLBACK: TokenStyle[] = [
   },
 ];
 
+const INLINE_PALETTE: Record<string, InlineTokenStyle> = {
+  ip: {
+    bg: 'rgba(59,130,246,0.15)',
+    border: 'rgba(59,130,246,0.45)',
+    text: 'rgb(30,64,175)',
+  },
+  customer: {
+    bg: 'rgba(168,85,247,0.15)',
+    border: 'rgba(168,85,247,0.45)',
+    text: 'rgb(107,33,168)',
+  },
+  email: {
+    bg: 'rgba(16,185,129,0.15)',
+    border: 'rgba(16,185,129,0.45)',
+    text: 'rgb(6,95,70)',
+  },
+  host: {
+    bg: 'rgba(6,182,212,0.15)',
+    border: 'rgba(6,182,212,0.45)',
+    text: 'rgb(14,116,144)',
+  },
+  hostname: {
+    bg: 'rgba(6,182,212,0.15)',
+    border: 'rgba(6,182,212,0.45)',
+    text: 'rgb(14,116,144)',
+  },
+  credential: {
+    bg: 'rgba(239,68,68,0.18)',
+    border: 'rgba(239,68,68,0.5)',
+    text: 'rgb(153,27,27)',
+  },
+  user: {
+    bg: 'rgba(245,158,11,0.18)',
+    border: 'rgba(245,158,11,0.45)',
+    text: 'rgb(146,64,14)',
+  },
+  path: {
+    bg: 'rgba(236,72,153,0.15)',
+    border: 'rgba(236,72,153,0.45)',
+    text: 'rgb(157,23,77)',
+  },
+};
+
+const INLINE_FALLBACK: InlineTokenStyle[] = [
+  {
+    bg: 'rgba(99,102,241,0.15)',
+    border: 'rgba(99,102,241,0.45)',
+    text: 'rgb(55,48,163)',
+  },
+  {
+    bg: 'rgba(20,184,166,0.15)',
+    border: 'rgba(20,184,166,0.45)',
+    text: 'rgb(17,94,89)',
+  },
+  {
+    bg: 'rgba(249,115,22,0.15)',
+    border: 'rgba(249,115,22,0.45)',
+    text: 'rgb(154,52,18)',
+  },
+  {
+    bg: 'rgba(217,70,239,0.15)',
+    border: 'rgba(217,70,239,0.45)',
+    text: 'rgb(134,25,143)',
+  },
+  {
+    bg: 'rgba(132,204,22,0.15)',
+    border: 'rgba(132,204,22,0.45)',
+    text: 'rgb(63,98,18)',
+  },
+];
+
+function normalizeCategory(category: string | null | undefined): string {
+  return (category ?? '').toLowerCase().trim();
+}
+
 function hashString(s: string): number {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) | 0;
@@ -106,8 +187,15 @@ function hashString(s: string): number {
 }
 
 export function getCategoryStyle(category: string | null | undefined): TokenStyle {
-  const key = (category ?? '').toLowerCase().trim();
+  const key = normalizeCategory(category);
   if (key && PALETTE[key]) return PALETTE[key];
   if (!key) return FALLBACK[0]!;
   return FALLBACK[hashString(key) % FALLBACK.length]!;
+}
+
+export function getCategoryInlineStyles(category: string | null | undefined): InlineTokenStyle {
+  const key = normalizeCategory(category);
+  if (key && INLINE_PALETTE[key]) return INLINE_PALETTE[key];
+  if (!key) return INLINE_FALLBACK[0]!;
+  return INLINE_FALLBACK[hashString(key) % INLINE_FALLBACK.length]!;
 }

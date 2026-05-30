@@ -1,8 +1,10 @@
 import { useCallback, useMemo, Fragment, type RefObject } from 'react';
-import { ShieldAlert } from 'lucide-react';
+import { ShieldAlert, Code2, Eye } from 'lucide-react';
 import { useStore } from '../store';
 import { getCategoryStyle } from '../lib/colors';
 import { useContextMenu } from '../lib/useContextMenu';
+import { getPayloadKind, pickPrimaryHtmlFile } from '../lib/payloadKind';
+import { HtmlRenderedView } from './HtmlRenderedView';
 import type { Token } from '../api';
 import { cn } from '../lib/cn';
 
@@ -13,16 +15,6 @@ type PreviewPaneProps = {
   onScroll?: (e: React.UIEvent<HTMLDivElement>) => void;
 };
 
-/**
- * Tokenize the scrubbed text into runs of (plain | token) for rendering.
- *
- * Tokens look like `{NAME}` or `{NAME_1}`. We DO NOT use a global regex from
- * the token list — that would force a re-scan per token and miss tokens whose
- * names overlap. Instead we scan once for any `{...}` matching the
- * upper-snake-case shape and look them up in a Map. Unknown bracketed words
- * fall back to a neutral "unknown" pill — they shouldn't happen in practice
- * but we never just drop them.
- */
 type Run =
   | { type: 'text'; text: string }
   | { type: 'token'; raw: string; meta: Token | null };
@@ -51,9 +43,6 @@ function TokenPill({ run }: { run: Extract<Run, { type: 'token' }> }) {
   const cat = run.meta?.category ?? 'unknown';
   const style = getCategoryStyle(cat);
   const real = run.meta?.realValue;
-  // Title attribute gives a native tooltip with the real value. We intentionally
-  // keep this simple — no Radix popover here because token previews need to be
-  // dense and fast.
   return (
     <span
       title={real ? `${cat}: ${real}` : `${cat} (unrecognized token)`}
@@ -70,6 +59,52 @@ function TokenPill({ run }: { run: Extract<Run, { type: 'token' }> }) {
   );
 }
 
+function ModeToggle({
+  mode,
+  onChange,
+  disabled,
+}: {
+  mode: 'source' | 'rendered';
+  onChange: (m: 'source' | 'rendered') => void;
+  disabled: boolean;
+}): JSX.Element {
+  const btn = (which: 'source' | 'rendered', label: string, Icon: typeof Code2) => {
+    const isActive = mode === which;
+    const isDisabled = disabled && which === 'rendered';
+    return (
+      <button
+        type="button"
+        role="radio"
+        aria-checked={isActive}
+        aria-disabled={isDisabled}
+        disabled={isDisabled}
+        onClick={() => !isDisabled && onChange(which)}
+        title={isDisabled ? 'No HTML to render' : `${label} view`}
+        className={cn(
+          'flex items-center gap-1 rounded-sm px-2 py-0.5 uppercase tracking-wider transition-colors',
+          isActive
+            ? 'bg-zinc-800 text-zinc-100 shadow-inner'
+            : 'text-zinc-500 hover:text-zinc-300',
+          isDisabled && 'cursor-not-allowed opacity-50 hover:text-zinc-500',
+        )}
+      >
+        <Icon className="h-3 w-3" />
+        {label}
+      </button>
+    );
+  };
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Preview mode"
+      className="inline-flex rounded-md border border-zinc-800 bg-zinc-900/60 p-0.5 text-[11px] font-medium"
+    >
+      {btn('source', 'source', Code2)}
+      {btn('rendered', 'rendered', Eye)}
+    </div>
+  );
+}
+
 export function PreviewPane({ scrollRef, onScroll }: PreviewPaneProps = {}): JSX.Element {
   const scrubbed = useStore((s) => s.scrubbed);
   const tokens = useStore((s) => s.tokens);
@@ -78,10 +113,39 @@ export function PreviewPane({ scrollRef, onScroll }: PreviewPaneProps = {}): JSX
   const hasCredentials = useStore((s) => s.hasCredentials);
   const credentialSnippets = useStore((s) => s.credentialSnippets);
   const scrubError = useStore((s) => s.scrubError);
+  const previewMode = useStore((s) => s.previewMode);
+  const setPreviewMode = useStore((s) => s.setPreviewMode);
+  const tokenUnion = useStore((s) => s.tokenUnion);
   const openMenu = useContextMenu((s) => s.openMenu);
 
   const runs = useMemo(() => tokenizeForRender(scrubbed, tokens), [scrubbed, tokens]);
   const isIdle = !composerText.trim() && files.length === 0;
+  const payloadKind = useMemo(
+    () => getPayloadKind({ composerText, files }),
+    [composerText, files],
+  );
+  const primaryHtmlFile = useMemo(() => pickPrimaryHtmlFile(files), [files]);
+  const toggleDisabled = payloadKind === 'text' || !primaryHtmlFile;
+  const effectiveMode: 'source' | 'rendered' = toggleDisabled ? 'source' : previewMode;
+  const otherCount = files.filter((f) => !f.error && f !== primaryHtmlFile).length;
+
+  // Combine current-session tokens with the cross-session union so the iframe
+  // can resolve realValues for tokens that were minted on prior turns.
+  const renderedTokens: Token[] = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: Token[] = [];
+    for (const t of tokens) {
+      if (seen.has(t.token)) continue;
+      seen.add(t.token);
+      merged.push(t);
+    }
+    for (const [, t] of tokenUnion) {
+      if (seen.has(t.token)) continue;
+      seen.add(t.token);
+      merged.push(t);
+    }
+    return merged;
+  }, [tokens, tokenUnion]);
 
   const onContextMenu = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -95,13 +159,20 @@ export function PreviewPane({ scrollRef, onScroll }: PreviewPaneProps = {}): JSX
 
   return (
     <section className="flex h-full min-h-0 flex-col gap-3 p-4">
-      <header className="flex items-center justify-between">
+      <header className="flex items-center justify-between gap-3">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
           Scrubbed preview
         </h2>
-        <span className="text-[11px] uppercase tracking-wider text-zinc-500">
-          {tokens.length > 0 ? `${tokens.length} token${tokens.length === 1 ? '' : 's'}` : '—'}
-        </span>
+        <div className="flex items-center gap-3">
+          <ModeToggle
+            mode={effectiveMode}
+            onChange={setPreviewMode}
+            disabled={toggleDisabled}
+          />
+          <span className="text-[11px] uppercase tracking-wider text-zinc-500">
+            {tokens.length > 0 ? `${tokens.length} token${tokens.length === 1 ? '' : 's'}` : '—'}
+          </span>
+        </div>
       </header>
 
       {hasCredentials && (
@@ -128,31 +199,48 @@ export function PreviewPane({ scrollRef, onScroll }: PreviewPaneProps = {}): JSX
         </div>
       )}
 
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        onContextMenu={onContextMenu}
-        className={cn(
-          'flex-1 min-h-0 overflow-auto rounded-md border bg-zinc-900/40 p-3 font-mono text-sm leading-relaxed',
-          hasCredentials ? 'border-red-900/60' : 'border-zinc-800',
-        )}
-      >
-        {isIdle ? (
-          <p className="text-zinc-600">Type or paste text to begin.</p>
-        ) : runs.length === 0 ? (
-          <p className="text-zinc-600">scrubbing…</p>
-        ) : (
-          <p className="whitespace-pre-wrap break-words text-zinc-200">
-            {runs.map((r, i) =>
-              r.type === 'text' ? (
-                <Fragment key={i}>{r.text}</Fragment>
-              ) : (
-                <TokenPill key={i} run={r} />
-              ),
-            )}
-          </p>
-        )}
-      </div>
+      {effectiveMode === 'rendered' && primaryHtmlFile && primaryHtmlFile.scrubbed ? (
+        <div className="flex min-h-0 flex-1 flex-col gap-1">
+          {payloadKind === 'mixed' && (
+            <p className="text-[10px] text-zinc-500">
+              Rendering <span className="font-mono text-zinc-300">{primaryHtmlFile.name}</span>
+              {otherCount > 0 && ` · ${otherCount} other file${otherCount === 1 ? '' : 's'} in source`}
+            </p>
+          )}
+          <div className="min-h-0 flex-1">
+            <HtmlRenderedView
+              html={primaryHtmlFile.scrubbed}
+              tokens={renderedTokens}
+            />
+          </div>
+        </div>
+      ) : (
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          onContextMenu={onContextMenu}
+          className={cn(
+            'flex-1 min-h-0 overflow-auto rounded-md border bg-zinc-900/40 p-3 font-mono text-sm leading-relaxed',
+            hasCredentials ? 'border-red-900/60' : 'border-zinc-800',
+          )}
+        >
+          {isIdle ? (
+            <p className="text-zinc-600">Type, paste, or drop a file to begin.</p>
+          ) : runs.length === 0 ? (
+            <p className="text-zinc-600">scrubbing…</p>
+          ) : (
+            <p className="whitespace-pre-wrap break-words text-zinc-200">
+              {runs.map((r, i) =>
+                r.type === 'text' ? (
+                  <Fragment key={i}>{r.text}</Fragment>
+                ) : (
+                  <TokenPill key={i} run={r} />
+                ),
+              )}
+            </p>
+          )}
+        </div>
+      )}
     </section>
   );
 }

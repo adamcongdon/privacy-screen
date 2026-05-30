@@ -50,6 +50,36 @@ export type ToastEntry = {
   message: string;
 };
 
+export type PreviewMode = 'source' | 'rendered';
+
+const LS_PREVIEW_MODE = 'ps.preview-mode';
+const LS_TOKENMAP_OPEN = 'ps.tokenmap-open';
+
+function readLsPreviewMode(): PreviewMode {
+  try {
+    const v = globalThis.localStorage?.getItem(LS_PREVIEW_MODE);
+    return v === 'rendered' ? 'rendered' : 'source';
+  } catch {
+    return 'source';
+  }
+}
+
+function readLsTokenMapOpen(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(LS_TOKENMAP_OPEN) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeLs(key: string, value: string): void {
+  try {
+    globalThis.localStorage?.setItem(key, value);
+  } catch {
+    // ignore quota/availability errors
+  }
+}
+
 type State = {
   // Composer
   composerText: string;
@@ -78,6 +108,12 @@ type State = {
   // UI flags
   showRawTokens: boolean;
   settingsOpen: boolean;
+  /** Preview pane mode — source view (current behavior) or rendered HTML view. */
+  previewMode: PreviewMode;
+  /** True once the user has manually picked a preview mode this session; gates auto-default. */
+  previewModeUserOverrode: boolean;
+  /** Token Map slide-in drawer open/closed. Persisted to localStorage. */
+  tokenMapOpen: boolean;
 
   // Server data
   vocab: VocabRow[];
@@ -92,6 +128,12 @@ type State = {
   setComposerText: (t: string) => void;
   setShowRawTokens: (v: boolean) => void;
   setSettingsOpen: (v: boolean) => void;
+  /** Explicit user pick — flips previewModeUserOverrode so auto-default stops fighting. */
+  setPreviewMode: (m: PreviewMode) => void;
+  /** Auto-default flip from payload kind. Does NOT set previewModeUserOverrode. */
+  autoSetPreviewMode: (m: PreviewMode) => void;
+  resetPreviewModeOverride: () => void;
+  setTokenMapOpen: (o: boolean) => void;
   resetConversation: () => void;
 
   addFiles: (incoming: FileList | File[]) => Promise<void>;
@@ -174,6 +216,9 @@ export const useStore = create<State>((set, get) => ({
 
   showRawTokens: true,
   settingsOpen: false,
+  previewMode: readLsPreviewMode(),
+  previewModeUserOverrode: false,
+  tokenMapOpen: readLsTokenMapOpen(),
 
   vocab: [],
   reviewItems: [],
@@ -185,6 +230,24 @@ export const useStore = create<State>((set, get) => ({
   setComposerText: (t) => set({ composerText: t }),
   setShowRawTokens: (v) => set({ showRawTokens: v }),
   setSettingsOpen: (v) => set({ settingsOpen: v }),
+
+  setPreviewMode: (m) => {
+    writeLs(LS_PREVIEW_MODE, m);
+    set({ previewMode: m, previewModeUserOverrode: true });
+  },
+  autoSetPreviewMode: (m) => {
+    const { previewMode, previewModeUserOverrode } = get();
+    if (previewModeUserOverrode) return;
+    if (previewMode === m) return;
+    writeLs(LS_PREVIEW_MODE, m);
+    set({ previewMode: m });
+  },
+  resetPreviewModeOverride: () => set({ previewModeUserOverrode: false }),
+
+  setTokenMapOpen: (o) => {
+    writeLs(LS_TOKENMAP_OPEN, o ? '1' : '0');
+    set({ tokenMapOpen: o });
+  },
 
   resetConversation: () =>
     set({
