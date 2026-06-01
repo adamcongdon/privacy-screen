@@ -325,4 +325,51 @@ export const api = {
   },
 };
 
+export type InducedPatternDto = {
+  id: number;
+  category: string;
+  regex_source: string;
+  skeleton: string;
+  source_examples: string[];
+  example_count: number;
+  confidence: number;
+  status: string;
+  hit_count: number;
+  first_seen: number;
+  last_seen: number;
+};
+
+Object.assign(api, {
+  async listPatterns(status?: string): Promise<{ items: InducedPatternDto[] }> {
+    const q = status ? `?status=${encodeURIComponent(status)}` : '';
+    return json(await fetch(`/api/patterns${q}`));
+  },
+
+  async suggestPatterns(category?: string): Promise<{ items: InducedPatternDto[] }> {
+    const res = await fetch('/api/patterns/suggest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(category ? { category } : {}),
+    });
+    return json(res);
+  },
+
+  async patternAction(
+    id: number,
+    action: 'activate' | 'reject' | 'edit',
+    regex?: string,
+  ): Promise<{ ok: true }> {
+    const res = await fetch(`/api/patterns/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(regex !== undefined ? { action, regex } : { action }),
+    });
+    return json(res);
+  },
+
+  async deletePattern(id: number): Promise<{ ok: true }> {
+    return json(await fetch(`/api/patterns/${id}`, { method: 'DELETE' }));
+  },
+});
+
 export { ApiError };
