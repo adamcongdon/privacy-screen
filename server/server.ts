@@ -30,6 +30,7 @@ import { scrubRoute } from './routes/scrub';
 import { sendRoute } from './routes/send';
 import { vocabRoute } from './routes/vocab';
 import { reviewRoute } from './routes/review';
+import { patternsRoute } from './routes/patterns';
 import { settingsRoute } from './routes/settings';
 import { filesRoute } from './routes/files';
 import { reportClaudeCodeStatus } from './lib/claude-code-check';
@@ -96,6 +97,7 @@ app.route('/api/scrub', scrubRoute);
 app.route('/api/send', sendRoute);
 app.route('/api/vocab', vocabRoute);
 app.route('/api/review', reviewRoute);
+app.route('/api/patterns', patternsRoute);
 app.route('/api/settings', settingsRoute);
 app.route('/api/files', filesRoute);
 

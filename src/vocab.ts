@@ -34,6 +34,28 @@ export interface AllowlistRow {
   is_regex: number;
 }
 
+export interface InducedPatternRow {
+  id: number;
+  category: string;
+  regex_source: string;
+  skeleton: string;
+  source_examples: string;
+  example_count: number;
+  status: string;
+  confidence: number;
+  first_seen: number;
+  last_seen: number;
+  hit_count: number;
+}
+
+export interface NewInducedPattern {
+  category: string;
+  regex_source: string;
+  skeleton: string;
+  source_examples: string[];
+  confidence: number;
+}
+
 const DDL = `
 CREATE TABLE IF NOT EXISTS vocab (
   real_value   TEXT PRIMARY KEY,
@@ -77,6 +99,21 @@ CREATE TABLE IF NOT EXISTS redaction_log (
   blocked        INTEGER NOT NULL DEFAULT 0,
   timestamp      INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS induced_patterns (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  category        TEXT NOT NULL,
+  regex_source    TEXT NOT NULL,
+  skeleton        TEXT NOT NULL,
+  source_examples TEXT NOT NULL,
+  example_count   INTEGER NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'pending',
+  confidence      REAL NOT NULL,
+  first_seen      INTEGER NOT NULL,
+  last_seen       INTEGER NOT NULL,
+  hit_count       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_induced_category ON induced_patterns(category, status);
 `;
 
 export class VocabStore {
@@ -243,6 +280,88 @@ export class VocabStore {
          ORDER BY day DESC`,
       )
       .all(Date.now() - days * 86_400_000);
+  }
+
+  /** All vocab rows for a specific category. */
+  vocabByCategory(category: string): VocabRow[] {
+    return this.db
+      .query<VocabRow, [string]>(`SELECT * FROM vocab WHERE category = ? ORDER BY real_value`)
+      .all(category);
+  }
+
+  /** Categories that have at least `min` vocab entries. */
+  categoriesAboveThreshold(min: number): Array<{ category: string; count: number }> {
+    return this.db
+      .query<{ category: string; count: number }, [number]>(
+        `SELECT category, COUNT(*) AS count FROM vocab GROUP BY category HAVING count >= ? ORDER BY count DESC`,
+      )
+      .all(min);
+  }
+
+  /** All active induced patterns. */
+  activePatterns(): InducedPatternRow[] {
+    return this.db
+      .query<InducedPatternRow, []>(
+        `SELECT * FROM induced_patterns WHERE status = 'active' ORDER BY id`,
+      )
+      .all();
+  }
+
+  /** All pending induced patterns. */
+  pendingPatterns(): InducedPatternRow[] {
+    return this.db
+      .query<InducedPatternRow, []>(
+        `SELECT * FROM induced_patterns WHERE status = 'pending' ORDER BY id`,
+      )
+      .all();
+  }
+
+  /** Insert a new induced pattern. Returns the new row id. */
+  persistInducedPattern(row: NewInducedPattern): number {
+    const now = Date.now();
+    const result = this.db
+      .query(
+        `INSERT INTO induced_patterns
+           (category, regex_source, skeleton, source_examples, example_count, status, confidence, first_seen, last_seen, hit_count)
+         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 0)`,
+      )
+      .run(
+        row.category,
+        row.regex_source,
+        row.skeleton,
+        JSON.stringify(row.source_examples),
+        row.source_examples.length,
+        row.confidence,
+        now,
+        now,
+      );
+    return Number((result as { lastInsertRowid: bigint | number }).lastInsertRowid);
+  }
+
+  /** Set the status of an induced pattern. */
+  setInducedStatus(id: number, status: 'pending' | 'active' | 'rejected'): void {
+    this.db
+      .query(`UPDATE induced_patterns SET status = ?, last_seen = ? WHERE id = ?`)
+      .run(status, Date.now(), id);
+  }
+
+  /** Update the regex source of an induced pattern. */
+  updateInducedRegex(id: number, regex_source: string): void {
+    this.db
+      .query(`UPDATE induced_patterns SET regex_source = ?, last_seen = ? WHERE id = ?`)
+      .run(regex_source, Date.now(), id);
+  }
+
+  /** Increment hit count on an active induced pattern match. */
+  bumpInducedHit(id: number): void {
+    this.db
+      .query(`UPDATE induced_patterns SET hit_count = hit_count + 1, last_seen = ? WHERE id = ?`)
+      .run(Date.now(), id);
+  }
+
+  /** Remove an induced pattern permanently. */
+  deleteInducedPattern(id: number): void {
+    this.db.query(`DELETE FROM induced_patterns WHERE id = ?`).run(id);
   }
 
   close(): void {

@@ -24,6 +24,7 @@ import {
   type SettingsPatch,
   type UploadedFile,
   type ChatMessage,
+  type InducedPatternDto,
 } from './api';
 
 export type FileChip = {
@@ -118,6 +119,7 @@ type State = {
   // Server data
   vocab: VocabRow[];
   reviewItems: ReviewItem[];
+  patterns: InducedPatternDto[];
   settings: SettingsView | null;
   health: { ok: boolean; version: string } | null;
 
@@ -145,6 +147,9 @@ type State = {
   refreshScrub: () => Promise<void>;
   refreshVocab: () => Promise<void>;
   refreshReview: () => Promise<void>;
+  refreshPatterns: () => Promise<void>;
+  suggestPatterns: (category?: string) => Promise<void>;
+  patternAction: (id: number, action: 'activate' | 'reject' | 'edit', regex?: string) => Promise<void>;
   refreshSettings: () => Promise<void>;
   refreshHealth: () => Promise<void>;
 
@@ -222,6 +227,7 @@ export const useStore = create<State>((set, get) => ({
 
   vocab: [],
   reviewItems: [],
+  patterns: [],
   settings: null,
   health: null,
 
@@ -367,6 +373,38 @@ export const useStore = create<State>((set, get) => ({
       set({ reviewItems: r.items });
     } catch (err) {
       get().pushToast('error', `review fetch failed: ${err instanceof Error ? err.message : err}`);
+    }
+  },
+
+  refreshPatterns: async () => {
+    try {
+      const r = await (api as typeof api & { listPatterns(s?: string): Promise<{ items: InducedPatternDto[] }> }).listPatterns();
+      set({ patterns: r.items });
+    } catch (err) {
+      get().pushToast('error', `patterns fetch failed: ${err instanceof Error ? err.message : err}`);
+    }
+  },
+
+  suggestPatterns: async (category?: string) => {
+    try {
+      const r = await (api as typeof api & { suggestPatterns(c?: string): Promise<{ items: InducedPatternDto[] }> }).suggestPatterns(category);
+      set({ patterns: r.items });
+      get().pushToast('success', `${r.items.length} pattern(s) suggested`);
+    } catch (err) {
+      get().pushToast('error', `suggest failed: ${err instanceof Error ? err.message : err}`);
+    }
+  },
+
+  patternAction: async (id, action, regex?) => {
+    try {
+      await (api as typeof api & { patternAction(id: number, a: string, r?: string): Promise<{ ok: true }> }).patternAction(id, action, regex);
+      await get().refreshPatterns();
+      if (action === 'activate') {
+        await Promise.all([get().refreshVocab(), get().refreshScrub()]);
+      }
+      get().pushToast('success', `pattern ${action}d`);
+    } catch (err) {
+      get().pushToast('error', `pattern action failed: ${err instanceof Error ? err.message : err}`);
     }
   },
 
