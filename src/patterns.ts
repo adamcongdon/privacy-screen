@@ -272,6 +272,20 @@ export function looksLikeIdentifier(s: string): boolean {
   return false;
 }
 
+/**
+ * True when `s` looks like a purely numeric dotted value — i.e. every
+ * segment between the dots is all-digits. This catches date formats like
+ * "13.05.2026", "2026.05.13", version strings like "1.2.3", and other
+ * numeric dotted sequences that are NOT hostnames. Requires at least two
+ * segments (needs at least one dot) to be meaningful.
+ */
+export function looksLikeDate(s: string): boolean {
+  if (!s) return false;
+  const parts = s.split('.');
+  if (parts.length < 2) return false;
+  return parts.every((p) => /^\d+$/.test(p));
+}
+
 // ── Allowlist ─────────────────────────────────────────────────────────────────
 // FQDNs ending with these suffixes are considered vendor infrastructure
 // and are NOT tokenized. Compared case-insensitively, suffix-match.

@@ -379,6 +379,79 @@ describe('server smoke — /api/files', () => {
   });
 });
 
+// ── Bug 2: Pre-minted tokens must appear in /api/scrub response tokens ───────
+//
+// The server config (PRIVACY_CONFIG.yaml) mints "Acme Corp" → {CUSTOMER} before
+// scrubText runs. Because preMint calls map.mint() (not maybeRecordMint), the
+// token does NOT appear in mintedTokens. The route must also scan the scrubbed
+// string for tokens and enrich them into the response.
+
+describe('server smoke — pre-minted tokens in /api/scrub response (ISC-5, ISC-7)', () => {
+  test('customer_names config: "Acme Corp" token appears in response tokens', async () => {
+    // The server was started with customer_names: ["Acme Corp"] in the config
+    const r = await fetch(api('/api/scrub'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'Acme Corp ships.', persist: false }),
+    });
+    expect(r.status).toBe(200);
+    const j = (await r.json()) as {
+      scrubbed: string;
+      tokens: Array<{ realValue: string; token: string; category: string }>;
+    };
+    // scrubbed output must contain the token
+    expect(j.scrubbed).toMatch(/\{CUSTOMER(_\d+)?\}/);
+    expect(j.scrubbed).not.toContain('Acme Corp');
+    // tokens array must contain an entry for Acme Corp
+    const entry = j.tokens.find((t) => t.realValue === 'Acme Corp');
+    expect(entry).toBeDefined();
+    expect(entry!.token).toMatch(/^\{CUSTOMER(_\d+)?\}$/);
+    expect(entry!.category).toBe('customer');
+  });
+
+  test('every token in scrubbed output appears in response tokens array (ISC-7)', async () => {
+    const r = await fetch(api('/api/scrub'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: 'Acme Corp server is at 10.55.66.77 and backup.acme.internal is fine.',
+        persist: false,
+      }),
+    });
+    const j = (await r.json()) as {
+      scrubbed: string;
+      tokens: Array<{ token: string }>;
+    };
+    // Extract all {TOKEN} patterns from scrubbed text
+    const tokensInText = [...j.scrubbed.matchAll(/\{[A-Z][A-Z0-9_]*\}/g)].map((m) => m[0]);
+    const tokenValues = new Set(j.tokens.map((t) => t.token));
+    for (const tok of tokensInText) {
+      expect(tokenValues.has(tok)).toBe(true);
+    }
+  });
+});
+
+describe('server smoke — vocab oracle guard (ISC-security)', () => {
+  test('submitting a literal token string does not reveal its realValue', async () => {
+    // First, ensure {CUSTOMER} is in the map by scrubbing with customer_names config.
+    await fetch(api('/api/scrub'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'Acme Corp ships.', persist: false }),
+    });
+    // Now submit the literal token as input — should not get realValue back.
+    const r = await fetch(api('/api/scrub'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: '{CUSTOMER} is asking for help.', persist: false }),
+    });
+    const j = (await r.json()) as { tokens: Array<{ token: string; realValue: string }> };
+    // The caller-supplied {CUSTOMER} token must NOT appear in the enriched token list.
+    const leak = j.tokens.find((t) => t.token === '{CUSTOMER}');
+    expect(leak).toBeUndefined();
+  });
+});
+
 describe('server smoke — /api/send', () => {
   test('credential in payload → 400 without relaying', async () => {
     const r = await fetch(api('/api/send'), {

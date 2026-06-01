@@ -12,7 +12,7 @@ import {
   mkPhone, mkStreetAddress, mkCreditCard, mkUrlPath, mkSensitiveKV,
   mkCredential, mkMac, mkGuid, mkCorpEntity, isFqdnAllowed,
   mkPersonFromHeader, mkPersonAdjacentToEmail, mkSignOffName,
-  isValidPersonName, looksLikeIdentifier,
+  isValidPersonName, looksLikeIdentifier, looksLikeDate,
 } from './patterns';
 import { ScrubMap, type MintResult } from './scrub-map';
 import { VocabStore } from './vocab';
@@ -168,6 +168,7 @@ export function scrubText(
     if (isFqdnAllowed(m[0], cfg.fqdn_allowlist_extra)) continue;
     if (vocab?.isAllowlisted(m[0])) continue;
     if (looksLikeIdentifier(m[0])) continue;
+    if (looksLikeDate(m[0])) continue;
     maybeRecordMint(map, vocab, 'HOST', m[0], 'fqdn', 0.85, minted);
   }
 
