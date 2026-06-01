@@ -378,7 +378,7 @@ export const useStore = create<State>((set, get) => ({
 
   refreshPatterns: async () => {
     try {
-      const r = await (api as typeof api & { listPatterns(s?: string): Promise<{ items: InducedPatternDto[] }> }).listPatterns();
+      const r = await api.listPatterns();
       set({ patterns: r.items });
     } catch (err) {
       get().pushToast('error', `patterns fetch failed: ${err instanceof Error ? err.message : err}`);
@@ -387,7 +387,7 @@ export const useStore = create<State>((set, get) => ({
 
   suggestPatterns: async (category?: string) => {
     try {
-      const r = await (api as typeof api & { suggestPatterns(c?: string): Promise<{ items: InducedPatternDto[] }> }).suggestPatterns(category);
+      const r = await api.suggestPatterns(category);
       set({ patterns: r.items });
       get().pushToast('success', `${r.items.length} pattern(s) suggested`);
     } catch (err) {
@@ -397,7 +397,7 @@ export const useStore = create<State>((set, get) => ({
 
   patternAction: async (id, action, regex?) => {
     try {
-      await (api as typeof api & { patternAction(id: number, a: string, r?: string): Promise<{ ok: true }> }).patternAction(id, action, regex);
+      await api.patternAction(id, action, regex);
       await get().refreshPatterns();
       if (action === 'activate') {
         await Promise.all([get().refreshVocab(), get().refreshScrub()]);

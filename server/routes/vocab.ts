@@ -8,43 +8,10 @@
 
 import { Hono } from 'hono';
 import { getVocab, getMap, resetVocab } from '../lib/vocab-store';
+import { getClientIp, rateLimited } from '../lib/rate-limit';
 import { mkCredential } from '../../src/patterns';
 
 export const vocabRoute = new Hono();
-
-// Per-IP rate limit state: bucket of timestamps within the last window.
-const RL_WINDOW_MS = 10_000;
-const RL_MAX = 10;
-const RL_MAX_IPS = 1024;
-const rlBuckets = new Map<string, number[]>();
-
-const TRUST_XFF = process.env.TRUST_XFF === '1';
-
-function getClientIp(c: any): string {
-  if (TRUST_XFF) {
-    const xff = c.req.header('x-forwarded-for');
-    if (xff) return String(xff).split(',')[0].trim();
-  }
-  const remote = (c.env as any)?.incoming?.socket?.remoteAddress;
-  return remote ? String(remote) : 'unknown';
-}
-
-function rateLimited(ip: string): boolean {
-  const now = Date.now();
-  const cutoff = now - RL_WINDOW_MS;
-  const bucket = rlBuckets.get(ip) ?? [];
-  const fresh = bucket.filter((t) => t > cutoff);
-  if (fresh.length >= RL_MAX) {
-    rlBuckets.set(ip, fresh);
-    return true;
-  }
-  fresh.push(now);
-  if (fresh.length === 1 && rlBuckets.size >= RL_MAX_IPS) {
-    for (const [k, v] of rlBuckets) if (v.length === 0 || v[v.length - 1] < cutoff) rlBuckets.delete(k);
-  }
-  rlBuckets.set(ip, fresh);
-  return false;
-}
 
 const CATEGORY_RE = /^[a-z][a-z0-9_]{0,15}$/;
 const CONTROL_CHAR_RE = /[\x00-\x1f\u200b-\u200f\ufeff]/;

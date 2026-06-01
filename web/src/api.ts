@@ -323,23 +323,7 @@ export const api = {
       handlers.onError(err instanceof Error ? err.message : String(err));
     }
   },
-};
 
-export type InducedPatternDto = {
-  id: number;
-  category: string;
-  regex_source: string;
-  skeleton: string;
-  source_examples: string[];
-  example_count: number;
-  confidence: number;
-  status: string;
-  hit_count: number;
-  first_seen: number;
-  last_seen: number;
-};
-
-Object.assign(api, {
   async listPatterns(status?: string): Promise<{ items: InducedPatternDto[] }> {
     const q = status ? `?status=${encodeURIComponent(status)}` : '';
     return json(await fetch(`/api/patterns${q}`));
@@ -370,6 +354,20 @@ Object.assign(api, {
   async deletePattern(id: number): Promise<{ ok: true }> {
     return json(await fetch(`/api/patterns/${id}`, { method: 'DELETE' }));
   },
-});
+};
+
+export type InducedPatternDto = {
+  id: number;
+  category: string;
+  regex_source: string;
+  skeleton: string;
+  source_examples: string[];
+  example_count: number;
+  confidence: number;
+  status: string;
+  hit_count: number;
+  first_seen: number;
+  last_seen: number;
+};
 
 export { ApiError };
