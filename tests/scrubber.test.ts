@@ -498,6 +498,41 @@ describe('scrubText — allowlist suppresses minting (Feature 3)', () => {
   });
 });
 
+// ── Bug 1: Date strings must not be masked as FQDN ─────────────────────────
+
+describe('scrubText — date strings NOT masked as FQDN', () => {
+  test('date "13.05.2026" passes through unmasked (ISC-1, ISC-2)', () => {
+    const map = new ScrubMap();
+    const r = scrub('Meeting on 13.05.2026 with server01.corp.local', map);
+    // date must remain in scrubbed output
+    expect(r.scrubbed).toContain('13.05.2026');
+    // FQDN must be masked
+    expect(r.scrubbed).not.toContain('server01.corp.local');
+    expect(map.tokenFor('server01.corp.local')).toBeDefined();
+  });
+
+  test('no HOST token is minted for "13.05.2026" (ISC-3)', () => {
+    const map = new ScrubMap();
+    const r = scrub('Backup ran on 13.05.2026 successfully', map);
+    expect(r.scrubbed).toContain('13.05.2026');
+    const dateMint = r.mintedTokens.find((t) => t.realValue === '13.05.2026');
+    expect(dateMint).toBeUndefined();
+  });
+
+  test('date "2026.05.13" passes through unmasked', () => {
+    const map = new ScrubMap();
+    const r = scrub('Created on 2026.05.13', map);
+    expect(r.scrubbed).toContain('2026.05.13');
+  });
+
+  test('version-like "1.2.3" passes through unmasked (all-numeric segments)', () => {
+    const map = new ScrubMap();
+    const r = scrub('Version 1.2.3 released', map);
+    expect(r.scrubbed).toContain('1.2.3');
+    expect(map.tokenFor('1.2.3')).toBeUndefined();
+  });
+});
+
 describe('scrubText — FQDN identifier filtering', () => {
   test('does not mint HOST for "content.classList.contains"', () => {
     const map = new ScrubMap();

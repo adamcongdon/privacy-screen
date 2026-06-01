@@ -8,7 +8,7 @@ import {
   mkPhone, mkStreetAddress, mkCreditCard, mkUrlPath,
   mkCredential, mkCorpEntity, mkSensitiveKV,
   mkPersonFromHeader, mkPersonAdjacentToEmail, mkSignOffName,
-  NAME_DENYLIST, isValidPersonName, looksLikeIdentifier,
+  NAME_DENYLIST, isValidPersonName, looksLikeIdentifier, looksLikeDate,
 } from '../src/patterns';
 
 function findAll(text: string, rx: RegExp): string[] {
@@ -259,6 +259,38 @@ describe('isValidPersonName', () => {
   });
   test('returns false when a token does not start with uppercase', () => {
     expect(isValidPersonName('vincent Tidwell', [])).toBe(false);
+  });
+});
+
+describe('looksLikeDate', () => {
+  // positive — all-numeric segments, 2+ segments
+  test('returns true for "13.05.2026" (DD.MM.YYYY)', () => {
+    expect(looksLikeDate('13.05.2026')).toBe(true);
+  });
+  test('returns true for "2026.05.13" (YYYY.MM.DD)', () => {
+    expect(looksLikeDate('2026.05.13')).toBe(true);
+  });
+  test('returns true for "1.2.3" (all numeric segments)', () => {
+    expect(looksLikeDate('1.2.3')).toBe(true);
+  });
+  test('returns true for "2024.12" (2-segment all-numeric)', () => {
+    expect(looksLikeDate('2024.12')).toBe(true);
+  });
+  // negative — has non-numeric segment(s)
+  test('returns false for "server.example.com"', () => {
+    expect(looksLikeDate('server.example.com')).toBe(false);
+  });
+  test('returns false for "host.local"', () => {
+    expect(looksLikeDate('host.local')).toBe(false);
+  });
+  test('returns false for "a.b.c" (alpha segments)', () => {
+    expect(looksLikeDate('a.b.c')).toBe(false);
+  });
+  test('returns false for empty string', () => {
+    expect(looksLikeDate('')).toBe(false);
+  });
+  test('returns false for a single segment with no dot', () => {
+    expect(looksLikeDate('20260513')).toBe(false);
   });
 });
 

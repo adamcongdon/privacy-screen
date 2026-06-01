@@ -208,6 +208,14 @@ export class VocabStore {
       .run(status, id);
   }
 
+  /** Look up a vocab row by its token string (e.g. "{CUSTOMER}"). Returns null if not found. */
+  findByToken(token: string): VocabRow | null {
+    const row = this.db
+      .query<VocabRow, [string]>(`SELECT * FROM vocab WHERE token = ? LIMIT 1`)
+      .get(token);
+    return row ?? null;
+  }
+
   /** All vocab rows. */
   allVocab(category?: string): VocabRow[] {
     if (category) {

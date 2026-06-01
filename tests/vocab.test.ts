@@ -89,6 +89,27 @@ describe('VocabStore', () => {
     expect(store.pendingReview().length).toBe(0);
   });
 
+  // ── findByToken (Bug 2 — ISC-4) ──────────────────────────────────────────
+
+  test('findByToken returns the matching row by token string', () => {
+    store.persistMint('Acme Corp', '{CUSTOMER}', 'customer', 1.0);
+    const row = store.findByToken('{CUSTOMER}');
+    expect(row).not.toBeNull();
+    expect(row!.real_value).toBe('Acme Corp');
+    expect(row!.token).toBe('{CUSTOMER}');
+    expect(row!.category).toBe('customer');
+  });
+
+  test('findByToken returns null for unknown token', () => {
+    expect(store.findByToken('{UNKNOWN_9999}')).toBeNull();
+  });
+
+  test('findByToken is case-sensitive (tokens are canonical uppercase)', () => {
+    store.persistMint('Jane Doe', '{PERSON}', 'person', 1.0);
+    expect(store.findByToken('{PERSON}')).not.toBeNull();
+    expect(store.findByToken('{person}')).toBeNull();
+  });
+
   test('logRedaction produces stats', () => {
     store.logRedaction('s1', 'userPromptSubmit', 2, 1, false);
     store.logRedaction('s1', 'preToolUse:Bash', 0, 1, true);

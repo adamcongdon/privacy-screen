@@ -40,9 +40,27 @@ scrubRoute.post('/', async (c) => {
     config: cfg,
   });
 
+  // Enrich: scan scrubbed output for {TOKEN} patterns not captured by mintedTokens
+  // (pre-minted customer/person names go through map.mint() directly, bypassing recordMint).
+  // Guard: only enrich tokens that were NOT present in the original input — tokens already
+  // in the caller's text must not be resolved to realValues (vocab enumeration oracle).
+  const tokensInOriginal = new Set([...result.original.matchAll(/\{[A-Z][A-Z0-9_]*\}/g)].map((m) => m[0]));
+  const tokenMap = new Map(result.mintedTokens.map((t) => [t.token, t]));
+  const enrichVocab = getVocab();
+  for (const m of result.scrubbed.matchAll(/\{[A-Z][A-Z0-9_]*\}/g)) {
+    const tok = m[0];
+    if (tokenMap.has(tok)) continue;
+    if (tokensInOriginal.has(tok)) continue;
+    const realValue = map.realFor(tok);
+    if (!realValue) continue;
+    const row = enrichVocab.findByToken(tok);
+    const category = row?.category ?? inferCategoryFromToken(tok);
+    tokenMap.set(tok, { type: category.toUpperCase(), realValue, token: tok, isNew: false, category, confidence: row?.confidence ?? 1.0 });
+  }
+
   return c.json({
     scrubbed: result.scrubbed,
-    tokens: result.mintedTokens.map((t) => ({
+    tokens: [...tokenMap.values()].map((t) => ({
       realValue: t.realValue,
       token: t.token,
       isNew: t.isNew,
@@ -55,3 +73,28 @@ scrubRoute.post('/', async (c) => {
     modified: result.modified,
   });
 });
+
+// Maps token-type prefixes to category names. Fallback for when the DB row is unavailable
+// (e.g. persist=false and the token was pre-minted from config this request).
+const TOKEN_PREFIX_CATEGORY: Record<string, string> = {
+  CUSTOMER: 'customer',
+  PERSON: 'person',
+  IP: 'ip',
+  EMAIL: 'email',
+  HOST: 'fqdn',
+  PATH: 'path',
+  USER: 'domain_user',
+  MAC: 'mac',
+  GUID: 'guid',
+  PHONE: 'phone',
+  ADDR: 'address',
+  ACCOUNT: 'account_number',
+  URL: 'url',
+  SERVER: 'fqdn',
+};
+
+function inferCategoryFromToken(token: string): string {
+  const m = token.match(/^\{([A-Z][A-Z0-9]*)(?:_\d+)?\}$/);
+  if (!m) return 'unknown';
+  return TOKEN_PREFIX_CATEGORY[m[1]] ?? m[1].toLowerCase();
+}
