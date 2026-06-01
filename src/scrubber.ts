@@ -18,6 +18,25 @@ import { ScrubMap, type MintResult } from './scrub-map';
 import { VocabStore } from './vocab';
 import { loadConfig, type PrivacyConfig } from './config';
 
+// Lazy import to avoid a circular dependency — the server-side vocab-store
+// is only available when running inside the server process. Tests that run
+// against the raw scrubber use `vocab: null` and never exercise Step 3b.
+let _getActivePatterns: (() => Array<{ id: number; category: string; confidence: number; rx: RegExp }>) | null = null;
+
+function loadGetActivePatterns(): (() => Array<{ id: number; category: string; confidence: number; rx: RegExp }>) | null {
+  if (_getActivePatterns !== null) return _getActivePatterns;
+  try {
+    // Dynamic require — only works inside the server process where the module is available
+    const mod = require('../server/lib/vocab-store');
+    if (typeof mod.getActivePatterns === 'function') {
+      _getActivePatterns = mod.getActivePatterns;
+    }
+  } catch {
+    _getActivePatterns = () => [];
+  }
+  return _getActivePatterns;
+}
+
 export interface MintedToken {
   type: string;
   realValue: string;
@@ -191,6 +210,30 @@ export function scrubText(
         confidence: 0.6,
         source_event: ctx.sourceEvent,
       });
+    }
+  }
+
+  // ── Step 3b: User-induced patterns (active, confirmed via PatternSuggestions UI) ─
+  const getActivePatterns = loadGetActivePatterns();
+  if (vocab && getActivePatterns) {
+    for (const p of getActivePatterns()) {
+      // Reset lastIndex since we reuse the regex across texts via matchAll
+      p.rx.lastIndex = 0;
+      for (const m of text.matchAll(p.rx)) {
+        const span = m[0];
+        if (map.tokenFor(span) !== undefined) continue;
+        if (vocab.isAllowlisted(span)) continue;
+        const surrounding = sliceContext(text, m.index ?? 0, span.length);
+        unsure.push({ span, surrounding, suggestedCategory: p.category, confidence: p.confidence });
+        vocab.addReviewItem({
+          span,
+          surrounding,
+          suggested_cat: p.category,
+          confidence: p.confidence,
+          source_event: ctx.sourceEvent,
+        });
+        vocab.bumpInducedHit(p.id);
+      }
     }
   }
 

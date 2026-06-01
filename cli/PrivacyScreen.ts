@@ -16,6 +16,7 @@
 import { VocabStore, defaultDbPath } from '../src/vocab';
 import { ScrubMap } from '../src/scrub-map';
 import { scrubText } from '../src/scrubber';
+import { induceRegex } from '../src/induction';
 
 const DB = defaultDbPath();
 
@@ -40,6 +41,12 @@ switch (cmd) {
     break;
   case 'stats':
     await cmdStats(rest);
+    break;
+  case 'induct':
+    await cmdInduct(rest);
+    break;
+  case 'patterns':
+    await cmdPatterns(rest);
     break;
   default:
     printHelp();
@@ -213,17 +220,132 @@ async function cmdStats(args: string[]): Promise<void> {
   console.log(`\n  Vocab: ${total} entries   Review queue: ${pending} pending`);
 }
 
+async function cmdInduct(args: string[]): Promise<void> {
+  const catIdx = args.indexOf('--category');
+  const targetCat = catIdx !== -1 ? args[catIdx + 1] : undefined;
+  const auto = args.includes('--auto');
+  const minIdx = args.indexOf('--min');
+  const minExamples = minIdx !== -1 ? parseInt(args[minIdx + 1] ?? '3', 10) : 3;
+
+  const s = store();
+  const categories = targetCat
+    ? [{ category: targetCat, count: s.vocabByCategory(targetCat).length }]
+    : s.categoriesAboveThreshold(minExamples);
+
+  if (categories.length === 0) {
+    console.log(`No categories with ≥${minExamples} examples. Mint more values first.`);
+    s.close();
+    return;
+  }
+
+  console.log(`\n🔍 Analyzing ${categories.length} category/categories...\n`);
+
+  for (const { category, count } of categories) {
+    const examples = s.vocabByCategory(category).map((r) => r.real_value);
+    console.log(`─── ${category.toUpperCase()} (${count} examples) ─────────────────`);
+
+    const result = induceRegex(examples, { minExamples });
+    if (!result) {
+      console.log(`  ⚠️  Could not induce a safe regex for this category.\n`);
+      continue;
+    }
+
+    console.log(`  Skeleton:    ${result.skeleton}`);
+    console.log(`  Regex:       ${result.source}`);
+    console.log(`  Coverage:    ${(result.coverage * 100).toFixed(0)}%`);
+    console.log(`  Specificity: ${(result.specificity * 100).toFixed(0)}%`);
+    console.log(`  Examples:    ${examples.slice(0, 5).join(', ')}${examples.length > 5 ? '…' : ''}`);
+    console.log('');
+
+    let accept = auto;
+    if (!auto) {
+      const answer = await prompt('  [a] Activate  [e] Edit  [r] Reject  [s] Skip: ');
+      const choice = answer?.toLowerCase().trim();
+      if (choice === 'a') accept = true;
+      else if (choice === 'e') {
+        const edited = await prompt(`  Edit regex (current: ${result.skeleton}): `);
+        if (edited?.trim()) {
+          const id = s.persistInducedPattern({
+            category,
+            regex_source: edited.trim(),
+            skeleton: edited.trim(),
+            source_examples: examples,
+            confidence: result.specificity,
+          });
+          console.log(`  ✅ Activated (edited) as ID ${id}\n`);
+          continue;
+        }
+      } else if (choice === 'r') {
+        console.log(`  ⏭️  Rejected.\n`);
+        continue;
+      } else {
+        console.log(`  ⏭️  Skipped.\n`);
+        continue;
+      }
+    }
+
+    if (accept) {
+      const id = s.persistInducedPattern({
+        category,
+        regex_source: result.source.source,
+        skeleton: result.skeleton,
+        source_examples: examples,
+        confidence: result.specificity,
+      });
+      console.log(`  ✅ Activated as ID ${id}\n`);
+    }
+  }
+
+  s.close();
+  console.log('Done.');
+}
+
+async function cmdPatterns(args: string[]): Promise<void> {
+  const sub = args[0];
+  const s = store();
+
+  if (sub === 'list') {
+    const rows = [...s.activePatterns(), ...s.pendingPatterns()];
+    s.close();
+    if (rows.length === 0) { console.log('No induced patterns.'); return; }
+    for (const r of rows) {
+      const exs = (typeof r.source_examples === 'string' ? JSON.parse(r.source_examples) : r.source_examples) as string[];
+      console.log(`  [${r.id}] ${r.status.padEnd(8)} ${r.skeleton.padEnd(30)} cat=${r.category} hits=${r.hit_count}`);
+      console.log(`         Examples: ${exs.slice(0, 3).join(', ')}`);
+    }
+  } else if (sub === 'activate' && args[1]) {
+    s.setInducedStatus(parseInt(args[1], 10), 'active');
+    s.close();
+    console.log(`✅ Pattern ${args[1]} activated.`);
+  } else if (sub === 'reject' && args[1]) {
+    s.setInducedStatus(parseInt(args[1], 10), 'rejected');
+    s.close();
+    console.log(`✅ Pattern ${args[1]} rejected.`);
+  } else if (sub === 'delete' && args[1]) {
+    s.deleteInducedPattern(parseInt(args[1], 10));
+    s.close();
+    console.log(`✅ Pattern ${args[1]} deleted.`);
+  } else {
+    s.close();
+    console.log('Usage: patterns list|activate <id>|reject <id>|delete <id>');
+  }
+}
+
 function printHelp(): void {
   console.log(`
 PrivacyScreen CLI — PII vocabulary & review queue management
 
 Commands:
-  review               Interactive triage of pending review items
-  vocab list [-c CAT]  List vocabulary entries (optionally filter by category)
-  vocab forget <val>   Remove a vocabulary entry
-  allowlist add <pat>  Never tokenize this pattern (--regex for regex match)
-  scrub                Read stdin, scrub, print result + token map
-  stats [days=7]       Show daily redaction activity
+  review                          Interactive triage of pending review items
+  vocab list [-c CAT]             List vocabulary entries (optionally filter by category)
+  vocab forget <val>              Remove a vocabulary entry
+  allowlist add <pat>             Never tokenize this pattern (--regex for regex match)
+  scrub                           Read stdin, scrub, print result + token map
+  stats [days=7]                  Show daily redaction activity
+  induct [--category CAT]         Induce regex patterns from minted vocab
+         [--auto] [--min N]       --auto skips prompts, --min sets example threshold (default 3)
+  patterns list                   List all induced patterns
+  patterns activate|reject|delete <id>  Manage a specific induced pattern
 
 Categories: customer, ip, email, fqdn, path, domain_user, mac, guid, credential
 `);

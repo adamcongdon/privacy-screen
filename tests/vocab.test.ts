@@ -118,3 +118,97 @@ describe('VocabStore', () => {
     expect(rows[0].minted).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe('induced_patterns', () => {
+  let store: VocabStore;
+
+  beforeEach(() => { store = freshStore(); });
+  afterEach(() => { try { store.close(); } catch {} if (existsSync(TEST_DB)) unlinkSync(TEST_DB); });
+
+  function seedPattern(overrides?: Partial<{ category: string; regex_source: string; confidence: number }>) {
+    return store.persistInducedPattern({
+      category: overrides?.category ?? 'customer',
+      regex_source: overrides?.regex_source ?? '\\bINC-\\d{5}\\b',
+      skeleton: '\\bINC-\\d{5}\\b',
+      source_examples: ['INC-12345', 'INC-99001', 'INC-00042'],
+      confidence: overrides?.confidence ?? 0.8,
+    });
+  }
+
+  test('persistInducedPattern inserts and returns a positive id', () => {
+    const id = seedPattern();
+    expect(id).toBeGreaterThan(0);
+  });
+
+  test('pendingPatterns returns inserted pattern with status pending', () => {
+    seedPattern();
+    const rows = store.pendingPatterns();
+    expect(rows.length).toBe(1);
+    expect(rows[0].status).toBe('pending');
+    expect(rows[0].category).toBe('customer');
+    expect(rows[0].regex_source).toBe('\\bINC-\\d{5}\\b');
+  });
+
+  test('activePatterns returns only active patterns', () => {
+    const id = seedPattern();
+    expect(store.activePatterns().length).toBe(0);
+    store.setInducedStatus(id, 'active');
+    expect(store.activePatterns().length).toBe(1);
+    expect(store.pendingPatterns().length).toBe(0);
+  });
+
+  test('setInducedStatus transitions to rejected', () => {
+    const id = seedPattern();
+    store.setInducedStatus(id, 'rejected');
+    expect(store.pendingPatterns().length).toBe(0);
+    expect(store.activePatterns().length).toBe(0);
+  });
+
+  test('updateInducedRegex changes regex_source', () => {
+    const id = seedPattern();
+    store.updateInducedRegex(id, '\\bINC-\\d{4,6}\\b');
+    const row = store.pendingPatterns()[0];
+    expect(row.regex_source).toBe('\\bINC-\\d{4,6}\\b');
+  });
+
+  test('bumpInducedHit increments hit_count', () => {
+    const id = seedPattern();
+    store.setInducedStatus(id, 'active');
+    store.bumpInducedHit(id);
+    store.bumpInducedHit(id);
+    const row = store.activePatterns()[0];
+    expect(row.hit_count).toBe(2);
+  });
+
+  test('deleteInducedPattern removes the row', () => {
+    const id = seedPattern();
+    store.deleteInducedPattern(id);
+    expect(store.pendingPatterns().length).toBe(0);
+  });
+
+  test('source_examples stored as JSON array', () => {
+    seedPattern();
+    const row = store.pendingPatterns()[0];
+    const parsed = JSON.parse(row.source_examples);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toContain('INC-12345');
+  });
+
+  test('vocabByCategory returns only rows for that category', () => {
+    store.persistMint('Acme Corp', '{CUSTOMER}', 'customer', 1.0);
+    store.persistMint('10.0.0.1', '{IP}', 'ip', 1.0);
+    const cust = store.vocabByCategory('customer');
+    expect(cust.length).toBe(1);
+    expect(cust[0].real_value).toBe('Acme Corp');
+  });
+
+  test('categoriesAboveThreshold returns categories with enough entries', () => {
+    store.persistMint('Acme Corp', '{CUSTOMER}', 'customer', 1.0);
+    store.persistMint('Contoso', '{CUSTOMER_1}', 'customer', 1.0);
+    store.persistMint('Fabrikam', '{CUSTOMER_2}', 'customer', 1.0);
+    store.persistMint('10.0.0.1', '{IP}', 'ip', 1.0);
+    const cats = store.categoriesAboveThreshold(3);
+    expect(cats.some((c) => c.category === 'customer' && c.count >= 3)).toBe(true);
+    expect(cats.some((c) => c.category === 'ip')).toBe(false); // only 1 ip entry
+  });
+});

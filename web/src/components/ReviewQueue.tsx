@@ -2,24 +2,24 @@ import { useEffect } from 'react';
 import { Check, ShieldCheck, X } from 'lucide-react';
 import { useStore } from '../store';
 import { cn } from '../lib/cn';
+import { PatternSuggestions } from './PatternSuggestions';
 
 export function ReviewQueue(): JSX.Element | null {
   const items = useStore((s) => s.reviewItems);
   const refreshReview = useStore((s) => s.refreshReview);
   const reviewAction = useStore((s) => s.reviewAction);
 
-  // Poll lightly — the queue grows whenever a heuristic match fires server-side
-  // during /api/scrub or /api/send, and the user may not be the one triggering
-  // the action that adds an item. 8s is a reasonable middle-ground.
   useEffect(() => {
     void refreshReview();
     const id = setInterval(() => void refreshReview(), 8000);
     return () => clearInterval(id);
   }, [refreshReview]);
 
-  if (items.length === 0) return null;
+  if (items.length === 0) return <PatternSuggestions />;
 
   return (
+    <>
+    <PatternSuggestions />
     <section className="flex min-h-0 flex-col gap-2 border-t border-zinc-800 p-4">
       <header className="flex items-center justify-between">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-amber-300">
@@ -76,6 +76,7 @@ export function ReviewQueue(): JSX.Element | null {
         ))}
       </ul>
     </section>
+    </>
   );
 }
 
