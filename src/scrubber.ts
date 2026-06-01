@@ -216,8 +216,8 @@ export function scrubText(
   // ── Step 3b: User-induced patterns (active, confirmed via PatternSuggestions UI) ─
   const getActivePatterns = loadGetActivePatterns();
   if (vocab && getActivePatterns) {
+    const hitIds = new Set<number>();
     for (const p of getActivePatterns()) {
-      // Reset lastIndex since we reuse the regex across texts via matchAll
       p.rx.lastIndex = 0;
       for (const m of text.matchAll(p.rx)) {
         const span = m[0];
@@ -232,9 +232,11 @@ export function scrubText(
           confidence: p.confidence,
           source_event: ctx.sourceEvent,
         });
-        vocab.bumpInducedHit(p.id);
+        hitIds.add(p.id);
       }
     }
+    // One write per pattern (not per match) to keep scrub off the hot path.
+    for (const id of hitIds) vocab.bumpInducedHit(id);
   }
 
   // ── Step 4: Apply the token map to produce scrubbed text ─────────────────

@@ -8,56 +8,20 @@
 
 import { Hono } from 'hono';
 import { getVocab, resetVocab, invalidatePatternsCache } from '../lib/vocab-store';
+import { getClientIp, rateLimited } from '../lib/rate-limit';
 import { induceRegex } from '../../src/induction';
 
 export const patternsRoute = new Hono();
 
-// Reuse rate-limit helpers from vocab.ts approach — per-IP bucket
-const RL_WINDOW_MS = 10_000;
-const RL_MAX = 10;
-const RL_MAX_IPS = 1024;
-const rlBuckets = new Map<string, number[]>();
+// Catches quantified groups: `(a+)+`, `(?:a+)+`, `(a{2,5})+`, `(a{2,})+`, etc.
+const REDOS_RE = /\([^)]*[*+{][^)]*\)[*+{]/;
 
-const TRUST_XFF = process.env.TRUST_XFF === '1';
+// Non-matching suffix forces the engine to backtrack — exercises catastrophic cases.
+const RL_TIMING_HAYSTACK = 'a'.repeat(500) + '\x00';
 
-function getClientIp(c: any): string {
-  if (TRUST_XFF) {
-    const xff = c.req.header('x-forwarded-for');
-    if (xff) return String(xff).split(',')[0].trim();
-  }
-  const remote = (c.env as any)?.incoming?.socket?.remoteAddress;
-  return remote ? String(remote) : 'unknown';
-}
-
-function rateLimited(ip: string): boolean {
-  const now = Date.now();
-  const cutoff = now - RL_WINDOW_MS;
-  const bucket = rlBuckets.get(ip) ?? [];
-  const fresh = bucket.filter((t) => t > cutoff);
-  if (fresh.length >= RL_MAX) {
-    rlBuckets.set(ip, fresh);
-    return true;
-  }
-  fresh.push(now);
-  if (fresh.length === 1 && rlBuckets.size >= RL_MAX_IPS) {
-    for (const [k, v] of rlBuckets) {
-      if (v.length === 0 || v[v.length - 1] < cutoff) rlBuckets.delete(k);
-    }
-  }
-  rlBuckets.set(ip, fresh);
-  return false;
-}
-
-/**
- * Basic ReDoS guard: rejects nested quantifiers and checks timing against a
- * 1000-char string.
- */
-export function validateUserRegex(src: string): { valid: boolean; error?: string } {
+export function validateUserRegex(src: string): { valid: boolean; rx?: RegExp; error?: string } {
   if (src.length > 200) return { valid: false, error: 'pattern too long (max 200 chars)' };
-
-  // Reject obvious ReDoS nested quantifiers
-  const redos = /\(?:.*?\)[*+]|\(\..*?\)[*+]/;
-  if (redos.test(src)) return { valid: false, error: 'nested quantifier pattern rejected (ReDoS risk)' };
+  if (REDOS_RE.test(src)) return { valid: false, error: 'nested quantifier pattern rejected (ReDoS risk)' };
 
   let rx: RegExp;
   try {
@@ -66,24 +30,19 @@ export function validateUserRegex(src: string): { valid: boolean; error?: string
     return { valid: false, error: `invalid regex: ${e instanceof Error ? e.message : String(e)}` };
   }
 
-  // Basic timing check — run against a 1000-char haystack, must complete < 10ms
-  const haystack = 'a'.repeat(1000);
+  // Timing backstop against a non-matching haystack so backtracking is exercised.
   const t0 = Date.now();
-  try {
-    rx.test(haystack);
-  } catch {
+  try { rx.test(RL_TIMING_HAYSTACK); } catch {
     return { valid: false, error: 'regex threw during test execution' };
   }
   if (Date.now() - t0 > 10) return { valid: false, error: 'pattern too slow (potential ReDoS)' };
 
-  return { valid: true };
+  return { valid: true, rx };
 }
 
 patternsRoute.get('/', (c) => {
   const v = getVocab();
-  const pending = v.pendingPatterns();
-  const active = v.activePatterns();
-  const items = [...pending, ...active].map((row) => ({
+  const items = [...v.pendingPatterns(), ...v.activePatterns()].map((row) => ({
     ...row,
     source_examples: JSON.parse(row.source_examples) as string[],
   }));
@@ -100,29 +59,28 @@ patternsRoute.post('/suggest', async (c) => {
 
   const cats = categoryFilter
     ? [{ category: categoryFilter, count: v.vocabByCategory(categoryFilter).length }].filter(
-        (c) => c.count >= MIN_EXAMPLES,
+        (entry) => entry.count >= MIN_EXAMPLES,
       )
     : v.categoriesAboveThreshold(MIN_EXAMPLES);
 
-  const newRows: ReturnType<typeof v.pendingPatterns> = [];
+  const insertedIds: number[] = [];
 
   for (const { category } of cats) {
-    const vocabRows = v.vocabByCategory(category);
-    const examples = vocabRows.map((r) => r.real_value);
+    const examples = v.vocabByCategory(category).map((r) => r.real_value);
     const induced = induceRegex(examples, { minExamples: MIN_EXAMPLES });
     if (!induced) continue;
 
-    const id = v.persistInducedPattern({
+    insertedIds.push(v.persistInducedPattern({
       category,
       regex_source: induced.source.source,
       skeleton: induced.skeleton,
       source_examples: induced.examples,
       confidence: induced.specificity,
-    });
-
-    const row = v.pendingPatterns().find((r) => r.id === id);
-    if (row) newRows.push(row);
+    }));
   }
+
+  // Single query after all inserts — avoids N+1
+  const newRows = v.pendingPatterns().filter((r) => insertedIds.includes(r.id));
 
   return c.json({
     items: newRows.map((row) => ({
@@ -160,16 +118,14 @@ patternsRoute.post('/:id', async (c) => {
     const regexSrc = String(body.regex ?? '');
     const validation = validateUserRegex(regexSrc);
     if (!validation.valid) return c.json({ error: validation.error }, 400);
+    const validatedRx = validation.rx!;
 
-    // Verify coverage against source examples
-    const allRows = [...v.pendingPatterns(), ...v.activePatterns()];
-    const row = allRows.find((r) => r.id === id);
+    const row = [...v.pendingPatterns(), ...v.activePatterns()].find((r) => r.id === id);
     if (!row) return c.json({ error: 'pattern not found' }, 404);
 
     const sourceExamples: string[] = JSON.parse(row.source_examples);
-    const rx = new RegExp(regexSrc);
-    const allMatch = sourceExamples.every((ex) => rx.test(ex));
-    if (!allMatch) return c.json({ error: 'regex does not match all source examples' }, 400);
+    if (!sourceExamples.every((ex) => validatedRx.test(ex)))
+      return c.json({ error: 'regex does not match all source examples' }, 400);
 
     v.updateInducedRegex(id, regexSrc);
     invalidatePatternsCache();
