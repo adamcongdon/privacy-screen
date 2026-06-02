@@ -51,6 +51,8 @@ PrivacyScreen ships with deterministic regex coverage for the 8-category taxonom
 
 **Honest limits** (per OpenAI's own framing): PrivacyScreen is one layer of defense, not a blanket anonymization guarantee. It uses regex, not ML — it will miss novel name formats, regional naming conventions, multilingual text, and any pattern not enumerated above. Treat it as a high-floor first line of defense, not a ceiling. Tune through `customer_names` + the review queue.
 
+**Optional LLM secondary validator (opt-in, default off).** A small local LLM (Qwen2.5-1.5B Q4_K_M via `llama-server`) can run as a JUDGE that reads the *already-scrubbed* text and flags PII the regex layer might have missed — multilingual names, regional address formats, novel credential patterns. The judge can only *add* items to the existing review queue; it never mutates scrub output. Runs fully local; the hook refuses any non-loopback endpoint. See `Plans/LLM_RESEARCH.md` for design, `SAFETY_CHECKLIST.md` ("LLM secondary validation") for the enable flow, and `bun cli/PrivacyScreen.ts install-judge --runtime` to start.
+
 ## Modes
 
 | Mode | Behavior | When to use |
@@ -80,7 +82,7 @@ cp privacy-config.example.yaml PRIVACY_CONFIG.yaml
 ### 3. Verify before registering
 
 ```bash
-bun test                # Expect 110 passing
+bun test                # Expect 339+ passing (regex layer + LLM judge unit tests)
 bun cli/PrivacyScreen.ts scrub <<< 'Customer Acme Corp at 10.0.5.3 emailed me'
 # Inspect the scrubbed output + token map; confirm it matches expectation.
 ```
@@ -141,9 +143,11 @@ Add your own via `skip_scrub_fields:` in `PRIVACY_CONFIG.yaml`.
 
 ## Verification
 
-- **Unit + integration:** `bun test` — 110 tests across patterns, scrubber, vocab, config, hook contract.
+- **Unit + integration:** `bun test` — 339+ tests across patterns, scrubber, vocab, config, hook contract, LLM judge unit tests, install-judge CLI.
 - **Hook contract:** `tests/hook-contract.test.ts` spawns the real hook binary and pipes synthetic Claude Code event payloads through stdin, verifying decision/updatedInput/exit-code shapes.
+- **Hook → judge handoff:** `tests/hook-judge-handoff.test.ts` spawns the hook with a tiny Hono receiver listening on a loopback ephemeral port, verifies the POST body shape, and asserts stdout is byte-identical whether the receiver succeeds, hangs (150 ms abort), or refuses.
 - **Live spot-check:** `bun cli/PrivacyScreen.ts scrub <<< 'test text'`.
+- **LLM judge golden tests (opt-in, slow):** `LLM_TESTS=1 LLM_JUDGE_ENDPOINT=http://127.0.0.1:8080 bun test tests/judge-golden.test.ts` — exercises the real model end-to-end against a small set of multilingual / regional cases. Skipped silently when `LLM_TESTS` is unset.
 
 ## CI
 

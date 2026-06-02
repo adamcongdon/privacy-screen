@@ -203,3 +203,55 @@ hook reads the flag every invocation; no restart needed.
 **Telemetry:** the judge writes to the same `review_queue` table the regex
 layer uses, with `source_event` prefixed `judge:`. `bun cli/PrivacyScreen.ts
 review` shows pending items regardless of source.
+
+### Security sweep — 2026-06-02 (LLM judge feature)
+
+The following invariants were verified end-to-end after the implementation
+described in `Plans/no-let-s-use-development-glittery-ladybug.md` landed:
+
+- [x] `llama-server` binds `127.0.0.1` only on a random high port (49152–
+      65535); never `0.0.0.0`, never the wildcard. Source:
+      `server/lib/llm-process.ts` `startSubprocess`.
+- [x] `LlamaServerClient` refuses any endpoint whose hostname is not in
+      `{127.0.0.1, localhost, ::1}` — rejects `0.0.0.0`, decimal-encoded
+      IPs, IPv6-mapped IPv4, and subdomain tricks like `localhost.evil.com`.
+      Source: `src/judge/llm-client.ts` `assertLoopback`.
+- [x] The hook refuses the same set of non-loopback endpoints via the same
+      allowlist. Source: `hooks/PrivacyScreen.hook.ts` `judgeEndpoint`.
+- [x] `/api/judge` enforces a 256 KB `Content-Length` cap before parsing,
+      and a 100 KB cap on the `scrubbed` field. Source:
+      `server/routes/judge.ts` `BODY_BYTE_LIMIT` / `SCRUBBED_TEXT_LIMIT`.
+- [x] `/api/judge` is rate-limited via the existing per-IP bucket (10
+      req/10 s by default — shared with other API routes). Source:
+      `server/lib/rate-limit.ts`.
+- [x] Fail-closed categories from the regex layer (e.g. `credential`)
+      cannot be overridden by judge output. The judge only writes to
+      `review_queue` via `vocab.addReviewItem()`; the scrub output is
+      sealed by the time the hook POSTs to `/api/judge`. Source:
+      `server/routes/judge.ts` `runJudgeAndPersist`.
+- [x] React renders `span` and `surrounding` review-queue fields as text
+      children — no `dangerouslySetInnerHTML`, no `innerHTML`. Stored
+      reason / span strings can't escape into HTML. Source:
+      `web/src/components/ReviewQueue.tsx`.
+- [x] `install-judge` refuses any `--dest` that resolves outside
+      `${homedir()}/.privacy-screen/models/` via a path-normalize +
+      prefix check (path traversal defense). Source:
+      `cli/install-judge.ts` `resolveDestSafe`.
+- [x] `install-judge` refuses any model download without `--allow-network`
+      — explicit user consent to a one-time ~1 GB network fetch. Source:
+      `cli/install-judge.ts` `runModel`.
+- [x] `install-judge` does not auto-download the `llama-server` runtime
+      binary; deferred to a separate security review. Source:
+      `cli/install-judge.ts` `runRuntime`.
+- [x] SHA-256 mismatch aborts before writing the GGUF to disk. Source:
+      `cli/install-judge.ts` `runModel`.
+
+Sweep produced zero high/medium findings. Two follow-ups deferred:
+
+1. **SHA-256 manifest values for pinned models.** v1 ships with only the
+   URL pinned; the user can pass `--expected-sha256` to verify, or trust-
+   on-first-use and verify the printed hash out-of-band. A future
+   revision should pin the actual SHA in `MODELS` (`cli/install-judge.ts`).
+2. **`llama-server` auto-install.** Defer until `winget` / `apt` packages
+   stabilize and we can pick distribution-specific install plans with
+   audited fetch URLs.
