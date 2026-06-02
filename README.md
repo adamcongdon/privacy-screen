@@ -122,12 +122,112 @@ bun cli/PrivacyScreen.ts review             # triage corp-entity review queue
 echo "server at 10.0.0.1" | bun cli/PrivacyScreen.ts scrub
 ```
 
+## Optional: LLM secondary validator
+
+Adds a small local LLM as a second-line **JUDGE** that reads the *already-scrubbed* text and flags PII the regex layer missed — multilingual names, regional address formats, novel credential patterns. The judge cannot mutate scrub output; it only adds spans to the existing review queue for operator triage. Disabled by default. See `Plans/LLM_RESEARCH.md` for the design rationale and `SAFETY_CHECKLIST.md` → "LLM secondary validation (opt-in)" for the full enable flow.
+
+### Prerequisites
+
+`llama-server` (from [llama.cpp](https://github.com/ggml-org/llama.cpp)) on `PATH`:
+
+```bash
+# macOS
+brew install llama.cpp
+
+# Verify
+bun cli/PrivacyScreen.ts install-judge --runtime
+# → ✅ llama-server found at /opt/homebrew/bin/llama-server
+```
+
+For Linux / Windows install hints, run `install-judge --runtime` — it prints the right command for your OS.
+
+### Step 1 — install the model
+
+Downloads Qwen2.5-1.5B-Instruct Q4_K_M (~1 GB, Apache 2.0, 29 languages) into `~/.privacy-screen/models/`:
+
+```bash
+bun cli/PrivacyScreen.ts install-judge --model qwen2.5-1.5b --allow-network
+```
+
+The `--allow-network` flag is your explicit consent to a one-time download. Add `--expected-sha256 <hex>` if you've already verified the upstream hash; otherwise the command prints the SHA-256 of the downloaded file for out-of-band verification.
+
+Dry-run first if you want to see what would happen without touching disk:
+
+```bash
+bun cli/PrivacyScreen.ts install-judge --model qwen2.5-1.5b --dry-run
+```
+
+### Step 2 — enable in `PRIVACY_CONFIG.yaml`
+
+The install command prints the exact YAML snippet. Paste it under your existing config:
+
+```yaml
+llm_validate:
+  enabled: true
+  model_path: /Users/<you>/.privacy-screen/models/qwen2.5-1.5b.gguf
+  # The rest are optional — defaults shown:
+  # runtime: llama-server
+  # endpoint: ~          # ~ = lazy-spawn a managed llama-server (recommended)
+  # max_tokens: 256
+  # timeout_ms: 2500
+  # min_confidence: 0.6
+```
+
+### Step 3 — start the server (the judge runs inside it)
+
+```bash
+bun run start
+```
+
+The judge lives in the long-lived Hono server. The hook fires a 150 ms fire-and-forget POST to `127.0.0.1:31338/api/judge` after it returns the scrubbed tool input to Claude Code. If the server isn't running, the hook silently no-ops — the regex layer always runs regardless.
+
+### What you see at runtime
+
+Nothing user-visible during the call itself. The judge is a quiet background auditor — Claude Code receives the scrubbed input on the regex layer's normal timeline, and the judge writes its findings to the existing review queue.
+
+A line lands in `~/.privacy-screen` logs (and the server's stderr) per call:
+
+```
+[privacy-screen] judge.completed: 2 spans
+```
+
+### Where flagged spans show up
+
+In the web UI's **Review queue** panel on `http://127.0.0.1:31338` (the same panel that already shows corp-entity heuristics), with `source_event` prefixed `judge:`. Or via the CLI:
+
+```bash
+bun cli/PrivacyScreen.ts review        # interactive triage
+```
+
+Each flagged span gets the same triage flow as regex-layer detections:
+- **Confirm** → mints a permanent token, future runs auto-scrub it
+- **Allowlist** → never flag this string again
+- **Ignore** → one-time pass
+
+### Disable
+
+```yaml
+# PRIVACY_CONFIG.yaml
+llm_validate:
+  enabled: false
+```
+
+No restart needed. The hook reads the flag on every invocation.
+
+### Constraints
+
+- Requires the `bun run start` server to be up. If it's down, the hook silently skips the judge call — privacy gating still works via the regex layer.
+- The hook *only* fires the judge on `PreToolUse` events that actually scrubbed something. Short or unmodified inputs are skipped.
+- On M1 MacBook Air with 8 GB RAM, expect ~3–6 s per judge call (well-tolerated because it's async-out-of-band). M2/M3 closer to 1–2 s.
+- The model file is ~1 GB on disk and ~1.5 GB RSS when loaded.
+
 ## Architecture
 
 - **Layer A (UserPromptSubmit):** Detects PII → blocks with scrubbed suggestion. You copy + resubmit the clean version.
 - **Layer B (PreToolUse):** Mutates tool input in-place via `hookSpecificOutput.updatedInput`. Bash/Write/WebFetch get scrubbed args. **Edit/MultiEdit/Grep/Glob pattern fields are preserved** (string-match would fail otherwise).
 - **Layer C (PostToolUse):** Scans tool output. Credentials → block (exit 2). PII → stderr warning. Cannot rewrite the result (hook contract limit).
 - **Layer D (display reversal):** Not yet built (M3). `cli/PrivacyScreen.ts scrub` can be used for spot-check reversal.
+- **Layer E (LLM judge — opt-in):** Out-of-band local LLM reads scrubbed text after Layer B fires and writes new candidate spans to the review queue. Never mutates hot-path output. See "Optional: LLM secondary validator" above.
 
 ### Skipped fields by tool
 
