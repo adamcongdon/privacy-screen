@@ -13,10 +13,14 @@
  *   bun PAI/TOOLS/PrivacyScreen.ts stats                — daily redaction stats
  */
 
+import { homedir } from 'os';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { execSync } from 'child_process';
 import { VocabStore, defaultDbPath } from '../src/vocab';
 import { ScrubMap } from '../src/scrub-map';
 import { scrubText } from '../src/scrubber';
 import { induceRegex } from '../src/induction';
+import { runInstallJudge } from './install-judge';
 
 const DB = defaultDbPath();
 
@@ -47,6 +51,9 @@ switch (cmd) {
     break;
   case 'patterns':
     await cmdPatterns(rest);
+    break;
+  case 'install-judge':
+    await cmdInstallJudge(rest);
     break;
   default:
     printHelp();
@@ -331,6 +338,29 @@ async function cmdPatterns(args: string[]): Promise<void> {
   }
 }
 
+async function cmdInstallJudge(args: string[]): Promise<void> {
+  const result = await runInstallJudge(args, {
+    fetchImpl: fetch,
+    homedir,
+    fsExists: existsSync,
+    fsMkdir: (p) => mkdirSync(p, { recursive: true }),
+    fsWrite: (p, data) => writeFileSync(p, data),
+    whichLlamaServer: () => {
+      try {
+        return execSync('which llama-server', { stdio: ['ignore', 'pipe', 'ignore'] })
+          .toString()
+          .trim() || null;
+      } catch {
+        return null;
+      }
+    },
+    platform: () => process.platform,
+  });
+  if (result.message) process.stdout.write(result.message);
+  if (result.stderrMessage) process.stderr.write(result.stderrMessage);
+  if (!result.ok) process.exit(1);
+}
+
 function printHelp(): void {
   console.log(`
 PrivacyScreen CLI — PII vocabulary & review queue management
@@ -346,6 +376,12 @@ Commands:
          [--auto] [--min N]       --auto skips prompts, --min sets example threshold (default 3)
   patterns list                   List all induced patterns
   patterns activate|reject|delete <id>  Manage a specific induced pattern
+  install-judge --runtime         Locate llama-server or print install hints
+  install-judge --model <name> --allow-network [--expected-sha256 HEX] [--dry-run]
+                                  Download a pinned local LLM for the
+                                  opt-in secondary validator. See
+                                  SAFETY_CHECKLIST.md before flipping
+                                  llm_validate.enabled to true.
 
 Categories: customer, ip, email, fqdn, path, domain_user, mac, guid, credential
 `);
