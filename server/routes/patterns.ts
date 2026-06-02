@@ -9,7 +9,7 @@
 import { Hono } from 'hono';
 import { getVocab, resetVocab, invalidatePatternsCache } from '../lib/vocab-store';
 import { getClientIp, rateLimited } from '../lib/rate-limit';
-import { induceRegex } from '../../src/induction';
+import { induceRegex, groupByTokenShape } from '../../src/induction';
 
 export const patternsRoute = new Hono();
 
@@ -67,16 +67,22 @@ patternsRoute.post('/suggest', async (c) => {
 
   for (const { category } of cats) {
     const examples = v.vocabByCategory(category).map((r) => r.real_value);
-    const induced = induceRegex(examples, { minExamples: MIN_EXAMPLES });
-    if (!induced) continue;
+    // Group by token shape so diverse categories (e.g. fqdn with 100+ mixed
+    // entries) produce one pattern per shape cluster, not zero.
+    const clusters = groupByTokenShape(examples);
+    for (const clusterExamples of clusters.values()) {
+      if (clusterExamples.length < MIN_EXAMPLES) continue;
+      const induced = induceRegex(clusterExamples, { minExamples: MIN_EXAMPLES });
+      if (!induced) continue;
 
-    insertedIds.push(v.persistInducedPattern({
-      category,
-      regex_source: induced.source.source,
-      skeleton: induced.skeleton,
-      source_examples: induced.examples,
-      confidence: induced.specificity,
-    }));
+      insertedIds.push(v.persistInducedPattern({
+        category,
+        regex_source: induced.source.source,
+        skeleton: induced.skeleton,
+        source_examples: induced.examples,
+        confidence: induced.specificity,
+      }));
+    }
   }
 
   // Single query after all inserts — avoids N+1

@@ -50,7 +50,7 @@ vocabRoute.post('/', async (c) => {
   const type = categoryRaw.toUpperCase();
   const map = getMap();
   const r = map.mint(type, real);
-  getVocab().persistMint(real, r.token, categoryRaw, 1.0);
+  getVocab().persistMint(real, r.token, categoryRaw, 1.0, null, true);
   return c.json({ realValue: real, token: r.token, isNew: r.isNew });
 });
 

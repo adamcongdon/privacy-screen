@@ -214,29 +214,28 @@ export function scrubText(
   }
 
   // ── Step 3b: User-induced patterns (active, confirmed via PatternSuggestions UI) ─
+  // Runs regardless of persist so the scrubbed output always reflects active
+  // patterns. DB writes (persistMint, bumpInducedHit) are skipped when vocab
+  // is null (persist=false preview scrubs).
   const getActivePatterns = loadGetActivePatterns();
-  if (vocab && getActivePatterns) {
+  const activePatterns = getActivePatterns ? getActivePatterns() : [];
+  if (activePatterns.length > 0) {
     const hitIds = new Set<number>();
-    for (const p of getActivePatterns()) {
+    for (const p of activePatterns) {
       p.rx.lastIndex = 0;
       for (const m of text.matchAll(p.rx)) {
         const span = m[0];
         if (map.tokenFor(span) !== undefined) continue;
-        if (vocab.isAllowlisted(span)) continue;
-        const surrounding = sliceContext(text, m.index ?? 0, span.length);
-        unsure.push({ span, surrounding, suggestedCategory: p.category, confidence: p.confidence });
-        vocab.addReviewItem({
-          span,
-          surrounding,
-          suggested_cat: p.category,
-          confidence: p.confidence,
-          source_event: ctx.sourceEvent,
-        });
+        if (vocab?.isAllowlisted(span)) continue;
+        const r = map.mint(p.category.toUpperCase(), span);
+        if (vocab) vocab.persistMint(span, r.token, p.category, p.confidence);
+        minted.push({ type: p.category.toUpperCase(), realValue: span, token: r.token, isNew: r.isNew, category: p.category, confidence: p.confidence });
         hitIds.add(p.id);
       }
     }
-    // One write per pattern (not per match) to keep scrub off the hot path.
-    for (const id of hitIds) vocab.bumpInducedHit(id);
+    if (vocab) {
+      for (const id of hitIds) vocab.bumpInducedHit(id);
+    }
   }
 
   // ── Step 4: Apply the token map to produce scrubbed text ─────────────────

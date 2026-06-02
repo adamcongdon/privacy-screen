@@ -206,6 +206,32 @@ function computeSpecificityFromPrefixSuffix(
   return literalLen / avgLen;
 }
 
+/**
+ * Groups examples by a composite key: token-shape + non-digit fingerprint.
+ *
+ * Shape alone isn't enough — "hostname01.corp.local", "backup01.acme.internal",
+ * and "esxi2.home.lab" all share shape L,D,LIT,L,LIT,L but have completely
+ * different constant parts, so induction on the merged group yields low
+ * specificity. Stripping digits and using the remainder as a content key
+ * sub-clusters them: "hostname01/02/03" all become "hostname.corp.local" →
+ * one cluster of 3 that induces `hostname\d{2}\.corp\.local`.
+ */
+export function groupByTokenShape(examples: string[]): Map<string, string[]> {
+  const groups = new Map<string, string[]>();
+  for (const ex of examples) {
+    const shapeKey = tokenSequenceKey(tokenize(ex));
+    const contentKey = ex.replace(/\d+/g, '\x00').toLowerCase();
+    const compositeKey = `${shapeKey}\x01${contentKey}`;
+    let bucket = groups.get(compositeKey);
+    if (!bucket) {
+      bucket = [];
+      groups.set(compositeKey, bucket);
+    }
+    bucket.push(ex);
+  }
+  return groups;
+}
+
 export function induceRegex(
   examples: string[],
   opts?: InductionOpts,

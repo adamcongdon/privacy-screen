@@ -32,6 +32,7 @@ export type FileChip = {
   name: string;
   size: number;
   mime: string;
+  original?: string;
   scrubbed?: string;
   tokens?: Token[];
   hasCredentials?: boolean;
@@ -142,7 +143,7 @@ type State = {
   removeFile: (id: string) => void;
 
   /** Build the payload string that gets sent to the model (composer + files). */
-  buildPayload: () => string;
+  buildPayload: (useOriginal?: boolean) => string;
 
   refreshScrub: () => Promise<void>;
   refreshVocab: () => Promise<void>;
@@ -192,6 +193,7 @@ function fileChipFromUploaded(u: UploadedFile, id: string): FileChip {
     name: u.name,
     size: u.size,
     mime: u.mime,
+    original: u.original,
     scrubbed: u.scrubbed,
     tokens: u.tokens,
     hasCredentials: u.hasCredentials,
@@ -275,14 +277,15 @@ export const useStore = create<State>((set, get) => ({
 
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 
-  buildPayload: () => {
+  buildPayload: (useOriginal = false) => {
     const { composerText, files } = get();
     const parts: string[] = [];
     if (composerText.trim()) parts.push(composerText);
     for (const f of files) {
       if (f.error) continue;
-      if (typeof f.scrubbed === 'string' && f.scrubbed.length > 0) {
-        parts.push(`\n--- file: ${f.name} ---\n${f.scrubbed}`);
+      const content = useOriginal && f.original ? f.original : f.scrubbed;
+      if (typeof content === 'string' && content.length > 0) {
+        parts.push(`\n--- file: ${f.name} ---\n${content}`);
       }
     }
     return parts.join('\n');
@@ -400,7 +403,39 @@ export const useStore = create<State>((set, get) => ({
       await api.patternAction(id, action, regex);
       await get().refreshPatterns();
       if (action === 'activate') {
-        await Promise.all([get().refreshVocab(), get().refreshScrub()]);
+        // Re-scrub everything from raw content so the newly active pattern applies
+        // immediately without requiring the user to re-upload or re-paste.
+        const { composerText, files } = get();
+        const newTokens: Token[] = [];
+
+        // Re-scrub composer text
+        let newScrubbed = get().scrubbed;
+        if (composerText.trim()) {
+          const r = await api.scrub(composerText, true);
+          newScrubbed = r.scrubbed;
+          newTokens.push(...r.tokens);
+        }
+
+        // Re-scrub each file from its original raw text
+        const updatedFiles = await Promise.all(
+          files.map(async (f) => {
+            if (!f.original) return f;
+            try {
+              const r = await api.scrub(f.original, true);
+              newTokens.push(...r.tokens);
+              return { ...f, scrubbed: r.scrubbed };
+            } catch {
+              return f;
+            }
+          }),
+        );
+
+        set((s) => ({
+          scrubbed: newScrubbed,
+          files: updatedFiles,
+          tokenUnion: mergeTokenUnion(s.tokenUnion, newTokens),
+        }));
+        await get().refreshVocab();
       }
       get().pushToast('success', `pattern ${action}d`);
     } catch (err) {

@@ -69,6 +69,7 @@ export type UploadedFile = {
   name: string;
   size: number;
   mime: string;
+  original?: string;
   scrubbed?: string;
   tokens?: Token[];
   hasCredentials?: boolean;
