@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, Pencil, X } from 'lucide-react';
+import { Check, Pencil, Sparkles, X } from 'lucide-react';
 import { useStore } from '../store';
 import { cn } from '../lib/cn';
 import type { InducedPatternDto } from '../api';
@@ -7,9 +7,11 @@ import type { InducedPatternDto } from '../api';
 export function PatternSuggestions(): JSX.Element | null {
   const patterns = useStore((s) => s.patterns);
   const refreshPatterns = useStore((s) => s.refreshPatterns);
+  const suggestPatterns = useStore((s) => s.suggestPatterns);
   const patternAction = useStore((s) => s.patternAction);
   const composerText = useStore((s) => s.composerText);
   const [loading, setLoading] = useState(true);
+  const [suggesting, setSuggesting] = useState(false);
 
   useEffect(() => {
     void refreshPatterns().finally(() => setLoading(false));
@@ -19,7 +21,14 @@ export function PatternSuggestions(): JSX.Element | null {
 
   const pending = patterns.filter((p) => p.status === 'pending');
 
-  if (!loading && pending.length === 0) return null;
+  async function handleSuggest(): Promise<void> {
+    setSuggesting(true);
+    try {
+      await suggestPatterns();
+    } finally {
+      setSuggesting(false);
+    }
+  }
 
   return (
     <section aria-label="Pattern suggestions" className="flex min-h-0 flex-col gap-2 border-t border-zinc-800 p-4">
@@ -27,9 +36,30 @@ export function PatternSuggestions(): JSX.Element | null {
         <h2 className="text-xs font-semibold uppercase tracking-wider text-violet-300">
           Pattern suggestions
         </h2>
-        <span className="rounded-full bg-violet-500/20 px-1.5 text-[10px] font-semibold text-violet-300">
-          {loading ? '…' : pending.length}
-        </span>
+        <div className="flex items-center gap-1.5">
+          {!loading && (
+            <button
+              type="button"
+              onClick={() => void handleSuggest()}
+              disabled={suggesting}
+              title="Analyze minted values and suggest regex patterns"
+              className={cn(
+                'flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium transition-colors',
+                suggesting
+                  ? 'cursor-wait border-violet-800 bg-violet-900/20 text-violet-500'
+                  : 'border-violet-700 bg-violet-900/30 text-violet-300 hover:bg-violet-900/50',
+              )}
+            >
+              <Sparkles className="h-2.5 w-2.5" />
+              {suggesting ? 'analyzing…' : 'suggest'}
+            </button>
+          )}
+          {pending.length > 0 && (
+            <span className="rounded-full bg-violet-500/20 px-1.5 text-[10px] font-semibold text-violet-300">
+              {pending.length}
+            </span>
+          )}
+        </div>
       </header>
 
       {loading ? (
@@ -38,6 +68,10 @@ export function PatternSuggestions(): JSX.Element | null {
             <li key={i} className="animate-pulse rounded-md h-16 bg-zinc-800/40" />
           ))}
         </ul>
+      ) : pending.length === 0 ? (
+        <p className="text-[11px] text-zinc-500">
+          Mint ≥3 values under the same category, then click suggest.
+        </p>
       ) : (
         <ul aria-label="Pending induced patterns" className="flex max-h-64 min-h-0 flex-col gap-1 overflow-auto pr-1">
           {pending.map((p) => (

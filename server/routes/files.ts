@@ -70,6 +70,7 @@ filesRoute.post('/', async (c) => {
       name,
       size,
       mime,
+      original: text,
       scrubbed: r.scrubbed,
       tokens: r.mintedTokens.map((t) => ({
         realValue: t.realValue,

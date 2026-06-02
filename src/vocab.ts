@@ -144,15 +144,26 @@ export class VocabStore {
     category: string,
     confidence: number,
     project: string | null = null,
+    force = false,
   ): void {
     const now = Date.now();
+    // force=true: explicit user mint — overwrite category/token/confidence so the
+    // user's intent always wins over a prior auto-detection under a different category.
+    const conflictClause = force
+      ? `DO UPDATE SET
+           category = excluded.category,
+           token = excluded.token,
+           confidence = excluded.confidence,
+           last_seen = excluded.last_seen,
+           hit_count = hit_count + 1`
+      : `DO UPDATE SET
+           last_seen = excluded.last_seen,
+           hit_count = hit_count + 1`;
     this.db
       .query(
         `INSERT INTO vocab (real_value, token, category, confidence, first_seen, last_seen, hit_count, project, confirmed_by)
          VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'auto')
-         ON CONFLICT(real_value) DO UPDATE SET
-           last_seen = excluded.last_seen,
-           hit_count = hit_count + 1`,
+         ON CONFLICT(real_value) ${conflictClause}`,
       )
       .run(realValue, token, category, confidence, now, now, project);
   }
@@ -319,6 +330,12 @@ export class VocabStore {
   /** Insert a new induced pattern. Returns the new row id. */
   persistInducedPattern(row: NewInducedPattern): number {
     const now = Date.now();
+    // Skip if a non-rejected pattern with the same category+skeleton already exists.
+    const existing = this.db
+      .query(`SELECT id FROM induced_patterns WHERE category = ? AND skeleton = ? AND status != 'rejected' LIMIT 1`)
+      .get(row.category, row.skeleton) as { id: number } | undefined;
+    if (existing) return existing.id;
+
     const result = this.db
       .query(
         `INSERT INTO induced_patterns
