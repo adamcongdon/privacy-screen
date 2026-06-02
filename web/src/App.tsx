@@ -5,7 +5,6 @@ import { Composer } from './components/Composer';
 import { PreviewPane } from './components/PreviewPane';
 import { TokenMapDrawer } from './components/TokenMapDrawer';
 import { ReviewQueue } from './components/ReviewQueue';
-import { ResponseStream } from './components/ResponseStream';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { ContextMenu } from './components/ContextMenu';
 import { CustomCategoryDialog } from './components/CustomCategoryDialog';
@@ -121,10 +120,10 @@ export default function App(): JSX.Element {
         </div>
       </header>
 
-      {/* Three-column layout — horizontally resizable. */}
+      {/* Two-column layout — horizontally resizable. */}
       <main className="flex min-h-0 flex-1">
-        <PanelGroup direction="horizontal" autoSaveId="ps-columns-v2">
-          <Panel defaultSize={26} minSize={18}>
+        <PanelGroup direction="horizontal" autoSaveId="ps-columns-v3">
+          <Panel defaultSize={45} minSize={30}>
             <div className="flex h-full min-h-0 flex-col">
               <Composer
                 textareaRef={sync.composerRef}
@@ -135,9 +134,9 @@ export default function App(): JSX.Element {
 
           <PanelResizeHandle className="w-[4px] bg-transparent hover:bg-zinc-700 data-[resize-handle-active]:bg-zinc-600 cursor-col-resize transition-colors" />
 
-          <Panel defaultSize={48} minSize={28}>
+          <Panel defaultSize={55} minSize={40}>
             <div className="flex h-full min-h-0 flex-col">
-              <PanelGroup direction="vertical" autoSaveId="ps-middle-column-v2">
+              <PanelGroup direction="vertical" autoSaveId="ps-right-column-v3">
                 <Panel defaultSize={65} minSize={30}>
                   <PreviewPane
                     scrollRef={sync.previewRef}
@@ -149,14 +148,6 @@ export default function App(): JSX.Element {
                   <ReviewQueue />
                 </Panel>
               </PanelGroup>
-            </div>
-          </Panel>
-
-          <PanelResizeHandle className="w-[4px] bg-transparent hover:bg-zinc-700 data-[resize-handle-active]:bg-zinc-600 cursor-col-resize transition-colors" />
-
-          <Panel defaultSize={26} minSize={18}>
-            <div className="flex h-full min-h-0 flex-col">
-              <ResponseStream />
             </div>
           </Panel>
         </PanelGroup>

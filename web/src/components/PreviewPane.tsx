@@ -1,5 +1,5 @@
-import { useCallback, useMemo, Fragment, type RefObject } from 'react';
-import { ShieldAlert, Code2, Eye } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, Fragment, type RefObject } from 'react';
+import { ShieldAlert, Code2, Eye, Copy, Check } from 'lucide-react';
 import { useStore } from '../store';
 import { getCategoryStyle } from '../lib/colors';
 import { useContextMenu } from '../lib/useContextMenu';
@@ -105,6 +105,49 @@ function ModeToggle({
   );
 }
 
+function CopyButton({ scrubbed }: { scrubbed: string }): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  const pushToast = useStore((s) => s.pushToast);
+  const disabled = scrubbed.length === 0;
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+  const handleCopy = useCallback(() => {
+    if (disabled) return;
+    navigator.clipboard.writeText(scrubbed).then(
+      () => {
+        if (timerRef.current) clearTimeout(timerRef.current);
+        setCopied(true);
+        timerRef.current = setTimeout(() => setCopied(false), 2000);
+      },
+      (err) => {
+        pushToast('error', `Copy failed: ${err instanceof Error ? err.message : String(err)}`);
+      },
+    );
+  }, [scrubbed, pushToast]);
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      disabled={disabled}
+      aria-label={copied ? 'Copied to clipboard' : 'Copy scrubbed text to clipboard'}
+      className={cn(
+        'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors',
+        disabled
+          ? 'cursor-not-allowed bg-zinc-800 text-zinc-500'
+          : copied
+            ? 'bg-emerald-700 text-white'
+            : 'bg-indigo-600 text-white hover:bg-indigo-500',
+      )}
+    >
+      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      {copied ? 'Copied!' : 'Copy Scrubbed Text'}
+    </button>
+  );
+}
+
 export function PreviewPane({ scrollRef, onScroll }: PreviewPaneProps = {}): JSX.Element {
   const scrubbed = useStore((s) => s.scrubbed);
   const tokens = useStore((s) => s.tokens);
@@ -161,7 +204,7 @@ export function PreviewPane({ scrollRef, onScroll }: PreviewPaneProps = {}): JSX
     <section className="flex h-full min-h-0 flex-col gap-3 p-4">
       <header className="flex items-center justify-between gap-3">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
-          Scrubbed preview
+          Scrubbed Output
         </h2>
         <div className="flex items-center gap-3">
           <ModeToggle
@@ -172,6 +215,7 @@ export function PreviewPane({ scrollRef, onScroll }: PreviewPaneProps = {}): JSX
           <span className="text-[11px] uppercase tracking-wider text-zinc-500">
             {tokens.length > 0 ? `${tokens.length} token${tokens.length === 1 ? '' : 's'}` : '—'}
           </span>
+          <CopyButton scrubbed={scrubbed} />
         </div>
       </header>
 

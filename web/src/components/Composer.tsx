@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react';
-import { Send, Loader2, Square } from 'lucide-react';
+import { Loader2, Square } from 'lucide-react';
 import { useStore } from '../store';
 import { FileDropZone } from './FileDropZone';
 import { useContextMenu } from '../lib/useContextMenu';
@@ -64,9 +64,8 @@ export function Composer({ textareaRef, onScroll }: ComposerProps = {}): JSX.Ele
     };
   }, [composerText, refreshScrub]);
 
-  const blockedByCredential = hasCredentials;
   const isEmpty = !composerText.trim() && files.every((f) => !f.scrubbed && !f.error);
-  const sendDisabled = blockedByCredential || isStreaming || isEmpty;
+  const sendDisabled = hasCredentials || isStreaming || isEmpty;
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -82,21 +81,21 @@ export function Composer({ textareaRef, onScroll }: ComposerProps = {}): JSX.Ele
   const statusText = useMemo(() => {
     if (isStreaming) return 'streaming…';
     if (isScrubbing) return 'scrubbing…';
-    if (blockedByCredential) return 'credential detected — send disabled';
+    if (hasCredentials) return 'credential detected — send disabled';
     if (isEmpty) return 'idle';
     return 'ready';
-  }, [isStreaming, isScrubbing, blockedByCredential, isEmpty]);
+  }, [isStreaming, isScrubbing, hasCredentials, isEmpty]);
 
   return (
     <section className="flex h-full min-h-0 flex-col gap-3 p-4">
       <header className="flex items-center justify-between">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
-          Compose
+          Input
         </h2>
         <span
           className={cn(
             'flex items-center gap-1.5 text-[11px] uppercase tracking-wider',
-            blockedByCredential
+            hasCredentials
               ? 'text-red-400'
               : isStreaming || isScrubbing
                 ? 'text-amber-400'
@@ -115,11 +114,11 @@ export function Composer({ textareaRef, onScroll }: ComposerProps = {}): JSX.Ele
         onKeyDown={onKeyDown}
         onScroll={onScroll}
         onContextMenu={onContextMenu}
-        placeholder="Type or paste text. PII is detected and replaced with tokens before anything leaves this machine."
+        placeholder="Paste or type text containing sensitive data. PII is detected and replaced with tokens before anything leaves this machine."
         className={cn(
-          'flex-1 min-h-[180px] resize-none rounded-md border bg-zinc-900/60 p-3 font-mono text-sm leading-relaxed',
+          'flex-1 min-h-[220px] resize-none rounded-md border bg-zinc-900/60 p-3 font-mono text-sm leading-relaxed',
           'placeholder:text-zinc-600 focus:outline-none focus:ring-2',
-          blockedByCredential
+          hasCredentials
             ? 'border-red-900/60 focus:ring-red-500/30'
             : 'border-zinc-800 focus:ring-indigo-500/40',
         )}
@@ -129,14 +128,18 @@ export function Composer({ textareaRef, onScroll }: ComposerProps = {}): JSX.Ele
 
       <FileDropZone />
 
-      <div className="flex items-center gap-2">
+      <footer className="flex items-center justify-between">
+        <p className="text-[11px] leading-snug text-zinc-500">
+          Only tokens leave this machine. Real values stay local.
+        </p>
         {isStreaming ? (
           <button
             type="button"
             onClick={abortSend}
-            className="flex flex-1 items-center justify-center gap-2 rounded-md border border-amber-700 bg-amber-900/30 px-3 py-2 text-sm font-semibold text-amber-200 hover:bg-amber-900/50"
+            className="flex items-center gap-1.5 rounded border border-amber-800 px-2 py-1.5 text-xs font-medium text-amber-300 transition-colors hover:border-amber-700 hover:text-amber-200"
+            aria-label="Stop streaming"
           >
-            <Square className="h-4 w-4" /> Stop
+            <Square className="h-3 w-3" /> Stop
           </button>
         ) : (
           <button
@@ -144,26 +147,26 @@ export function Composer({ textareaRef, onScroll }: ComposerProps = {}): JSX.Ele
             disabled={sendDisabled}
             onClick={() => void send()}
             className={cn(
-              'flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors',
-              sendDisabled
-                ? 'cursor-not-allowed bg-zinc-800 text-zinc-500'
-                : 'bg-indigo-600 text-white hover:bg-indigo-500',
+              'text-[11px] underline-offset-2 transition-colors',
+              !sendDisabled
+                ? 'text-zinc-500 underline hover:text-zinc-300'
+                : hasCredentials
+                  ? 'cursor-not-allowed text-red-500'
+                  : 'cursor-not-allowed text-zinc-600',
             )}
             title={
-              blockedByCredential
+              hasCredentials
                 ? 'Cannot send — credential detected'
                 : isEmpty
                   ? 'Nothing to send'
-                  : 'Send (Cmd/Ctrl+Enter)'
+                  : 'Send scrubbed text to Anthropic (Cmd/Ctrl+Enter)'
             }
+            aria-label="Send to Anthropic"
           >
-            <Send className="h-4 w-4" /> Send to Anthropic
+            {hasCredentials ? 'Send blocked — credential detected' : 'Send to Anthropic'}
           </button>
         )}
-      </div>
-      <p className="text-[11px] leading-snug text-zinc-500">
-        Only tokens leave this machine. Real values are reconstructed locally for display.
-      </p>
+      </footer>
     </section>
   );
 }
