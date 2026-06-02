@@ -14,6 +14,13 @@ import { parse as parseYaml } from 'yaml';
 
 export type Mode = 'enforce' | 'observe' | 'disabled';
 
+/**
+ * Update channel. `off` is the default and means: no network activity ever.
+ * `stable` / `beta` enable a single HTTPS GET to the release manifest on
+ * version-check requests. See Plans/INSTALLER.md.
+ */
+export type UpdateChannel = 'off' | 'stable' | 'beta';
+
 export interface PrivacyConfig {
   /** Extra FQDN suffixes never to tokenize (e.g. ".helios.example.com"). */
   fqdn_allowlist_extra: string[];
@@ -44,6 +51,15 @@ export interface PrivacyConfig {
   mode: Mode;
   /** Per-tool input-field policy. Maps tool name → array of fields to skip scrubbing. */
   skip_scrub_fields: Record<string, string[]>;
+  /**
+   * Opt-in version-check channel. Default `off` — zero network activity.
+   * `stable` / `beta` cause `/api/version` to perform a single HTTPS GET
+   * to `update_manifest_url`. No telemetry, no auto-install. See
+   * `Plans/INSTALLER.md`.
+   */
+  update_channel: UpdateChannel;
+  /** URL of the release manifest (JSON). Used only when `update_channel !== 'off'`. */
+  update_manifest_url: string;
 }
 
 const DEFAULTS: PrivacyConfig = {
@@ -68,6 +84,9 @@ const DEFAULTS: PrivacyConfig = {
     Glob: ['pattern'],
     NotebookEdit: ['old_string', 'new_string'],
   },
+  update_channel: 'off',
+  update_manifest_url:
+    'https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json',
 };
 
 export function loadConfig(explicitPath?: string): PrivacyConfig {
@@ -111,6 +130,11 @@ function mergeConfig(base: PrivacyConfig, override: unknown): PrivacyConfig {
     db_path: typeof o.db_path === 'string' && o.db_path.length > 0 ? o.db_path : base.db_path,
     mode: isMode(o.mode) ? o.mode : base.mode,
     skip_scrub_fields: mergeSkipFields(base.skip_scrub_fields, o.skip_scrub_fields),
+    update_channel: isUpdateChannel(o.update_channel) ? o.update_channel : base.update_channel,
+    update_manifest_url:
+      typeof o.update_manifest_url === 'string' && o.update_manifest_url.length > 0
+        ? o.update_manifest_url
+        : base.update_manifest_url,
   };
 }
 
@@ -129,6 +153,10 @@ function arrayOfStrings(v: unknown, fallback: string[]): string[] {
 
 function isMode(v: unknown): v is Mode {
   return v === 'enforce' || v === 'observe' || v === 'disabled';
+}
+
+function isUpdateChannel(v: unknown): v is UpdateChannel {
+  return v === 'off' || v === 'stable' || v === 'beta';
 }
 
 function mergeSkipFields(

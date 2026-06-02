@@ -1,0 +1,41 @@
+# gitleaks configuration for privacy-screen
+#
+# Strategy: keep every built-in rule (extend.useDefault = true) so we catch
+# real secrets, then allowlist exactly the locations that are designed to
+# contain fake/example secrets — pattern-detection test fixtures.
+#
+# Do NOT broaden these allowlists. If you add new test fixtures with fake
+# credentials, prefer extending the regex list below over loosening paths.
+
+title = "privacy-screen gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow fake/example credentials that live in pattern test fixtures."
+
+# Path-scoped allowlist: anything under tests/ is unit-test material.
+paths = [
+  '''(^|/)tests/''',
+]
+
+# Value-scoped allowlist: obvious "this is fake" strings used across the
+# codebase as canonical test vectors. These match the literal values that
+# appear in tests/scrubber.test.ts, tests/patterns.test.ts,
+# tests/hook-contract.test.ts, and tests/server-smoke.test.ts.
+regexes = [
+  # Anthropic test keys — the repo uses sk-ant-api03-... placeholders.
+  '''sk-ant-api03-[A-Za-z0-9_]+''',
+  '''sk-ant-(?:abc123|xxx|FAKE)[A-Za-z0-9_]*''',
+
+  # GitHub PAT placeholders used in tests (ghp_aaaa... and ghp_FAKE...).
+  '''ghp_(?:[Aa]{20,}|FAKE)[A-Za-z0-9]*''',
+
+  # AWS canonical example access key id — the one AWS publishes in docs.
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''AKIA[A-Z0-9]*FAKE[A-Z0-9]*''',
+
+  # Stripe-style live key placeholder appearing in server-smoke.test.ts.
+  '''sk_live_[A-Za-z0-9]*FAKE[A-Za-z0-9]*''',
+]
