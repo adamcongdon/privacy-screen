@@ -16,6 +16,7 @@
 import { create } from 'zustand';
 import {
   api,
+  judgeApi,
   type Token,
   type UnsureSpan,
   type ReviewItem,
@@ -25,6 +26,7 @@ import {
   type UploadedFile,
   type ChatMessage,
   type InducedPatternDto,
+  type JudgeStatus,
 } from './api';
 
 export type FileChip = {
@@ -123,6 +125,7 @@ type State = {
   patterns: InducedPatternDto[];
   settings: SettingsView | null;
   health: { ok: boolean; version: string } | null;
+  judgeStatus: JudgeStatus | null;
 
   // Toasts
   toasts: ToastEntry[];
@@ -153,6 +156,9 @@ type State = {
   patternAction: (id: number, action: 'activate' | 'reject' | 'edit', regex?: string) => Promise<void>;
   refreshSettings: () => Promise<void>;
   refreshHealth: () => Promise<void>;
+  refreshJudgeStatus: () => Promise<void>;
+  setJudgeEnabled: (enabled: boolean) => Promise<void>;
+  installJudgeModel: (model: string) => Promise<void>;
 
   saveSettings: (partial: SettingsPatch) => Promise<void>;
   reviewAction: (
@@ -232,6 +238,7 @@ export const useStore = create<State>((set, get) => ({
   patterns: [],
   settings: null,
   health: null,
+  judgeStatus: null,
 
   toasts: [],
 
@@ -458,6 +465,41 @@ export const useStore = create<State>((set, get) => ({
       set({ health: h });
     } catch (err) {
       get().pushToast('error', `server unreachable: ${err instanceof Error ? err.message : err}`);
+    }
+  },
+
+  refreshJudgeStatus: async () => {
+    try {
+      const s = await judgeApi.status();
+      set({ judgeStatus: s });
+    } catch (err) {
+      // Don't toast on every poll failure — the drawer is hidden most of the
+      // time, and stale state is fine. Log to console so debugging is possible.
+      console.warn('judge status fetch failed:', err);
+    }
+  },
+
+  setJudgeEnabled: async (enabled) => {
+    try {
+      await judgeApi.setEnabled(enabled);
+      await get().refreshJudgeStatus();
+      get().pushToast('success', `judge ${enabled ? 'enabled' : 'disabled'}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      get().pushToast('error', `judge toggle failed: ${msg}`);
+      throw err;
+    }
+  },
+
+  installJudgeModel: async (model) => {
+    try {
+      await judgeApi.install(model);
+      await get().refreshJudgeStatus();
+      get().pushToast('info', `installing ${model} — large download, please wait`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      get().pushToast('error', `install failed: ${msg}`);
+      throw err;
     }
   },
 

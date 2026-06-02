@@ -20,6 +20,8 @@
  *   GET  /api/health       — { ok: true }
  *   GET  /api/version      — current version + opt-in update check
  *   POST /api/judge        — opt-in LLM secondary validator (out-of-band)
+ *   GET  /api/judge-control/status
+ *   POST /api/judge-control/enable, /install — GUI controls for the judge
  */
 
 import { Hono } from 'hono';
@@ -37,6 +39,7 @@ import { settingsRoute } from './routes/settings';
 import { filesRoute } from './routes/files';
 import { versionRoute } from './routes/version';
 import { judgeRoute } from './routes/judge';
+import { judgeControlRoute } from './routes/judge-control';
 import { reportClaudeCodeStatus } from './lib/claude-code-check';
 import { shutdownLlmProcess } from './lib/llm-process';
 
@@ -107,6 +110,7 @@ app.route('/api/settings', settingsRoute);
 app.route('/api/files', filesRoute);
 app.route('/api/version', versionRoute);
 app.route('/api/judge', judgeRoute);
+app.route('/api/judge-control', judgeControlRoute);
 
 // Static frontend bundle (built via `bun run web:build`).
 const webDist = join(import.meta.dir, '..', 'web', 'dist');
