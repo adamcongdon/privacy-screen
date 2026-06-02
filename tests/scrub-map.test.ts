@@ -105,4 +105,63 @@ describe('ScrubMap', () => {
     const { token } = map.mint('SERVER', 'd');
     expect(token).toBe('{SERVER_3}');
   });
+
+  describe('serialize / deserialize round-trip', () => {
+    test('happy path: tokens and reals survive round-trip', () => {
+      const src = new ScrubMap();
+      src.mint('CUSTOMER', 'Acme Corp');
+      src.mint('IP', '10.0.5.1');
+      src.mint('IP', '10.0.5.2');
+
+      const envelope = src.serialize();
+      expect(envelope.v).toBe(1);
+      expect(envelope.entries.length).toBe(3);
+
+      const dst = ScrubMap.deserialize(envelope);
+      expect(dst.tokenFor('Acme Corp')).toBe('{CUSTOMER}');
+      expect(dst.realFor('{CUSTOMER}')).toBe('Acme Corp');
+      expect(dst.tokenFor('10.0.5.1')).toBe('{IP}');
+      expect(dst.tokenFor('10.0.5.2')).toBe('{IP_1}');
+    });
+
+    test('counter preserved across deserialize', () => {
+      const src = new ScrubMap();
+      src.mint('IP', '1.1.1.1');
+      src.mint('IP', '2.2.2.2');
+      src.mint('IP', '3.3.3.3');
+
+      const dst = ScrubMap.deserialize(src.serialize());
+      // Counter must be at 3, so next mint produces {IP_3}, not a collision.
+      const { token } = dst.mint('IP', '4.4.4.4');
+      expect(token).toBe('{IP_3}');
+    });
+
+    test('malformed payload throws: null', () => {
+      expect(() => ScrubMap.deserialize(null)).toThrow();
+    });
+
+    test('malformed payload throws: empty object', () => {
+      expect(() => ScrubMap.deserialize({})).toThrow();
+    });
+
+    test('malformed payload throws: wrong version', () => {
+      expect(() => ScrubMap.deserialize({ v: 2, entries: [] })).toThrow();
+    });
+
+    test('malformed payload throws: entries not an array', () => {
+      expect(() => ScrubMap.deserialize({ v: 1, entries: 'nope' })).toThrow();
+    });
+
+    test('malformed individual entries are skipped', () => {
+      const map = ScrubMap.deserialize({
+        v: 1,
+        entries: [
+          { token: '{X}', real: 'x' },
+          { token: 42 }, // bad — dropped
+        ],
+      });
+      expect(map.realFor('{X}')).toBe('x');
+      expect(map.size).toBe(1);
+    });
+  });
 });
