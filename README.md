@@ -124,95 +124,63 @@ echo "server at 10.0.0.1" | bun cli/PrivacyScreen.ts scrub
 
 ## Optional: LLM secondary validator
 
-Adds a small local LLM as a second-line **JUDGE** that reads the *already-scrubbed* text and flags PII the regex layer missed — multilingual names, regional address formats, novel credential patterns. The judge cannot mutate scrub output; it only adds spans to the existing review queue for operator triage. Disabled by default. See `Plans/LLM_RESEARCH.md` for the design rationale and `SAFETY_CHECKLIST.md` → "LLM secondary validation (opt-in)" for the full enable flow.
+Adds a small local LLM as a second-line **JUDGE** that reads the *already-scrubbed* text and flags PII the regex layer missed — multilingual names, regional address formats, novel credential patterns. The judge cannot mutate scrub output; it only adds spans to the existing review queue for operator triage. Disabled by default. See `Plans/LLM_RESEARCH.md` for the design rationale and `SAFETY_CHECKLIST.md` → "LLM secondary validation (opt-in)" for the full safety review.
 
-### Prerequisites
+### Setup (GUI — recommended)
 
-`llama-server` (from [llama.cpp](https://github.com/ggml-org/llama.cpp)) on `PATH`:
+1. Install `llama-server`:
+   ```bash
+   brew install llama.cpp        # macOS
+   # Linux / Windows: see https://github.com/ggml-org/llama.cpp
+   ```
+2. `bun run start` and open `http://127.0.0.1:31338`.
+3. Click the **settings** button (top of the page).
+4. In the **LLM judge** panel:
+   - First time: click **Install qwen2.5-1.5b** to download the model (~1 GB, Apache 2.0, 29 languages). A progress bar shows live download status.
+   - Once the runtime and model both show ✅, flip the **Enable judge** toggle.
+
+No CLI, no YAML editing, no restart. The toggle takes effect on the next hook invocation.
+
+### Setup (CLI — alternative)
 
 ```bash
-# macOS
+# 1. Install runtime + model
 brew install llama.cpp
-
-# Verify
-bun cli/PrivacyScreen.ts install-judge --runtime
-# → ✅ llama-server found at /opt/homebrew/bin/llama-server
-```
-
-For Linux / Windows install hints, run `install-judge --runtime` — it prints the right command for your OS.
-
-### Step 1 — install the model
-
-Downloads Qwen2.5-1.5B-Instruct Q4_K_M (~1 GB, Apache 2.0, 29 languages) into `~/.privacy-screen/models/`:
-
-```bash
 bun cli/PrivacyScreen.ts install-judge --model qwen2.5-1.5b --allow-network
-```
 
-The `--allow-network` flag is your explicit consent to a one-time download. Add `--expected-sha256 <hex>` if you've already verified the upstream hash; otherwise the command prints the SHA-256 of the downloaded file for out-of-band verification.
+# 2. Either click "Enable judge" in the settings drawer, OR add to PRIVACY_CONFIG.yaml:
+#      llm_validate:
+#        enabled: true
+#        model_path: /Users/<you>/.privacy-screen/models/qwen2.5-1.5b.gguf
 
-Dry-run first if you want to see what would happen without touching disk:
-
-```bash
-bun cli/PrivacyScreen.ts install-judge --model qwen2.5-1.5b --dry-run
-```
-
-### Step 2 — enable in `PRIVACY_CONFIG.yaml`
-
-The install command prints the exact YAML snippet. Paste it under your existing config:
-
-```yaml
-llm_validate:
-  enabled: true
-  model_path: /Users/<you>/.privacy-screen/models/qwen2.5-1.5b.gguf
-  # The rest are optional — defaults shown:
-  # runtime: llama-server
-  # endpoint: ~          # ~ = lazy-spawn a managed llama-server (recommended)
-  # max_tokens: 256
-  # timeout_ms: 2500
-  # min_confidence: 0.6
-```
-
-### Step 3 — start the server (the judge runs inside it)
-
-```bash
+# 3. Start the server (the judge runs inside it)
 bun run start
 ```
 
-The judge lives in the long-lived Hono server. The hook fires a 150 ms fire-and-forget POST to `127.0.0.1:31338/api/judge` after it returns the scrubbed tool input to Claude Code. If the server isn't running, the hook silently no-ops — the regex layer always runs regardless.
+For dry-run + custom destinations + SHA-256 verification, see `bun cli/PrivacyScreen.ts install-judge --help`.
 
 ### What you see at runtime
 
 Nothing user-visible during the call itself. The judge is a quiet background auditor — Claude Code receives the scrubbed input on the regex layer's normal timeline, and the judge writes its findings to the existing review queue.
 
-A line lands in `~/.privacy-screen` logs (and the server's stderr) per call:
-
+The server logs one line per call to stderr:
 ```
 [privacy-screen] judge.completed: 2 spans
 ```
 
 ### Where flagged spans show up
 
-In the web UI's **Review queue** panel on `http://127.0.0.1:31338` (the same panel that already shows corp-entity heuristics), with `source_event` prefixed `judge:`. Or via the CLI:
+In the web UI's **Review queue** panel on `http://127.0.0.1:31338` (the same panel that already shows corp-entity heuristics), with `source_event` prefixed `judge:`. Each flagged span gets the same triage flow as regex-layer detections:
 
-```bash
-bun cli/PrivacyScreen.ts review        # interactive triage
-```
-
-Each flagged span gets the same triage flow as regex-layer detections:
 - **Confirm** → mints a permanent token, future runs auto-scrub it
 - **Allowlist** → never flag this string again
 - **Ignore** → one-time pass
 
+CLI alternative: `bun cli/PrivacyScreen.ts review`.
+
 ### Disable
 
-```yaml
-# PRIVACY_CONFIG.yaml
-llm_validate:
-  enabled: false
-```
-
-No restart needed. The hook reads the flag on every invocation.
+Either flip the **Enable judge** toggle off in the settings drawer, OR set `llm_validate.enabled: false` in `PRIVACY_CONFIG.yaml`. No restart needed — the hook reads the flag on every invocation.
 
 ### Constraints
 

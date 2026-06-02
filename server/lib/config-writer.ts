@@ -1,0 +1,80 @@
+/**
+ * Comment-preserving writer for PRIVACY_CONFIG.yaml.
+ *
+ * Uses `yaml`'s Document API to round-trip an existing YAML file, mutate a
+ * specific scalar/mapping, and write back without dropping the user's
+ * comments or formatting. We only support the precise fields the GUI needs
+ * to toggle today — `llm_validate.enabled` and `llm_validate.model_path` —
+ * because surgical mutation is much safer than a re-serialize that could
+ * subtly change quoting or indentation.
+ *
+ * If the file doesn't exist, we create a minimal one with just the mutated
+ * section. If the file exists but lacks the `llm_validate` block, we append
+ * one (with surrounding comments).
+ */
+
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { Document, parseDocument, isMap, isScalar, YAMLMap } from 'yaml';
+import { loadConfig, type PrivacyConfig } from '../../src/config';
+import { resolveConfigPath } from './config-resolver';
+
+/** Fields the GUI may patch. Mirrors a subset of `LlmValidateConfig`. */
+export interface LlmValidatePatch {
+  enabled?: boolean;
+  model_path?: string | null;
+}
+
+/** Write the patch to PRIVACY_CONFIG.yaml. Returns the post-write config. */
+export function patchLlmValidate(patch: LlmValidatePatch): PrivacyConfig {
+  const path = resolveConfigPath();
+  const existing = existsSync(path) ? readFileSync(path, 'utf-8') : '';
+
+  let doc: Document;
+  try {
+    doc = parseDocument(existing);
+    // `parseDocument` returns a doc with errors[] populated on malformed input
+    // rather than throwing. Treat any parse error the same as "no file".
+    if (doc.errors.length > 0) {
+      doc = new Document(new YAMLMap());
+    }
+  } catch {
+    doc = new Document(new YAMLMap());
+  }
+
+  if (!isMap(doc.contents)) {
+    doc.contents = new YAMLMap();
+  }
+
+  // Get or create the llm_validate node as a YAMLMap (not a plain object —
+  // plain objects don't satisfy isMap() and break subsequent .set calls).
+  const raw = doc.get('llm_validate', true);
+  let llmNode: YAMLMap;
+  if (isMap(raw)) {
+    llmNode = raw;
+  } else {
+    llmNode = new YAMLMap();
+    doc.set('llm_validate', llmNode);
+  }
+
+  if (typeof patch.enabled === 'boolean') {
+    llmNode.set('enabled', patch.enabled);
+  }
+  if (patch.model_path !== undefined) {
+    if (patch.model_path === null) {
+      const node = llmNode.get('model_path', true);
+      if (isScalar(node)) {
+        node.value = null;
+      } else {
+        llmNode.set('model_path', null);
+      }
+    } else {
+      llmNode.set('model_path', patch.model_path);
+    }
+  }
+
+  const out = String(doc);
+  writeFileSync(path, out);
+
+  // Re-load so we surface back the canonicalized + defaulted view.
+  return loadConfig(path);
+}
