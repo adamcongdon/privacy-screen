@@ -152,3 +152,54 @@ The hook becomes a no-op until you re-enable. No settings.json edit required.
    file. Implication: Claude can see real PII in those specific tool inputs
    because they came from earlier (un-scrubbed) Reads. This is the leak
    surface PostToolUse can't close.
+
+## LLM secondary validation (opt-in, default off)
+
+A small local LLM can act as a **JUDGE** that reads the already-scrubbed text
+and flags PII the regex+vocab layer might have missed (multilingual names,
+regional formats, novel patterns). The judge **never** mutates the hot-path
+output — it only adds spans to the existing `review_queue` for operator
+triage. Regex+vocab remains the safety-critical synchronous gate. See
+`Plans/LLM_RESEARCH.md` for the design and `Plans/no-let-s-use-development-glittery-ladybug.md`
+for the implementation map.
+
+**Privacy posture (read before enabling):**
+
+- The scrubbed text **does** flow into the LLM subprocess. The LLM must run
+  fully local — the hook refuses to POST to any endpoint that is not
+  `127.0.0.1` / `localhost`.
+- The hook talks to the long-lived privacy-screen server at
+  `http://127.0.0.1:31338/api/judge` via a fire-and-forget POST capped at
+  150 ms. If the server is not running, the hook silently no-ops — the LLM
+  judge requires `bun run start` in a separate terminal.
+- The LLM subprocess (`llama-server`) binds to a random high port on
+  `127.0.0.1` only. No external connection is ever opened during inference.
+- Findings carry the model's `reason` text into the review queue. Treat the
+  reason field as untrusted output and render it as plain text.
+
+**Pre-enable checklist:**
+
+```bash
+# 1. Install the model (one-time, requires network consent)
+bun cli/PrivacyScreen.ts install-judge --model qwen2.5-1.5b --allow-network
+
+# 2. Confirm the runtime is on PATH
+which llama-server   # or follow the install-judge --runtime output
+
+# 3. Flip the switch in PRIVACY_CONFIG.yaml
+#    llm_validate:
+#      enabled: true
+
+# 4. Start the server (the hook talks to it)
+bun run start
+
+# 5. Run a sanity prompt and watch the review queue grow
+curl -s http://127.0.0.1:31338/api/review | jq '.items | length'
+```
+
+**Disable:** flip `llm_validate.enabled: false` in `PRIVACY_CONFIG.yaml`. The
+hook reads the flag every invocation; no restart needed.
+
+**Telemetry:** the judge writes to the same `review_queue` table the regex
+layer uses, with `source_event` prefixed `judge:`. `bun cli/PrivacyScreen.ts
+review` shows pending items regardless of source.

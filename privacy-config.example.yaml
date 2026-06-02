@@ -84,3 +84,37 @@ update_channel: off
 # GitHub raw. Override this to pin a mirror, an air-gapped copy, or your
 # own fork. Must be https://.
 update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
+
+# ---------------------------------------------------------------------------
+# Opt-in LLM secondary validator (JUDGE, not editor).
+#
+# A small local LLM (default: Qwen2.5-1.5B Q4_K_M via llama-server) reads the
+# already-scrubbed text and flags PII the regex+vocab layer might have missed —
+# multilingual names, regional address formats, novel patterns. Findings land
+# in the existing review queue for operator triage. The LLM NEVER mutates the
+# hot-path output; the regex+vocab layer remains the safety-critical gate.
+#
+# Privacy posture: fully local. Scrubbed text is POSTed to the long-lived
+# privacy-screen server at 127.0.0.1:31338, which runs the LLM in-process or
+# spawns a managed llama-server subprocess bound to 127.0.0.1 only. The hook
+# refuses to send to any non-loopback endpoint.
+#
+# Default: disabled. Enable only after running:
+#   bun cli/PrivacyScreen.ts install-judge --model qwen2.5-1.5b --allow-network
+# See Plans/LLM_RESEARCH.md and the "LLM secondary validation" section of
+# SAFETY_CHECKLIST.md.
+llm_validate:
+  enabled: false
+  # Absolute path to the GGUF model file. Set by `install-judge`.
+  model_path: ~
+  # Inference runtime. Only `llama-server` is supported in v1.
+  runtime: llama-server
+  # External endpoint URL. ~ = the server lazy-starts its own llama-server
+  # subprocess on a random loopback port. If set, MUST be 127.0.0.1/localhost.
+  endpoint: ~
+  # Hard cap on judge response tokens.
+  max_tokens: 256
+  # Per-call wall-clock budget on the server side (ms).
+  timeout_ms: 2500
+  # Spans below this confidence are dropped before reaching the review queue.
+  min_confidence: 0.6
