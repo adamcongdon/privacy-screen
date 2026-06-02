@@ -6,7 +6,8 @@
 
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
+import { homedir } from 'os';
+import { dirname, join } from 'path';
 import { ScrubMap } from './scrub-map';
 
 export interface VocabRow {
@@ -386,8 +387,7 @@ export class VocabStore {
   }
 }
 
-/** Default DB path derived from the location of this file. */
+/** Default DB path. Uses os.homedir() so it works on Windows (%USERPROFILE%). */
 export function defaultDbPath(): string {
-  const home = process.env.HOME ?? '/Users/adam.congdon';
-  return `${home}/.claude/PAI/MEMORY/SCRUBBER/vocab.db`;
+  return join(homedir(), '.claude', 'PAI', 'MEMORY', 'SCRUBBER', 'vocab.db');
 }
