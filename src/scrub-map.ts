@@ -21,6 +21,16 @@ export interface MintResult {
   isNew: boolean;
 }
 
+/**
+ * Versioned envelope for over-the-wire transport of a ScrubMap. `v=1` is the
+ * current format. Bump `v` when the wire shape changes; deserialize refuses
+ * any unknown version rather than silently accepting it.
+ */
+export interface SerializedScrubMap {
+  v: 1;
+  entries: Array<{ token: string; real: string }>;
+}
+
 export class ScrubMap {
   // keyed by lowercase real value for case-insensitive lookup
   private realToToken = new Map<string, string>();
@@ -144,6 +154,47 @@ export class ScrubMap {
 
   entries(): IterableIterator<[string, string]> {
     return this.tokenToReal.entries();
+  }
+
+  /**
+   * Emit a versioned, JSON-safe envelope of this map's token → real-value
+   * pairs. Walks `tokenToReal` so original casing is preserved.
+   */
+  serialize(): SerializedScrubMap {
+    const entries: Array<{ token: string; real: string }> = [];
+    for (const [token, real] of this.tokenToReal.entries()) {
+      entries.push({ token, real });
+    }
+    return { v: 1, entries };
+  }
+
+  /**
+   * Build a fresh `ScrubMap` from a serialized envelope. Throws on shape
+   * mismatch (null, wrong version, non-array entries). Malformed individual
+   * entries (missing/wrong-typed fields) are dropped silently so a partially
+   * corrupt payload still produces a usable map.
+   */
+  static deserialize(payload: unknown): ScrubMap {
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('ScrubMap.deserialize: payload must be an object');
+    }
+    const p = payload as Record<string, unknown>;
+    if (p.v !== 1) {
+      throw new Error(`ScrubMap.deserialize: unsupported version ${String(p.v)}`);
+    }
+    if (!Array.isArray(p.entries)) {
+      throw new Error('ScrubMap.deserialize: entries must be an array');
+    }
+    const rows: Array<{ real_value: string; token: string }> = [];
+    for (const entry of p.entries) {
+      if (!entry || typeof entry !== 'object') continue;
+      const e = entry as Record<string, unknown>;
+      if (typeof e.token !== 'string' || typeof e.real !== 'string') continue;
+      rows.push({ real_value: e.real, token: e.token });
+    }
+    const map = new ScrubMap();
+    map.loadFromRows(rows);
+    return map;
   }
 }
 
