@@ -18,6 +18,7 @@
  *   POST /api/settings     — write settings
  *   POST /api/files        — upload + scrub
  *   GET  /api/health       — { ok: true }
+ *   GET  /api/version      — current version + opt-in update check
  */
 
 import { Hono } from 'hono';
@@ -33,6 +34,7 @@ import { reviewRoute } from './routes/review';
 import { patternsRoute } from './routes/patterns';
 import { settingsRoute } from './routes/settings';
 import { filesRoute } from './routes/files';
+import { versionRoute } from './routes/version';
 import { reportClaudeCodeStatus } from './lib/claude-code-check';
 
 const PORT = Number(process.env.PRIVACY_SCREEN_PORT ?? 31338);
@@ -100,6 +102,7 @@ app.route('/api/review', reviewRoute);
 app.route('/api/patterns', patternsRoute);
 app.route('/api/settings', settingsRoute);
 app.route('/api/files', filesRoute);
+app.route('/api/version', versionRoute);
 
 // Static frontend bundle (built via `bun run web:build`).
 const webDist = join(import.meta.dir, '..', 'web', 'dist');

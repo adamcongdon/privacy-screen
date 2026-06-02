@@ -57,3 +57,30 @@ skip_scrub_fields:
 
 # SQLite DB path. Leave empty / ~ for default: $HOME/.claude/PAI/MEMORY/SCRUBBER/vocab.db
 db_path: ~
+
+# ---------------------------------------------------------------------------
+# Opt-in update channel.
+#
+# privacy-screen is local-first: by default it makes ZERO network calls of
+# its own. The update check is no exception — it ships disabled. Flip this
+# field on if you want privacy-screen to check for newer releases.
+#
+#   off     — DEFAULT. No network activity ever. /api/version still reports
+#             your installed version, but never fetches anything.
+#   stable  — On every /api/version request, performs a single HTTPS GET
+#             to update_manifest_url and compares versions. The request
+#             carries no telemetry — no User-Agent customization, no body,
+#             no query string. There is no auto-install. You see "update
+#             available" in the UI and decide what to do.
+#   beta    — Same as stable but only considers releases tagged
+#             `channel: "beta"` in the manifest.
+#
+# Even with this set to stable/beta, NOTHING is ever downloaded or executed
+# automatically. See Plans/INSTALLER.md for the full design and the
+# explicit out-of-scope list.
+update_channel: off
+
+# URL of the release manifest. Default points at the upstream repo on
+# GitHub raw. Override this to pin a mirror, an air-gapped copy, or your
+# own fork. Must be https://.
+update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json

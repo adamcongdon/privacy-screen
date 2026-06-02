@@ -188,6 +188,9 @@ const baseCfg: PrivacyConfig = {
     Grep: ['pattern'],
     Glob: ['pattern'],
   },
+  update_channel: 'off',
+  update_manifest_url:
+    'https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json',
 };
 
 describe('scrubText — customer_names from config', () => {

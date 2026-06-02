@@ -1,0 +1,23 @@
+name: osv-scanner
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Tuesdays 06:37 UTC — staggered against codeql's Monday slot.
+    - cron: '37 6 * * 2'
+
+permissions:
+  # Required by the reusable workflow to upload SARIF to code-scanning.
+  contents: read
+  actions: read
+  security-events: write
+
+jobs:
+  scan:
+    name: osv-scan
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.0.0
+    with:
+      scan-args: |-
+        --recursive
+        ./

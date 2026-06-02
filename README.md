@@ -145,6 +145,48 @@ Add your own via `skip_scrub_fields:` in `PRIVACY_CONFIG.yaml`.
 - **Hook contract:** `tests/hook-contract.test.ts` spawns the real hook binary and pipes synthetic Claude Code event payloads through stdin, verifying decision/updatedInput/exit-code shapes.
 - **Live spot-check:** `bun cli/PrivacyScreen.ts scrub <<< 'test text'`.
 
+## CI
+
+Workflows live in [`.github/workflows/`](.github/workflows/) and run on every push to `main` and every pull request unless noted.
+
+- [`ci.yml`](.github/workflows/ci.yml) — `bun install --frozen-lockfile`, `bun lint` (tsc --noEmit), then `bun test`. Catches type regressions and broken tests.
+- [`codeql.yml`](.github/workflows/codeql.yml) — GitHub's CodeQL static analysis for JavaScript/TypeScript. Catches SAST findings (injection, unsafe sinks, prototype pollution). Also runs weekly on a schedule.
+- [`gitleaks.yml`](.github/workflows/gitleaks.yml) — git history secret scan via gitleaks, configured by [`.gitleaks.toml`](.gitleaks.toml). Catches accidentally committed credentials. Fake fixtures under `tests/` are allowlisted.
+- [`dependency-review.yml`](.github/workflows/dependency-review.yml) — GitHub's dependency-review action on PRs. Fails the PR if a newly added dependency carries a CVE of `moderate` severity or higher.
+- [`osv-scanner.yml`](.github/workflows/osv-scanner.yml) — Google OSV scanner against `package.json` + `bun.lock` for the full transitive graph. Also runs weekly.
+
+All workflows use least-privilege `permissions:` blocks and rely on the free tier of each action — no repo secrets are required.
+
+## Updates
+
+PrivacyScreen ships an **opt-in** update check. There is no auto-install, no telemetry, and the check is off by default. When enabled, the app makes one HTTPS GET per start against a static release manifest you control — that's the entire network footprint.
+
+```yaml
+# PRIVACY_CONFIG.yaml
+update_channel: off               # off | stable | beta. Default off.
+update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
+```
+
+When `update_channel` is `stable` or `beta`, hit `GET /api/version` to see whether a newer release is available:
+
+```json
+{
+  "version": "1.0.0",
+  "channel": "stable",
+  "updateAvailable": true,
+  "latestKnown": "1.0.1",
+  "updateInfo": {
+    "version": "1.0.1",
+    "channel": "stable",
+    "url": "https://github.com/.../privacy-screen-darwin-arm64",
+    "sha256": "0000…",
+    "releasedAt": "2026-06-02T00:00:00Z"
+  }
+}
+```
+
+The check is *informational only* in this iteration — downloading and installing the new binary is still a manual step. See [`Plans/INSTALLER.md`](Plans/INSTALLER.md) for the full distribution roadmap.
+
 ## What's gitignored
 
 - `*.db` / `*.db-shm` / `*.db-wal` — your vocab database contains real customer names

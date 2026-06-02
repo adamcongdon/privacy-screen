@@ -12,3 +12,6 @@ PRIVACY_CONFIG.yaml
 # bun.lockb
 .claude/worktrees/
 web/dist/
+
+# Release build outputs (created by scripts/build-release.ts)
+dist/
