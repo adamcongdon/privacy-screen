@@ -126,6 +126,7 @@ type State = {
   settings: SettingsView | null;
   health: { ok: boolean; version: string } | null;
   judgeStatus: JudgeStatus | null;
+  isJudging: boolean;
 
   // Toasts
   toasts: ToastEntry[];
@@ -148,7 +149,7 @@ type State = {
   /** Build the payload string that gets sent to the model (composer + files). */
   buildPayload: (useOriginal?: boolean) => string;
 
-  refreshScrub: () => Promise<void>;
+  refreshScrub: (opts?: { skipJudge?: boolean }) => Promise<void>;
   refreshVocab: () => Promise<void>;
   refreshReview: () => Promise<void>;
   refreshPatterns: () => Promise<void>;
@@ -182,6 +183,8 @@ type State = {
 // resets without becoming part of the React-reactive surface.
 let activeAbort: AbortController | null = null;
 let toastCounter = 1;
+let judgePollerRef: ReturnType<typeof setInterval> | null = null;
+const MIN_JUDGE_PAYLOAD = 24;
 
 function mergeTokenUnion(prev: Map<string, Token>, incoming: Token[]): Map<string, Token> {
   if (incoming.length === 0) return prev;
@@ -208,7 +211,36 @@ function fileChipFromUploaded(u: UploadedFile, id: string): FileChip {
   };
 }
 
-export const useStore = create<State>((set, get) => ({
+export const useStore = create<State>((set, get) => {
+  // Start polling /api/judge-control/status every 2s until activeRequests drops
+  // to 0. Only one poller runs at a time. Clears isJudging and refreshes the
+  // review queue when the judge finishes.
+  const startJudgePoller = () => {
+    if (judgePollerRef !== null) return;
+    const stopPoller = () => {
+      clearInterval(judgePollerRef!);
+      judgePollerRef = null;
+      set({ isJudging: false });
+    };
+    let polls = 0;
+    judgePollerRef = setInterval(() => {
+      polls++;
+      // 30 polls × 2 s = 60 s max — prevents stuck indicator if server crashes.
+      if (polls > 30) { stopPoller(); return; }
+      void judgeApi.status().then((status) => {
+        // Only update store if activeRequests changed — avoids spurious re-renders.
+        if (status.activeRequests !== get().judgeStatus?.activeRequests) {
+          set({ judgeStatus: status });
+        }
+        if (status.activeRequests === 0) {
+          stopPoller();
+          void get().refreshReview();
+        }
+      }).catch(() => { /* ignore poll failures */ });
+    }, 2000);
+  };
+
+  return ({
   composerText: '',
   files: [],
 
@@ -239,6 +271,7 @@ export const useStore = create<State>((set, get) => ({
   settings: null,
   health: null,
   judgeStatus: null,
+  isJudging: false,
 
   toasts: [],
 
@@ -316,8 +349,21 @@ export const useStore = create<State>((set, get) => ({
         files: [...s.files, ...chips],
         tokenUnion: mergeTokenUnion(s.tokenUnion, newTokens),
       }));
-      // Refresh scrub so preview reflects any new tokens introduced by files.
-      void get().refreshScrub();
+      // Refresh scrub (skipJudge=true) so preview updates without double-firing
+      // the judge — we fire it below using the upload response data directly.
+      void get().refreshScrub({ skipJudge: true });
+      // Fire judge for each clean file using the server's upload response data.
+      // Skip errored and credential chips; `?? []` handles absent token arrays.
+      const judgeChips = chips.filter(
+        (c) => !c.error && !c.hasCredentials && c.scrubbed && c.scrubbed.length >= MIN_JUDGE_PAYLOAD,
+      );
+      for (const chip of judgeChips) {
+        api.judgePost(chip.scrubbed!, chip.tokens ?? []);
+      }
+      if (judgeChips.length > 0) {
+        set({ isJudging: true });
+        startJudgePoller();
+      }
       for (const chip of chips) {
         if (chip.error) get().pushToast('error', `${chip.name}: ${chip.error}`);
         else if (chip.hasCredentials)
@@ -334,7 +380,7 @@ export const useStore = create<State>((set, get) => ({
     void get().refreshScrub();
   },
 
-  refreshScrub: async () => {
+  refreshScrub: async (opts) => {
     const payload = get().buildPayload();
     if (!payload.trim()) {
       set({
@@ -360,6 +406,11 @@ export const useStore = create<State>((set, get) => ({
         isScrubbing: false,
         tokenUnion: mergeTokenUnion(s.tokenUnion, r.tokens),
       }));
+      if (!opts?.skipJudge && r.scrubbed.length >= MIN_JUDGE_PAYLOAD) {
+        api.judgePost(r.scrubbed, r.tokens);
+        set({ isJudging: true });
+        startJudgePoller();
+      }
     } catch (err) {
       set({
         isScrubbing: false,
@@ -655,4 +706,4 @@ export const useStore = create<State>((set, get) => ({
     }
     set({ isStreaming: false });
   },
-}));
+}); });

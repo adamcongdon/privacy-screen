@@ -32,10 +32,10 @@ import { getVocab } from '../lib/vocab-store';
 import { getLlmClient } from '../lib/llm-process';
 import { rateLimited, getClientIp } from '../lib/rate-limit';
 
-/** Hard cap on the POST body. 256 KB is plenty for a scrubbed prompt. */
-const BODY_BYTE_LIMIT = 256 * 1024;
-/** Defensive cap on the scrubbed-text field itself. */
-const SCRUBBED_TEXT_LIMIT = 100_000;
+/** Hard cap on the POST body. 1 MB covers realistic file uploads + tokenMap overhead. */
+const BODY_BYTE_LIMIT = 1024 * 1024;
+/** Defensive cap on the scrubbed-text field itself. Judge chunks internally at 1800 chars. */
+const SCRUBBED_TEXT_LIMIT = 800_000;
 /** Width of the surrounding-context snippet around each suspicious span. */
 const SURROUNDING_WINDOW = 40;
 /** Max spans returned per call (also communicated to the model). */
@@ -49,6 +49,9 @@ interface JudgeRequestBody {
 }
 
 export const judgeRoute = new Hono();
+
+let _activeJudgeRequests = 0;
+export function getActiveJudgeRequests(): number { return _activeJudgeRequests; }
 
 judgeRoute.post('/', async (c) => {
   if (rateLimited(getClientIp(c))) {
@@ -114,6 +117,7 @@ async function runJudgeAndPersist(
   tokenMap: ScrubMap,
   llmCfg: import('../../src/config').LlmValidateConfig,
 ): Promise<void> {
+  _activeJudgeRequests++;
   try {
     const client = await acquireClient(llmCfg);
     if (!client) return;
@@ -138,6 +142,9 @@ async function runJudgeAndPersist(
       });
     }
 
+    if (result.errorReason) {
+      process.stderr.write(`[privacy-screen] judge.error: ${result.errorReason}\n`);
+    }
     process.stderr.write(
       `[privacy-screen] judge.completed: ${result.spans.length} spans\n`,
     );
@@ -145,6 +152,8 @@ async function runJudgeAndPersist(
     process.stderr.write(
       `[privacy-screen] judge.failed: ${errMessage(err)}\n`,
     );
+  } finally {
+    _activeJudgeRequests--;
   }
 }
 

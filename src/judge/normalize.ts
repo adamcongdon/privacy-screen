@@ -14,6 +14,7 @@ export type LlmCategory =
   | 'address'
   | 'credential'
   | 'hostname'
+  | 'url'
   | 'other';
 
 /** Categories the review queue understands. */
@@ -23,6 +24,7 @@ export type ReviewCategory =
   | 'address'
   | 'credential'
   | 'fqdn'
+  | 'url'
   | 'unsure';
 
 /** Static lookup from LLM category → review-queue category. */
@@ -32,6 +34,7 @@ export const LLM_TO_REVIEW_CATEGORY: Record<LlmCategory, ReviewCategory> = {
   address: 'address',
   credential: 'credential',
   hostname: 'fqdn',
+  url: 'url',
   other: 'unsure',
 };
 
