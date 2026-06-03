@@ -20,6 +20,13 @@ export function checkClaudeCode(): { found: boolean; version: string | null; err
 }
 
 export function reportClaudeCodeStatus(): void {
+  // Test/CI escape hatch — server-smoke spawns the server on environments
+  // (e.g. ubuntu-24.04 runners) where the `claude` CLI isn't installed.
+  // The flag is opt-in and only exercises the non-inference surface.
+  if (process.env.PRIVACY_SCREEN_SKIP_CLAUDE_CHECK === '1') {
+    process.stdout.write(`claude code:       ⊘ check skipped (PRIVACY_SCREEN_SKIP_CLAUDE_CHECK)\n`);
+    return;
+  }
   const r = checkClaudeCode();
   if (r.found) {
     process.stdout.write(`claude code:       ✓ ${r.version}\n`);

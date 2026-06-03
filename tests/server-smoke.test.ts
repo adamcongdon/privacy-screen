@@ -56,6 +56,9 @@ beforeAll(async () => {
       // Tests use x-forwarded-for headers to give each test its own rate-limit
       // bucket. Production defaults to TRUST_XFF=0 (loopback has no real proxy).
       TRUST_XFF: '1',
+      // ubuntu-24.04 CI runners don't ship the `claude` CLI; smoke tests
+      // exercise the routes that don't need inference, so bypass the gate.
+      PRIVACY_SCREEN_SKIP_CLAUDE_CHECK: '1',
     },
   });
   await waitForHealth();
