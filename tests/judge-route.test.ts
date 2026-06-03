@@ -98,7 +98,10 @@ describe('POST /api/judge', () => {
     );
     const elapsed = Date.now() - start;
     expect(res.status).toBe(202);
-    expect(elapsed).toBeLessThan(50);
+    // Cold CI runners JIT-compile the first /api/judge call; 50 ms was tight
+    // even on local M-series. The whole point is "didn't block on the LLM run",
+    // which is comfortably true at 200 ms.
+    expect(elapsed).toBeLessThan(200);
     const j = (await res.json()) as { status: string };
     expect(j.status).toBe('accepted');
   });

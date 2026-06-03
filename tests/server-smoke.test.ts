@@ -15,7 +15,7 @@ let workDir: string;
 let configPath: string;
 let proc: ReturnType<typeof Bun.spawn> | null = null;
 
-async function waitForHealth(maxMs = 12_000): Promise<void> {
+async function waitForHealth(maxMs = 25_000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < maxMs) {
     try {
@@ -23,6 +23,14 @@ async function waitForHealth(maxMs = 12_000): Promise<void> {
       if (r.ok) return;
     } catch { /* server still starting */ }
     await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  // Drain whatever the spawned server printed so the CI log explains the failure.
+  if (proc) {
+    const serverStderr = await new Response(proc.stderr).text().catch(() => '');
+    const serverStdout = await new Response(proc.stdout).text().catch(() => '');
+    process.stderr.write(`[server-smoke] server failed to come up after ${maxMs}ms\n`);
+    if (serverStdout) process.stderr.write(`[server-smoke] stdout:\n${serverStdout}\n`);
+    if (serverStderr) process.stderr.write(`[server-smoke] stderr:\n${serverStderr}\n`);
   }
   throw new Error('server failed to come up');
 }
@@ -49,7 +57,7 @@ beforeAll(async () => {
     },
   });
   await waitForHealth();
-}, 15_000); // override Bun's 5s default — cold Linux runners can take ~6s to boot the server
+}, 30_000); // override Bun's 5s default — cold Linux runners can take >12s to boot the server
 
 afterAll(async () => {
   if (proc) {
