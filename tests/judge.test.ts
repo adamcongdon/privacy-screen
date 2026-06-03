@@ -50,8 +50,8 @@ function llmJson(
 }
 
 describe('prompt', () => {
-  test('PROMPT_VERSION is pinned to 1', () => {
-    expect(PROMPT_VERSION).toBe('1');
+  test('PROMPT_VERSION is pinned to 3', () => {
+    expect(PROMPT_VERSION).toBe('3');
   });
 
   test('buildJudgePrompt embeds maxSpans cap and the scrubbed text', () => {
@@ -61,9 +61,9 @@ describe('prompt', () => {
     expect(user).toContain('the quick brown fox');
   });
 
-  test('system prompt warns against flagging already-minted tokens', () => {
+  test('system prompt explains [*] placeholder semantics', () => {
     const { system } = buildJudgePrompt('x', 1);
-    expect(system).toContain('{PERSON}');
+    expect(system).toContain('[*]');
   });
 
   test('JUDGE_SCHEMA shape is sane', () => {
@@ -272,7 +272,6 @@ describe('LlamaServerClient — loopback enforcement', () => {
     const req: LlmCompletionRequest = {
       system: 's',
       user: 'u',
-      schema: {},
       maxTokens: 8,
       timeoutMs: 100,
     };
@@ -302,7 +301,6 @@ describe('LlamaServerClient — loopback enforcement', () => {
     const out = await client.complete({
       system: 's',
       user: 'u',
-      schema: {},
       maxTokens: 8,
       timeoutMs: 100,
     });
@@ -320,8 +318,7 @@ describe('LlamaServerClient — loopback enforcement', () => {
       await client.complete({
         system: 's',
         user: 'u',
-        schema: {},
-        maxTokens: 8,
+          maxTokens: 8,
         timeoutMs: 100,
       });
     } catch (e) {

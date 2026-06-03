@@ -355,6 +355,20 @@ export const api = {
   async deletePattern(id: number): Promise<{ ok: true }> {
     return json(await fetch(`/api/patterns/${id}`, { method: 'DELETE' }));
   },
+
+  // Fire-and-forget: sends scrubbed text to the LLM judge for secondary PII
+  // validation. Never awaited — the judge is out-of-band and best-effort.
+  judgePost(scrubbed: string, tokens: Token[]): void {
+    const tokenMap = {
+      v: 1,
+      entries: tokens.map((t) => ({ token: t.token, real: t.realValue })),
+    };
+    fetch('/api/judge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scrubbed, tokenMap, sourceEvent: 'web-scrub' }),
+    }).catch(() => { /* best-effort */ });
+  },
 };
 
 export type InducedPatternDto = {
@@ -392,6 +406,7 @@ export type JudgeStatus = {
     description: string;
   }>;
   process: { state: string; detail: string | null };
+  activeRequests: number;
   install: {
     active: boolean;
     modelName: string | null;

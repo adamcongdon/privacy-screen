@@ -227,7 +227,7 @@ async function startSubprocess(modelPath: string): Promise<LlmClient | null> {
           '--port',
           String(port),
           '--n-gpu-layers',
-          '0',
+          '99',
           '--ctx-size',
           '4096',
         ],

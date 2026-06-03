@@ -41,7 +41,8 @@ import { versionRoute } from './routes/version';
 import { judgeRoute } from './routes/judge';
 import { judgeControlRoute } from './routes/judge-control';
 import { reportClaudeCodeStatus } from './lib/claude-code-check';
-import { shutdownLlmProcess } from './lib/llm-process';
+import { shutdownLlmProcess, getLlmClient } from './lib/llm-process';
+import { loadConfig } from '../src/config';
 
 const PORT = Number(process.env.PRIVACY_SCREEN_PORT ?? 31338);
 const HOST = process.env.PRIVACY_SCREEN_BIND_ANY === '1' ? '0.0.0.0' : '127.0.0.1';
@@ -138,6 +139,14 @@ process.stdout.write(
     `  API health:       http://${server.hostname}:${server.port}/api/health\n` +
     `  Web UI:           ${existsSync(webDist) ? 'served from web/dist' : 'run `bun run web:dev`'}\n`,
 );
+
+// Eager-start the LLM subprocess so it's warm before the first request.
+{
+  const llmCfg = loadConfig().llm_validate;
+  if (llmCfg.enabled) {
+    void getLlmClient(llmCfg);
+  }
+}
 
 // Graceful shutdown — drain the LLM subprocess (if any) before stopping the HTTP
 // server so a SIGINT/SIGTERM doesn't orphan llama-server. Cleanup still ends in

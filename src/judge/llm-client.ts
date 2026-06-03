@@ -8,11 +8,10 @@
  * production path.
  */
 
-/** Single completion request — system prompt, user prompt, schema, and budgets. */
+/** Single completion request — system prompt, user prompt, and budgets. */
 export interface LlmCompletionRequest {
   system: string;
   user: string;
-  schema: object;
   maxTokens: number;
   timeoutMs: number;
 }
@@ -86,10 +85,8 @@ export class LlamaServerClient implements LlmClient {
       ],
       max_tokens: req.maxTokens,
       temperature: 0,
-      response_format: {
-        type: 'json_schema',
-        json_schema: { name: 'judge_response', schema: req.schema },
-      },
+      frequency_penalty: 0.3,
+      response_format: { type: 'json_object' },
     };
 
     const url = `${this.endpoint}/v1/chat/completions`;

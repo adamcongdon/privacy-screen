@@ -24,6 +24,7 @@ import { loadConfig } from '../../src/config';
 import { patchLlmValidate } from '../lib/config-writer';
 import { getLlmProcessState } from '../lib/llm-process';
 import { MODELS } from '../../cli/install-judge';
+import { getActiveJudgeRequests } from './judge';
 
 export const judgeControlRoute = new Hono();
 
@@ -106,6 +107,7 @@ judgeControlRoute.get('/status', (c) => {
       description: entry.description,
     })),
     process: { state: fsm.kind, detail: fsm.kind === 'failed' || fsm.kind === 'disabled' ? fsm.reason : null },
+    activeRequests: getActiveJudgeRequests(),
     install: installState,
   });
 });
