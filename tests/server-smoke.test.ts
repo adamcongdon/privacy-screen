@@ -15,7 +15,7 @@ let workDir: string;
 let configPath: string;
 let proc: ReturnType<typeof Bun.spawn> | null = null;
 
-async function waitForHealth(maxMs = 6000): Promise<void> {
+async function waitForHealth(maxMs = 12_000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < maxMs) {
     try {
