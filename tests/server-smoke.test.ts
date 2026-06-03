@@ -49,7 +49,7 @@ beforeAll(async () => {
     },
   });
   await waitForHealth();
-});
+}, 15_000); // override Bun's 5s default — cold Linux runners can take ~6s to boot the server
 
 afterAll(async () => {
   if (proc) {

@@ -52,8 +52,11 @@ async function main(): Promise<void> {
 
   let raw: string;
   try {
-    const { readFileSync } = await import('fs');
-    raw = readFileSync('/dev/stdin', 'utf-8');
+    // Bun.stdin.text() is reliable across macOS + Linux pipes. The previous
+    // readFileSync('/dev/stdin') silently returned an empty string when stdin
+    // was a Bun.spawn pipe under Linux, which made every hook test trip the
+    // early-exit path with no stdout/stderr.
+    raw = await Bun.stdin.text();
     if (!raw.trim()) return;
   } catch {
     return;
