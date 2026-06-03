@@ -26,8 +26,10 @@ async function waitForHealth(maxMs = 25_000): Promise<void> {
   }
   // Drain whatever the spawned server printed so the CI log explains the failure.
   if (proc) {
-    const serverStderr = await new Response(proc.stderr).text().catch(() => '');
-    const serverStdout = await new Response(proc.stdout).text().catch(() => '');
+    const stdoutStream = proc.stdout instanceof ReadableStream ? proc.stdout : null;
+    const stderrStream = proc.stderr instanceof ReadableStream ? proc.stderr : null;
+    const serverStdout = stdoutStream ? await new Response(stdoutStream).text().catch(() => '') : '';
+    const serverStderr = stderrStream ? await new Response(stderrStream).text().catch(() => '') : '';
     process.stderr.write(`[server-smoke] server failed to come up after ${maxMs}ms\n`);
     if (serverStdout) process.stderr.write(`[server-smoke] stdout:\n${serverStdout}\n`);
     if (serverStderr) process.stderr.write(`[server-smoke] stderr:\n${serverStderr}\n`);
