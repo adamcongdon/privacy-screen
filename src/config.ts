@@ -151,13 +151,16 @@ export function loadConfig(explicitPath?: string): PrivacyConfig {
 }
 
 function findConfigPath(): string | null {
-  const candidates: Array<string | undefined> = [
-    process.env.PRIVACY_SCREEN_CONFIG,
+  // Env-var override is authoritative — if set, never fall through to CWD or
+  // project-root candidates, even when the target file doesn't exist. Tests
+  // and isolated processes rely on this to keep the dev-machine config out.
+  const envOverride = process.env.PRIVACY_SCREEN_CONFIG;
+  if (envOverride) return envOverride;
+  for (const c of [
     join(process.cwd(), 'PRIVACY_CONFIG.yaml'),
     resolve(import.meta.dir, '..', 'PRIVACY_CONFIG.yaml'),
-  ];
-  for (const c of candidates) {
-    if (c && existsSync(c)) return c;
+  ]) {
+    if (existsSync(c)) return c;
   }
   return null;
 }

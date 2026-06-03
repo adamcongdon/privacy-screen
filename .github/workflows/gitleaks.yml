@@ -21,7 +21,8 @@ jobs:
       - name: Run gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
-          # The action's free tier works on public repos without any token.
+          # Required for PR scans (action fetches commit list via GitHub API).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Org/private-repo users can wire a license here later:
           #   GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
           GITLEAKS_CONFIG: .gitleaks.toml
