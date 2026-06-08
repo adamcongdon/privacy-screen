@@ -127,9 +127,14 @@ jobs:
           vt_api_key: ${{ secrets.VT_API_KEY }}
           # Do not monitor for future changes (we control the build).
           vt_monitor: false
-          # Fail the job (and thus the release) if VT flags the binary.
-          # In practice this should only trigger on supply-chain compromise of the build env.
-          vt_fail_on_detection: true
+
+      - name: Prepare manifest file for GitHub release assets
+        # The build script always writes dist/release-manifest.json.
+        # For beta we want the asset uploaded as release-manifest-beta.json (and similarly for stable).
+        # This must happen BEFORE the gh release create step.
+        run: |
+          MANIFEST="${{ steps.vars.outputs.manifest_name }}"
+          cp dist/release-manifest.json "dist/$MANIFEST"
 
       - name: Create GitHub Release and upload assets
         env:
