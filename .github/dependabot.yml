@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # Bun / npm dependencies (bun.lock + package.json)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+    groups:
+      bun-deps:
+        patterns:
+          - "*"
+    # Security updates are always created even if this is set.
+    # You can ignore specific packages if needed.
+
+  # GitHub Actions used in workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"
