@@ -57,3 +57,64 @@ skip_scrub_fields:
 
 # SQLite DB path. Leave empty / ~ for default: $HOME/.claude/PAI/MEMORY/SCRUBBER/vocab.db
 db_path: ~
+
+# ---------------------------------------------------------------------------
+# Opt-in update channel.
+#
+# privacy-screen is local-first: by default it makes ZERO network calls of
+# its own. The update check is no exception — it ships disabled. Flip this
+# field on if you want privacy-screen to check for newer releases.
+#
+#   off     — DEFAULT. No network activity ever. /api/version still reports
+#             your installed version, but never fetches anything.
+#   stable  — On every /api/version request, performs a single HTTPS GET
+#             to update_manifest_url and compares versions. The request
+#             carries no telemetry — no User-Agent customization, no body,
+#             no query string. There is no auto-install. You see "update
+#             available" in the UI and decide what to do.
+#   beta    — Same as stable but only considers releases tagged
+#             `channel: "beta"` in the manifest.
+#
+# Even with this set to stable/beta, NOTHING is ever downloaded or executed
+# automatically. See Plans/INSTALLER.md for the full design and the
+# explicit out-of-scope list.
+update_channel: off
+
+# URL of the release manifest. Default points at the upstream repo on
+# GitHub raw. Override this to pin a mirror, an air-gapped copy, or your
+# own fork. Must be https://.
+update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
+
+# ---------------------------------------------------------------------------
+# Opt-in LLM secondary validator (JUDGE, not editor).
+#
+# A small local LLM (default: Qwen2.5-1.5B Q4_K_M via llama-server) reads the
+# already-scrubbed text and flags PII the regex+vocab layer might have missed —
+# multilingual names, regional address formats, novel patterns. Findings land
+# in the existing review queue for operator triage. The LLM NEVER mutates the
+# hot-path output; the regex+vocab layer remains the safety-critical gate.
+#
+# Privacy posture: fully local. Scrubbed text is POSTed to the long-lived
+# privacy-screen server at 127.0.0.1:31338, which runs the LLM in-process or
+# spawns a managed llama-server subprocess bound to 127.0.0.1 only. The hook
+# refuses to send to any non-loopback endpoint.
+#
+# Default: disabled. Enable only after running:
+#   bun cli/PrivacyScreen.ts install-judge --model qwen2.5-1.5b --allow-network
+# See Plans/LLM_RESEARCH.md and the "LLM secondary validation" section of
+# SAFETY_CHECKLIST.md.
+llm_validate:
+  enabled: false
+  # Absolute path to the GGUF model file. Set by `install-judge`.
+  model_path: ~
+  # Inference runtime. Only `llama-server` is supported in v1.
+  runtime: llama-server
+  # External endpoint URL. ~ = the server lazy-starts its own llama-server
+  # subprocess on a random loopback port. If set, MUST be 127.0.0.1/localhost.
+  endpoint: ~
+  # Hard cap on judge response tokens.
+  max_tokens: 256
+  # Per-call wall-clock budget on the server side (ms).
+  timeout_ms: 2500
+  # Spans below this confidence are dropped before reaching the review queue.
+  min_confidence: 0.6

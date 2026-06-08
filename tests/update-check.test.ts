@@ -1,0 +1,240 @@
+/**
+ * Tests for server/lib/update-check.ts.
+ *
+ * Covers:
+ *   - compareVersions numeric semantics (no string compare).
+ *   - checkForUpdate behavior across newer/equal/older/missing-platform
+ *     and malformed-manifest cases.
+ *   - Timeout via AbortController doesn't leak past timeoutMs + slack.
+ *
+ * Mocks fetch via the `fetchImpl` option — this avoids monkey-patching
+ * `globalThis.fetch` and keeps the tests deterministic.
+ */
+
+import { describe, test, expect } from 'bun:test';
+import { compareVersions, checkForUpdate, type ReleaseManifest } from '../server/lib/update-check';
+
+const GOOD_SHA = 'a'.repeat(64);
+const URL_ARM64 = 'https://example.invalid/releases/v1.2.3/darwin-arm64';
+const URL_X64 = 'https://example.invalid/releases/v1.2.3/darwin-x64';
+
+function manifest(overrides: Partial<ReleaseManifest> = {}): ReleaseManifest {
+  return {
+    version: '1.2.3',
+    channel: 'stable',
+    released_at: '2026-06-02T00:00:00Z',
+    notes_url: 'https://example.invalid/notes',
+    minimum_supported_version: '1.0.0',
+    platforms: {
+      'darwin-arm64': { url: URL_ARM64, sha256: GOOD_SHA, size_bytes: 1234 },
+      'darwin-x64': { url: URL_X64, sha256: GOOD_SHA, size_bytes: 1235 },
+    },
+    ...overrides,
+  };
+}
+
+function jsonResponse(body: unknown, init?: { ok?: boolean; status?: number }): Response {
+  const ok = init?.ok ?? true;
+  const status = init?.status ?? (ok ? 200 : 500);
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+function mockFetch(body: unknown, init?: { ok?: boolean; status?: number }): typeof fetch {
+  return (async () => jsonResponse(body, init)) as unknown as typeof fetch;
+}
+
+describe('compareVersions', () => {
+  test('equal versions', () => {
+    expect(compareVersions('1.0.0', '1.0.0')).toBe(0);
+  });
+
+  test('older first arg', () => {
+    expect(compareVersions('1.0.0', '1.0.1')).toBe(-1);
+  });
+
+  test('newer first arg', () => {
+    expect(compareVersions('1.0.1', '1.0.0')).toBe(1);
+  });
+
+  test('numeric compare on minor (1.2 < 1.10)', () => {
+    // String compare would say 1.10 < 1.2 — must be numeric.
+    expect(compareVersions('1.2.0', '1.10.0')).toBe(-1);
+    expect(compareVersions('1.10.0', '1.2.0')).toBe(1);
+  });
+
+  test('major dominates minor + patch', () => {
+    expect(compareVersions('2.0.0', '1.99.99')).toBe(1);
+  });
+
+  test('malformed versions compare as equal (graceful fallback)', () => {
+    expect(compareVersions('not-a-version', '1.0.0')).toBe(0);
+    expect(compareVersions('1.0.0', 'also-bad')).toBe(0);
+  });
+});
+
+describe('checkForUpdate', () => {
+  test('returns null when current matches latest', async () => {
+    const result = await checkForUpdate('1.2.3', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(manifest()),
+    });
+    expect(result).toBeNull();
+  });
+
+  test('returns UpdateInfo when latest is newer', async () => {
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(manifest()),
+    });
+    expect(result).not.toBeNull();
+    expect(result?.version).toBe('1.2.3');
+    expect(result?.url).toBe(URL_ARM64);
+    expect(result?.sha256).toBe(GOOD_SHA);
+    expect(result?.channel).toBe('stable');
+    expect(result?.notesUrl).toBe('https://example.invalid/notes');
+  });
+
+  test('returns null when latest is OLDER (never downgrade)', async () => {
+    const result = await checkForUpdate('2.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(manifest()),
+    });
+    expect(result).toBeNull();
+  });
+
+  test('rejects manifest with malformed sha256', async () => {
+    const bad = manifest({
+      platforms: {
+        'darwin-arm64': { url: URL_ARM64, sha256: 'abc', size_bytes: 100 },
+      },
+    });
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(bad),
+    });
+    expect(result).toBeNull();
+  });
+
+  test('rejects manifest with uppercase sha256 (must be lowercase hex)', async () => {
+    const bad = manifest({
+      platforms: {
+        'darwin-arm64': { url: URL_ARM64, sha256: 'A'.repeat(64), size_bytes: 100 },
+      },
+    });
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(bad),
+    });
+    expect(result).toBeNull();
+  });
+
+  test('returns null when platform key missing from manifest', async () => {
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'win32-x64', // not in our manifest fixture
+      fetchImpl: mockFetch(manifest()),
+    });
+    expect(result).toBeNull();
+  });
+
+  test('returns null when channel does not match', async () => {
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'beta',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(manifest()), // channel: 'stable'
+    });
+    expect(result).toBeNull();
+  });
+
+  test('returns null on non-2xx response', async () => {
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch({}, { ok: false, status: 404 }),
+    });
+    expect(result).toBeNull();
+  });
+
+  test('returns null on totally malformed JSON (not an object)', async () => {
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch('hello'),
+    });
+    expect(result).toBeNull();
+  });
+
+  test('returns null on missing required field (no version)', async () => {
+    const broken: unknown = {
+      channel: 'stable',
+      released_at: '2026-06-02T00:00:00Z',
+      platforms: { 'darwin-arm64': { url: URL_ARM64, sha256: GOOD_SHA, size_bytes: 1 } },
+    };
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(broken),
+    });
+    expect(result).toBeNull();
+  });
+
+  test('returns null when fetch throws (network error)', async () => {
+    const failing: typeof fetch = (async () => {
+      throw new Error('network unreachable');
+    }) as unknown as typeof fetch;
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: failing,
+    });
+    expect(result).toBeNull();
+  });
+
+  test('times out cleanly within timeoutMs + slack', async () => {
+    // fetch that respects AbortSignal — resolves never, rejects on abort.
+    const neverFetch: typeof fetch = ((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const sig = init?.signal;
+        if (sig) {
+          sig.addEventListener('abort', () => {
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        }
+      })) as unknown as typeof fetch;
+
+    const timeoutMs = 100;
+    const slack = 300;
+    const start = Date.now();
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      timeoutMs,
+      fetchImpl: neverFetch,
+    });
+    const elapsed = Date.now() - start;
+    expect(result).toBeNull();
+    expect(elapsed).toBeLessThan(timeoutMs + slack);
+  });
+});

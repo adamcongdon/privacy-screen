@@ -18,6 +18,10 @@
  *   POST /api/settings     — write settings
  *   POST /api/files        — upload + scrub
  *   GET  /api/health       — { ok: true }
+ *   GET  /api/version      — current version + opt-in update check
+ *   POST /api/judge        — opt-in LLM secondary validator (out-of-band)
+ *   GET  /api/judge-control/status
+ *   POST /api/judge-control/enable, /install — GUI controls for the judge
  */
 
 import { Hono } from 'hono';
@@ -33,7 +37,12 @@ import { reviewRoute } from './routes/review';
 import { patternsRoute } from './routes/patterns';
 import { settingsRoute } from './routes/settings';
 import { filesRoute } from './routes/files';
+import { versionRoute } from './routes/version';
+import { judgeRoute } from './routes/judge';
+import { judgeControlRoute } from './routes/judge-control';
 import { reportClaudeCodeStatus } from './lib/claude-code-check';
+import { shutdownLlmProcess, getLlmClient } from './lib/llm-process';
+import { loadConfig } from '../src/config';
 
 const PORT = Number(process.env.PRIVACY_SCREEN_PORT ?? 31338);
 const HOST = process.env.PRIVACY_SCREEN_BIND_ANY === '1' ? '0.0.0.0' : '127.0.0.1';
@@ -100,6 +109,9 @@ app.route('/api/review', reviewRoute);
 app.route('/api/patterns', patternsRoute);
 app.route('/api/settings', settingsRoute);
 app.route('/api/files', filesRoute);
+app.route('/api/version', versionRoute);
+app.route('/api/judge', judgeRoute);
+app.route('/api/judge-control', judgeControlRoute);
 
 // Static frontend bundle (built via `bun run web:build`).
 const webDist = join(import.meta.dir, '..', 'web', 'dist');
@@ -128,11 +140,26 @@ process.stdout.write(
     `  Web UI:           ${existsSync(webDist) ? 'served from web/dist' : 'run `bun run web:dev`'}\n`,
 );
 
-// Graceful shutdown
-const cleanup = (): void => {
+// Eager-start the LLM subprocess so it's warm before the first request.
+{
+  const llmCfg = loadConfig().llm_validate;
+  if (llmCfg.enabled) {
+    void getLlmClient(llmCfg);
+  }
+}
+
+// Graceful shutdown — drain the LLM subprocess (if any) before stopping the HTTP
+// server so a SIGINT/SIGTERM doesn't orphan llama-server. Cleanup still ends in
+// process.exit(0) so init systems see the expected exit code.
+const cleanup = async (): Promise<void> => {
   process.stdout.write('\nshutting down…\n');
+  try {
+    await shutdownLlmProcess();
+  } catch {
+    // best effort — never block shutdown on a misbehaving subprocess
+  }
   server.stop();
   process.exit(0);
 };
-process.on('SIGINT', cleanup);
-process.on('SIGTERM', cleanup);
+process.on('SIGINT', () => { void cleanup(); });
+process.on('SIGTERM', () => { void cleanup(); });

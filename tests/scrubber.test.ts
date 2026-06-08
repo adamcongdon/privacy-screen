@@ -188,6 +188,18 @@ const baseCfg: PrivacyConfig = {
     Grep: ['pattern'],
     Glob: ['pattern'],
   },
+  update_channel: 'off',
+  update_manifest_url:
+    'https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json',
+  llm_validate: {
+    enabled: false,
+    model_path: null,
+    runtime: 'llama-server',
+    endpoint: null,
+    max_tokens: 256,
+    timeout_ms: 2500,
+    min_confidence: 0.6,
+  },
 };
 
 describe('scrubText — customer_names from config', () => {
