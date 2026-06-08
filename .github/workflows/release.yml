@@ -108,8 +108,16 @@ jobs:
         # Requires the VT_API_KEY secret (VirusTotal free API key has generous limits).
         # Scans the final compiled binaries for reputation/malware before attaching
         # them to the GitHub release. Highly recommended for any project shipping executables.
-        # Remove the `if` or the whole step if you prefer not to scan on every release.
-        if: ${{ secrets.VT_API_KEY != '' }}
+        #
+        # IMPORTANT: We use a repository *variable* (not a secret) to control whether
+        # this step runs. You cannot reliably use `secrets.XXX != ''` in `if:` conditions
+        # (GitHub redacts secrets in expressions for security reasons, so the condition
+        # almost always evaluates to false/skip even when the secret exists).
+        #
+        # To enable:
+        #   1. Settings → Secrets and variables → Actions → Variables tab
+        #   2. Add variable: RUN_VIRUSTOTAL_SCAN = true
+        if: ${{ vars.RUN_VIRUSTOTAL_SCAN == 'true' }}
         uses: crazy-max/ghaction-virustotal@v4
         with:
           files: |
