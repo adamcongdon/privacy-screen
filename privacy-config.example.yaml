@@ -83,6 +83,15 @@ update_channel: off
 # URL of the release manifest. Default points at the upstream repo on
 # GitHub raw. Override this to pin a mirror, an air-gapped copy, or your
 # own fork. Must be https://.
+#
+# Stable (default for most users):
+#   https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
+#
+# Beta (auto beta builds + manifest when PRs land on the `beta` branch):
+#   https://raw.githubusercontent.com/adamcongdon/privacy-screen/beta/release-manifest-beta.json
+#   (set update_channel: beta when using the beta manifest)
+#
+# Branch flow: ac-build (daily) → PR to beta (deploys beta) → PR from beta to main (deploys stable)
 update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
 
 # ---------------------------------------------------------------------------

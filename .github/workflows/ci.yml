@@ -2,8 +2,11 @@ name: ci
 
 on:
   push:
-    branches: [main, dev]
+    branches: [ac-build, beta, main]
   pull_request:
+  # Re-evaluate approval gates when reviews are submitted (e.g. owner approves).
+  pull_request_review:
+    types: [submitted]
 
 permissions:
   contents: read
@@ -27,3 +30,88 @@ jobs:
 
       - name: Test
         run: bun test
+
+  # Enforce that the only way to land code on main is a PR from the `beta` branch.
+  # Flow:
+  #   - ac-build is your primary day-to-day development branch.
+  #   - PR from ac-build (or feature branches) into `beta` → triggers beta build/deploy.
+  #   - PR from `beta` into `main` → triggers stable release (protected: only you can approve).
+  #
+  # This job is intended to be marked as a required status check on the
+  # "main" branch protection / ruleset.
+  enforce-beta-to-main:
+    name: enforce-beta-to-main
+    if: |
+      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
+      (github.event_name == 'pull_request_review' && github.event.pull_request.base.ref == 'main')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check that PR source is beta
+        run: |
+          # Resolve head/base for both pull_request and pull_request_review events
+          HEAD_REF="${{ github.head_ref || github.event.pull_request.head.ref }}"
+          BASE_REF="${{ github.base_ref || github.event.pull_request.base.ref }}"
+
+          if [ "$BASE_REF" != "main" ]; then
+            echo "Not a PR to main (base=$BASE_REF) — skipping"
+            exit 0
+          fi
+          if [ "$HEAD_REF" != "beta" ]; then
+            echo "::error::Pull requests targeting main are only allowed from the beta branch."
+            echo "This PR is from '$HEAD_REF'."
+            exit 1
+          fi
+          echo "PR source branch is beta — OK for main"
+
+  # For PRs to main, require that at least one approving review comes from
+  # the repository owner (adamcongdon). This provides a technical gate
+  # complementing GitHub branch protection "required approving reviews" +
+  # CODEOWNERS. This job is also intended to be a required status check on main.
+  #
+  # Note: uses the GitHub CLI (gh) which is available and pre-authenticated
+  # in GitHub Actions runners for the current repository context.
+  require-owner-approval:
+    name: require-owner-approval
+    if: |
+      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
+      (github.event_name == 'pull_request_review' && github.event.pull_request.base.ref == 'main')
+    runs-on: ubuntu-latest
+    # Need contents:read (default) + pull-requests:read for gh pr view reviews.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout (for gh)
+        uses: actions/checkout@v4
+
+      - name: Check for owner approval on PR to main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # github.event.pull_request is populated for both pull_request and
+          # pull_request_review events when the review is on a PR.
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          OWNER="${{ github.repository_owner }}"
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "::error::Could not determine PR number (event: ${{ github.event_name }})."
+            exit 1
+          fi
+
+          echo "Checking approvals for PR #${PR_NUMBER} to main (owner: ${OWNER})..."
+
+          # Fetch reviews as JSON. gh is pre-installed.
+          REVIEWS_JSON=$(gh pr view "$PR_NUMBER" --json reviews --jq '.reviews // []' || echo '[]')
+
+          # Look for any review with state "APPROVED" by the owner login.
+          HAS_OWNER_APPROVAL=$(echo "$REVIEWS_JSON" | jq -r --arg owner "$OWNER" '
+            any(.[]; .author.login == $owner and .state == "APPROVED")
+          ' 2>/dev/null || echo "false")
+
+          if [ "$HAS_OWNER_APPROVAL" != "true" ]; then
+            echo "::error::PRs to main require an approving review from the repository owner (@${OWNER})."
+            echo "Current reviews: $REVIEWS_JSON"
+            exit 1
+          fi
+
+          echo "Owner approval present for PR #${PR_NUMBER} — OK"

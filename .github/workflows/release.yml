@@ -1,0 +1,177 @@
+name: release
+
+# Auto-deploy beta builds on pushes to the `beta` branch.
+#   (PRs landing on `beta` — typically from your primary ac-build branch — trigger beta.)
+# Generate full (stable) releases on pushes to main (PRs from `beta` to `main` only).
+
+on:
+  push:
+    branches: [beta, main]
+
+permissions:
+  contents: write   # create releases + upload assets; push updated manifest back to the branch
+  pull-requests: read
+
+jobs:
+  # Always run the normal test/lint before producing a release artifact.
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint (tsc --noEmit)
+        run: bun lint
+
+      - name: Test
+        run: bun test
+
+  build-and-release:
+    name: build-and-release (${{ github.ref_name }})
+    needs: test
+    runs-on: ubuntu-latest
+    # Only on direct pushes to the protected branches (post-merge).
+    # PRs do not trigger this workflow.
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need full history for sha if we embed it; also for the later git commit of manifest.
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Compute version + channel + tag info
+        id: vars
+        run: |
+          BASE_VERSION=$(jq -r .version package.json)
+          BRANCH="${{ github.ref_name }}"
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          RUN_NUM="${{ github.run_number }}"
+
+          if [ "$BRANCH" = "beta" ]; then
+            CHANNEL="beta"
+            # Qualify the version baked into the binary + manifest for this beta build.
+            # Using run_number gives a monotonically increasing id for compareVersions.
+            QUAL_VERSION="${BASE_VERSION}-beta.${RUN_NUM}"
+            TAG="v${QUAL_VERSION}"
+            MANIFEST_NAME="release-manifest-beta.json"
+            PRERELEASE_FLAG="--prerelease"
+            RELEASE_TITLE="Beta ${BASE_VERSION} (run ${RUN_NUM}, ${SHORT_SHA})"
+          else
+            CHANNEL="stable"
+            QUAL_VERSION="${BASE_VERSION}"
+            TAG="v${QUAL_VERSION}"
+            MANIFEST_NAME="release-manifest.json"
+            PRERELEASE_FLAG=""
+            RELEASE_TITLE="v${QUAL_VERSION}"
+          fi
+
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "base_version=$BASE_VERSION" >> $GITHUB_OUTPUT
+          echo "qual_version=$QUAL_VERSION" >> $GITHUB_OUTPUT
+          echo "channel=$CHANNEL" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "manifest_name=$MANIFEST_NAME" >> $GITHUB_OUTPUT
+          echo "prerelease_flag=$PRERELEASE_FLAG" >> $GITHUB_OUTPUT
+          echo "release_title=$RELEASE_TITLE" >> $GITHUB_OUTPUT
+          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+
+          echo "channel=$CHANNEL version=$QUAL_VERSION tag=$TAG manifest=$MANIFEST_NAME"
+
+      - name: Prepare beta-qualified package.json version (ephemeral, for this build only)
+        if: steps.vars.outputs.channel == 'beta'
+        run: |
+          QUAL="${{ steps.vars.outputs.qual_version }}"
+          echo "Temporarily setting package.json version to ${QUAL} for beta binary + manifest"
+          jq --arg v "$QUAL" '.version = $v' package.json > package.json.tmp
+          mv package.json.tmp package.json
+
+      - name: Build release artifacts (web + compiled binaries + manifest)
+        run: |
+          CHANNEL="${{ steps.vars.outputs.channel }}"
+          bun scripts/build-release.ts --channel "$CHANNEL"
+
+      - name: Create GitHub Release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          TITLE="${{ steps.vars.outputs.release_title }}"
+          PRERELEASE="${{ steps.vars.outputs.prerelease_flag }}"
+          MANIFEST="${{ steps.vars.outputs.manifest_name }}"
+
+          # Create (or update if the tag already exists for some reason) the release.
+          # We pass the three platform binaries + the generated manifest as assets.
+          # Using --generate-notes for a basic changelog; adjust as desired.
+          gh release create "$TAG" \
+            --title "$TITLE" \
+            $PRERELEASE \
+            --generate-notes \
+            dist/privacy-screen-darwin-arm64 \
+            dist/privacy-screen-darwin-x64 \
+            dist/privacy-screen-win32-x64.exe \
+            "dist/${MANIFEST}" \
+            || ( \
+              echo "Release may already exist; uploading assets to existing tag..." && \
+              gh release upload "$TAG" \
+                dist/privacy-screen-darwin-arm64 \
+                dist/privacy-screen-darwin-x64 \
+                dist/privacy-screen-win32-x64.exe \
+                "dist/${MANIFEST}" \
+                --clobber \
+            )
+
+          echo "Release $TAG created/updated with assets."
+
+      - name: Restore clean package.json (do not commit the beta-qualified version)
+        if: steps.vars.outputs.channel == 'beta'
+        run: |
+          git checkout -- package.json || true
+
+      - name: Update release manifest in repo (for raw URL consumption by the app)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${{ steps.vars.outputs.branch }}"
+          MANIFEST_NAME="${{ steps.vars.outputs.manifest_name }}"
+          TAG="${{ steps.vars.outputs.tag }}"
+
+          echo "Updating ${MANIFEST_NAME} on ${BRANCH} from dist/release-manifest.json"
+          # When BRANCH=beta we are publishing the beta manifest (triggered by PRs landing on beta).
+
+          # Copy the just-built manifest (which has the correct channel + version + asset URLs)
+          # to the conventional name at repo root.
+          cp dist/release-manifest.json "./${MANIFEST_NAME}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add "${MANIFEST_NAME}"
+          # Use [skip ci] so the push does not re-trigger this release workflow (or the normal ci).
+          if git commit -m "chore(release): update ${MANIFEST_NAME} for ${TAG} [skip ci]"; then
+            git push origin "HEAD:${BRANCH}"
+            echo "Pushed updated ${MANIFEST_NAME} to ${BRANCH}"
+          else
+            echo "No changes to ${MANIFEST_NAME} (already up to date or identical)"
+          fi
+
+      - name: Summary
+        run: |
+          echo "✅ Release workflow complete for ${{ steps.vars.outputs.branch }}"
+          echo "Channel: ${{ steps.vars.outputs.channel }}"
+          echo "Version (baked): ${{ steps.vars.outputs.qual_version }}"
+          echo "Tag: ${{ steps.vars.outputs.tag }}"
+          echo "Manifest committed as: ${{ steps.vars.outputs.manifest_name }}"

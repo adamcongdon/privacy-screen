@@ -4,6 +4,7 @@
  *
  * Run from project root:
  *   bun scripts/build-release.ts
+ *   bun scripts/build-release.ts --channel beta
  *
  * Outputs:
  *   dist/privacy-screen-darwin-arm64
@@ -11,9 +12,11 @@
  *   dist/privacy-screen-win32-x64.exe
  *   dist/release-manifest.json
  *
+ * Use --channel beta to produce a beta-channel manifest (for dev-branch
+ * auto-builds). Default is 'stable'.
+ *
  * This script does NOT push anything anywhere. It produces local artifacts;
- * publishing a release is a separate, deliberate human step. See
- * Plans/INSTALLER.md.
+ * publishing a release is a separate step handled by CI for dev/main.
  */
 
 import { mkdir, readFile, writeFile, stat } from 'fs/promises';
@@ -69,6 +72,9 @@ const TARGETS: Target[] = [
 async function main(): Promise<void> {
   process.stdout.write('--- build-release ---\n');
 
+  const channel = parseChannel();
+  process.stdout.write(`channel: ${channel}\n`);
+
   const pkg = await readPkg();
   process.stdout.write(`version: ${pkg.version}\n`);
 
@@ -111,7 +117,7 @@ async function main(): Promise<void> {
   // 3. Write manifest.
   const manifest: ReleaseManifest = {
     version: pkg.version,
-    channel: 'stable',
+    channel,
     released_at: new Date().toISOString(),
     notes_url: `https://github.com/adamcongdon/privacy-screen/releases/tag/v${pkg.version}`,
     platforms,
@@ -120,6 +126,24 @@ async function main(): Promise<void> {
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
   process.stdout.write(`wrote ${manifestPath}\n`);
   process.stdout.write('--- done ---\n');
+}
+
+function parseChannel(): 'stable' | 'beta' {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--channel' || a === '-c') {
+      const val = args[i + 1];
+      if (val === 'beta' || val === 'stable') return val;
+      throw new Error(`--channel must be 'stable' or 'beta', got '${val}'`);
+    }
+    if (a.startsWith('--channel=')) {
+      const val = a.slice('--channel='.length);
+      if (val === 'beta' || val === 'stable') return val;
+      throw new Error(`--channel must be 'stable' or 'beta', got '${val}'`);
+    }
+  }
+  return 'stable';
 }
 
 async function readPkg(): Promise<PkgJson> {
