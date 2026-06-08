@@ -219,15 +219,17 @@ Add your own via `skip_scrub_fields:` in `PRIVACY_CONFIG.yaml`.
 
 ## CI
 
-Workflows live in [`.github/workflows/`](.github/workflows/) and run on every push to `main` and every pull request unless noted.
+Workflows live in [`.github/workflows/`](.github/workflows/) .
 
-- [`ci.yml`](.github/workflows/ci.yml) — `bun install --frozen-lockfile`, `bun lint` (tsc --noEmit), then `bun test`. Catches type regressions and broken tests.
-- [`codeql.yml`](.github/workflows/codeql.yml) — GitHub's CodeQL static analysis for JavaScript/TypeScript. Catches SAST findings (injection, unsafe sinks, prototype pollution). Also runs weekly on a schedule.
+- [`ci.yml`](.github/workflows/ci.yml) — lint + test on push to ac-build / beta / main and all PRs. Also enforces two `main`-targeting rules as required status checks:
+  - Only PRs **from `beta`** are allowed to target `main` (hard fail otherwise).
+  - PRs to `main` require an approving review **from the repo owner** (`@adamcongdon`).
+- [`release.yml`](.github/workflows/release.yml) — **beta builds** are auto-deployed when PRs land on the `beta` branch (as GitHub prereleases, with `channel: "beta"` in the manifest and `release-manifest-beta.json` committed to the `beta` branch). **Full stable releases** are generated on merges from `beta` to `main` (regular GitHub releases + `release-manifest.json` on `main`).
 - [`gitleaks.yml`](.github/workflows/gitleaks.yml) — git history secret scan via gitleaks, configured by [`.gitleaks.toml`](.gitleaks.toml). Catches accidentally committed credentials. Fake fixtures under `tests/` are allowlisted.
-- [`dependency-review.yml`](.github/workflows/dependency-review.yml) — GitHub's dependency-review action on PRs. Fails the PR if a newly added dependency carries a CVE of `moderate` severity or higher.
-- [`osv-scanner.yml`](.github/workflows/osv-scanner.yml) — Google OSV scanner against `package.json` + `bun.lock` for the full transitive graph. Also runs weekly.
 
-All workflows use least-privilege `permissions:` blocks and rely on the free tier of each action — no repo secrets are required.
+See [`.github/workflows/README.md`](.github/workflows/README.md) for branch protection requirements on `main` (dev-only source + owner approval + CODEOWNERS).
+
+All workflows use least-privilege `permissions:` blocks. The release workflow requires `contents: write` to create releases and push manifest updates.
 
 ## Updates
 
@@ -238,6 +240,23 @@ PrivacyScreen ships an **opt-in** update check. There is no auto-install, no tel
 update_channel: off               # off | stable | beta. Default off.
 update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
 ```
+
+### Channels & manifests (auto-published by CI)
+
+- `stable` (most users): points at `main/release-manifest.json`. Full releases are generated only when a PR from `beta` lands on `main`.
+- `beta`: set `update_channel: beta` and point the manifest at the `beta` branch:
+  ```yaml
+  update_channel: beta
+  update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/beta/release-manifest-beta.json
+  ```
+  Every time a PR lands on the `beta` branch (typically merged from your primary `ac-build` branch), it triggers an automatic beta build (GitHub prerelease + updated beta manifest). Beta manifests use qualified versions like `1.2.3-beta.42` (based on workflow run number) so the update check can offer newer betas.
+
+Branch flow:
+- `ac-build` — your primary day-to-day branch.
+- `beta` — PR into `beta` deploys beta.
+- `main` — PR from `beta` to `main` deploys stable release (protected, only you approve).
+
+See `privacy-config.example.yaml` for the commented examples and [`Plans/INSTALLER.md`](Plans/INSTALLER.md) for design rationale.
 
 When `update_channel` is `stable` or `beta`, hit `GET /api/version` to see whether a newer release is available:
 
@@ -257,7 +276,7 @@ When `update_channel` is `stable` or `beta`, hit `GET /api/version` to see wheth
 }
 ```
 
-The check is *informational only* in this iteration — downloading and installing the new binary is still a manual step. See [`Plans/INSTALLER.md`](Plans/INSTALLER.md) for the full distribution roadmap.
+The check is *informational only* — downloading and installing the new binary is still a manual step. Beta users get the latest dev bits via the beta manifest after merges to `dev`.
 
 ## What's gitignored
 

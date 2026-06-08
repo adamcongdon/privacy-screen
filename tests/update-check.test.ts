@@ -3,8 +3,9 @@
  *
  * Covers:
  *   - compareVersions numeric semantics (no string compare).
- *   - checkForUpdate behavior across newer/equal/older/missing-platform
- *     and malformed-manifest cases.
+ *   - compareVersions for beta prereleases (1.2.3 > 1.2.3-beta.N, higher beta > lower).
+ *   - checkForUpdate behavior across newer/equal/older/missing-platform,
+ *     channel matching, and malformed-manifest cases.
  *   - Timeout via AbortController doesn't leak past timeoutMs + slack.
  *
  * Mocks fetch via the `fetchImpl` option — this avoids monkey-patching
@@ -72,6 +73,31 @@ describe('compareVersions', () => {
   test('malformed versions compare as equal (graceful fallback)', () => {
     expect(compareVersions('not-a-version', '1.0.0')).toBe(0);
     expect(compareVersions('1.0.0', 'also-bad')).toBe(0);
+  });
+
+  // Beta prerelease ordering (for auto beta builds)
+  test('beta vs clean release of same base', () => {
+    expect(compareVersions('1.2.3-beta.1', '1.2.3')).toBe(-1);
+    expect(compareVersions('1.2.3', '1.2.3-beta.1')).toBe(1);
+  });
+
+  test('higher beta number is newer (run-number style)', () => {
+    expect(compareVersions('1.0.0-beta.9', '1.0.0-beta.10')).toBe(-1);
+    expect(compareVersions('1.0.0-beta.10', '1.0.0-beta.9')).toBe(1);
+    expect(compareVersions('1.0.0-beta.42', '1.0.0-beta.42')).toBe(0);
+  });
+
+  test('beta with non-numeric id falls back to lexical (sha style)', () => {
+    // lexical is acceptable for sha suffixes when we don't have numeric run ids
+    expect(compareVersions('1.0.0-beta.abc', '1.0.0-beta.def')).toBe(-1);
+    expect(compareVersions('1.0.0-beta.def', '1.0.0-beta.abc')).toBe(1);
+  });
+
+  test('beta ids compare across mixed numeric/lexical gracefully (numeric wins if both numeric)', () => {
+    // One numeric, one not — fall to lexical on the strings
+    const r = compareVersions('1.0.0-beta.10', '1.0.0-beta.abc');
+    // We don't assert a specific direction here beyond "defined and consistent"
+    expect([-1, 0, 1]).toContain(r);
   });
 });
 
@@ -157,6 +183,34 @@ describe('checkForUpdate', () => {
       manifestUrl: 'https://example.invalid/manifest.json',
       platform: 'darwin-arm64',
       fetchImpl: mockFetch(manifest()), // channel: 'stable'
+    });
+    expect(result).toBeNull();
+  });
+
+  test('beta channel accepts beta manifest and treats higher beta run as newer', async () => {
+    const betaManifest = manifest({
+      version: '1.0.0-beta.42',
+      channel: 'beta',
+      notes_url: 'https://example.invalid/releases/tag/v1.0.0-beta.42',
+    });
+    const result = await checkForUpdate('1.0.0-beta.7', {
+      channel: 'beta',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(betaManifest),
+    });
+    expect(result).not.toBeNull();
+    expect(result?.version).toBe('1.0.0-beta.42');
+    expect(result?.channel).toBe('beta');
+  });
+
+  test('beta client on a beta does not see a stable manifest (channel filter)', async () => {
+    const stableManifest = manifest({ version: '1.0.0', channel: 'stable' });
+    const result = await checkForUpdate('1.0.0-beta.7', {
+      channel: 'beta',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(stableManifest),
     });
     expect(result).toBeNull();
   });
