@@ -1,0 +1,6 @@
+# CODEOWNERS for privacy-screen
+# PRs to main require approval from the owner (per repo policy + branch protection).
+# See .github/workflows/ci.yml for the source-branch enforcement (beta → main only)
+# and the owner-approval status check job.
+
+* @adamcongdon
