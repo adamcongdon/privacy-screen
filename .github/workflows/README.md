@@ -11,6 +11,8 @@
   - For main: produces a regular GitHub release (not prerelease), uploads binaries + `release-manifest.json` (with `channel: "stable"`), then commits the manifest to `release-manifest.json` on `main`.
   - Beta users point `update_manifest_url` at the `beta` branch's `release-manifest-beta.json` and set `update_channel: beta`.
 - `gitleaks.yml` — secret-scanning on push + PR
+- `semgrep.yml` — SAST/code security scanning (Semgrep p/ci + p/security + p/secrets rules) on push + PR. No GitHub Advanced Security required.
+- Release workflow also performs VirusTotal scanning of the built platform binaries (when `VT_API_KEY` secret is configured).
 
 ## Branch protection expectations for `main`
 - Require pull requests.
@@ -28,8 +30,16 @@ Branch roles:
 
 ## Disabled (`.yml.disabled`)
 
-These three require GitHub Advanced Security or a public repo to upload SARIF results / scan dependency graph. Re-enable by renaming back to `.yml` once the repo is public or GHAS is enabled:
+These require GitHub Advanced Security (or making the repo public) for full features like SARIF upload to code scanning and dependency graph:
 
-- `codeql.yml.disabled`
-- `osv-scanner.yml.disabled`
-- `dependency-review.yml.disabled`
+- `codeql.yml.disabled` — GitHub CodeQL SAST
+- `osv-scanner.yml.disabled` — Google OSV dependency vulnerability scanner (scheduled)
+- `dependency-review.yml.disabled` — GitHub dependency review on PRs (blocks PRs introducing vulnerable deps)
+
+They can be re-enabled by renaming the files once GHAS is available.
+
+## Additional security tooling (no GHAS needed)
+- Semgrep (active via `semgrep.yml`)
+- gitleaks (active)
+- VirusTotal binary scanning on releases (when secret configured)
+- Consider enabling Dependabot (add `.github/dependabot.yml`) for automated dependency security updates.

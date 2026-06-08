@@ -224,10 +224,11 @@ Workflows live in [`.github/workflows/`](.github/workflows/) .
 - [`ci.yml`](.github/workflows/ci.yml) — lint + test on push to ac-build / beta / main and all PRs. Also enforces two `main`-targeting rules as required status checks:
   - Only PRs **from `beta`** are allowed to target `main` (hard fail otherwise).
   - PRs to `main` require an approving review **from the repo owner** (`@adamcongdon`).
-- [`release.yml`](.github/workflows/release.yml) — **beta builds** are auto-deployed when PRs land on the `beta` branch (as GitHub prereleases, with `channel: "beta"` in the manifest and `release-manifest-beta.json` committed to the `beta` branch). **Full stable releases** are generated on merges from `beta` to `main` (regular GitHub releases + `release-manifest.json` on `main`).
+- [`release.yml`](.github/workflows/release.yml) — **beta builds** are auto-deployed when PRs land on the `beta` branch (as GitHub prereleases, with `channel: "beta"` in the manifest and `release-manifest-beta.json` committed to the `beta` branch). **Full stable releases** are generated on merges from `beta` to `main` (regular GitHub releases + `release-manifest.json` on `main`). Also runs VirusTotal scans on the built platform binaries (when `VT_API_KEY` secret is set).
 - [`gitleaks.yml`](.github/workflows/gitleaks.yml) — git history secret scan via gitleaks, configured by [`.gitleaks.toml`](.gitleaks.toml). Catches accidentally committed credentials. Fake fixtures under `tests/` are allowlisted.
+- [`semgrep.yml`](.github/workflows/semgrep.yml) — static application security testing (SAST) using Semgrep with `p/ci`, `p/security`, and `p/secrets` rule packs. Runs on push + PRs. No GitHub Advanced Security required.
 
-See [`.github/workflows/README.md`](.github/workflows/README.md) for branch protection requirements on `main` (dev-only source + owner approval + CODEOWNERS).
+See [`.github/workflows/README.md`](.github/workflows/README.md) for the full list of workflows, branch protection requirements on `main`, and notes on disabled scans (CodeQL, OSV, dependency-review) that need GHAS or a public repo.
 
 All workflows use least-privilege `permissions:` blocks. The release workflow requires `contents: write` to create releases and push manifest updates.
 
