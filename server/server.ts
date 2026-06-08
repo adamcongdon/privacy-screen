@@ -19,6 +19,9 @@
  *   POST /api/files        — upload + scrub
  *   GET  /api/health       — { ok: true }
  *   GET  /api/version      — current version + opt-in update check
+ *   GET  /api/update/status
+ *   POST /api/update/download — explicit download of a newer binary for the selected channel
+ *   POST /api/update/apply    — verified self-replace + detached relaunch (user-initiated)
  *   POST /api/judge        — opt-in LLM secondary validator (out-of-band)
  *   GET  /api/judge-control/status
  *   POST /api/judge-control/enable, /install — GUI controls for the judge
@@ -40,6 +43,7 @@ import { filesRoute } from './routes/files';
 import { versionRoute } from './routes/version';
 import { judgeRoute } from './routes/judge';
 import { judgeControlRoute } from './routes/judge-control';
+import { updateRoute } from './routes/update';
 import { reportClaudeCodeStatus } from './lib/claude-code-check';
 import { shutdownLlmProcess, getLlmClient } from './lib/llm-process';
 import { loadConfig } from '../src/config';
@@ -110,6 +114,7 @@ app.route('/api/patterns', patternsRoute);
 app.route('/api/settings', settingsRoute);
 app.route('/api/files', filesRoute);
 app.route('/api/version', versionRoute);
+app.route('/api/update', updateRoute);
 app.route('/api/judge', judgeRoute);
 app.route('/api/judge-control', judgeControlRoute);
 

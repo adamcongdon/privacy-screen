@@ -75,9 +75,10 @@ db_path: ~
 #   beta    — Same as stable but only considers releases tagged
 #             `channel: "beta"` in the manifest.
 #
-# Even with this set to stable/beta, NOTHING is ever downloaded or executed
-# automatically. See Plans/INSTALLER.md for the full design and the
-# explicit out-of-scope list.
+# Even with this set to stable/beta, downloads and installs are never automatic.
+# In the web UI (Settings → Updates) you explicitly click "Download update" and later
+# "Install & restart". The server verifies the sha256 from the manifest before the
+# Install button is offered. See Plans/INSTALLER.md.
 update_channel: off
 
 # URL of the release manifest. Default points at the upstream repo on
