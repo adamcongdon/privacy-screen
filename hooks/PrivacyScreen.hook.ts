@@ -41,6 +41,9 @@ interface HookInput {
 
 const MAX_INPUT_BYTES = 1_000_000; // 1MB — anything larger gets logged + passed through
 const SCRUB_BUDGET_MS = 1500;       // soft budget; hook still has 8s outer timeout
+const JUDGE_DISPATCH_BUDGET_MS = 150; // fire-and-forget POST cap to the long-lived server
+const JUDGE_MIN_SCRUBBED_LEN = 24;   // mirrors the judge module's MIN_INPUT_LENGTH
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -49,8 +52,11 @@ async function main(): Promise<void> {
 
   let raw: string;
   try {
-    const { readFileSync } = await import('fs');
-    raw = readFileSync('/dev/stdin', 'utf-8');
+    // Bun.stdin.text() is reliable across macOS + Linux pipes. The previous
+    // readFileSync('/dev/stdin') silently returned an empty string when stdin
+    // was a Bun.spawn pipe under Linux, which made every hook test trip the
+    // early-exit path with no stdout/stderr.
+    raw = await Bun.stdin.text();
     if (!raw.trim()) return;
   } catch {
     return;
@@ -204,6 +210,18 @@ async function handlePreTool(
       hookSpecificOutput: { updatedInput: scrubbedInput },
     }),
   );
+
+  // Fire-and-forget the LLM judge (opt-in, default off). The hook's stdout
+  // JSON is already on its way to Claude Code by the time fetch awaits, so
+  // this adds no user-visible latency on the read side — but we cap at
+  // JUDGE_DISPATCH_BUDGET_MS so the hook can still exit promptly. Failures
+  // are silent; the judge is best-effort by design.
+  await dispatchJudge(
+    JSON.stringify(scrubbedInput),
+    map,
+    `preToolUse:${toolName}`,
+    cfg,
+  );
 }
 
 async function handlePostTool(
@@ -265,6 +283,66 @@ function buildTokenSummary(
     seen.set(token, realValue);
   }
   return [...seen.entries()].map(([token, real]) => `  ${token} → "${real}"`).join('\n');
+}
+
+/**
+ * Fire-and-forget POST to the privacy-screen server's /api/judge endpoint.
+ * Returns void; never throws. Capped at 150 ms via AbortSignal so a slow or
+ * dead server cannot block the hook past its outer 8 s timeout.
+ *
+ * Safety:
+ *   - No-ops when `cfg.llm_validate.enabled === false`.
+ *   - No-ops when scrubbed text is shorter than the judge's MIN_INPUT_LENGTH.
+ *   - Endpoint is always `http://127.0.0.1:${PRIVACY_SCREEN_PORT ?? 31338}/api/judge`
+ *     unless overridden by `PRIVACY_SCREEN_JUDGE_ENDPOINT` (used by tests).
+ *   - Refuses any endpoint whose hostname is not in LOOPBACK_HOSTS — defense
+ *     in depth against env-var misconfig leaking PII off-box.
+ */
+async function dispatchJudge(
+  scrubbed: string,
+  map: ScrubMap,
+  sourceEvent: string,
+  cfg: PrivacyConfig,
+): Promise<void> {
+  if (!cfg.llm_validate.enabled) return;
+  if (scrubbed.length < JUDGE_MIN_SCRUBBED_LEN) return;
+
+  const endpoint = judgeEndpoint();
+  if (endpoint === null) return; // non-loopback URL — refused
+
+  try {
+    await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        scrubbed,
+        tokenMap: map.serialize(),
+        sourceEvent,
+      }),
+      signal: AbortSignal.timeout(JUDGE_DISPATCH_BUDGET_MS),
+    });
+  } catch {
+    // Silent. Judge is best-effort; the regex+vocab layer already shipped.
+  }
+}
+
+/**
+ * Resolve the judge endpoint URL. Honors PRIVACY_SCREEN_JUDGE_ENDPOINT for
+ * tests; otherwise builds `http://127.0.0.1:${PRIVACY_SCREEN_PORT ?? 31338}/api/judge`.
+ * Returns null if the resolved URL fails parse or is not loopback.
+ */
+function judgeEndpoint(): string | null {
+  const override = process.env.PRIVACY_SCREEN_JUDGE_ENDPOINT;
+  const port = process.env.PRIVACY_SCREEN_PORT ?? '31338';
+  const url = override ?? `http://127.0.0.1:${port}/api/judge`;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (!LOOPBACK_HOSTS.has(parsed.hostname)) return null;
+  return url;
 }
 
 main().catch((err) => {

@@ -355,6 +355,20 @@ export const api = {
   async deletePattern(id: number): Promise<{ ok: true }> {
     return json(await fetch(`/api/patterns/${id}`, { method: 'DELETE' }));
   },
+
+  // Fire-and-forget: sends scrubbed text to the LLM judge for secondary PII
+  // validation. Never awaited — the judge is out-of-band and best-effort.
+  judgePost(scrubbed: string, tokens: Token[]): void {
+    const tokenMap = {
+      v: 1,
+      entries: tokens.map((t) => ({ token: t.token, real: t.realValue })),
+    };
+    fetch('/api/judge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scrubbed, tokenMap, sourceEvent: 'web-scrub' }),
+    }).catch(() => { /* best-effort */ });
+  },
 };
 
 export type InducedPatternDto = {
@@ -369,6 +383,62 @@ export type InducedPatternDto = {
   hit_count: number;
   first_seen: number;
   last_seen: number;
+};
+
+// ─── LLM judge control ────────────────────────────────────────────────────────
+
+export type JudgeStatus = {
+  config: {
+    enabled: boolean;
+    model_path: string | null;
+    endpoint: string | null;
+    runtime: string;
+    max_tokens: number;
+    timeout_ms: number;
+    min_confidence: number;
+  };
+  runtime: { installed: boolean; path: string | null };
+  model: { installed: boolean; path: string | null; bytes: number | null };
+  available_models: Array<{
+    name: string;
+    url: string;
+    expected_size_bytes: number;
+    description: string;
+  }>;
+  process: { state: string; detail: string | null };
+  activeRequests: number;
+  install: {
+    active: boolean;
+    modelName: string | null;
+    bytesDownloaded: number;
+    totalBytes: number;
+    startedAt: number;
+    finishedAt: number | null;
+    error: string | null;
+    destPath: string | null;
+  };
+};
+
+export const judgeApi = {
+  async status(): Promise<JudgeStatus> {
+    return json(await fetch('/api/judge-control/status'));
+  },
+  async setEnabled(enabled: boolean): Promise<{ ok: boolean }> {
+    const res = await fetch('/api/judge-control/enable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+    return json(res);
+  },
+  async install(model: string): Promise<{ ok: boolean }> {
+    const res = await fetch('/api/judge-control/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    });
+    return json(res);
+  },
 };
 
 export { ApiError };

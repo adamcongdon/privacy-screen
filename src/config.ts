@@ -14,6 +14,43 @@ import { parse as parseYaml } from 'yaml';
 
 export type Mode = 'enforce' | 'observe' | 'disabled';
 
+/**
+ * Update channel. `off` is the default and means: no network activity ever.
+ * `stable` / `beta` enable a single HTTPS GET to the release manifest on
+ * version-check requests. See Plans/INSTALLER.md.
+ */
+export type UpdateChannel = 'off' | 'stable' | 'beta';
+
+/**
+ * LLM secondary-validation runtime. Only `llama-server` is supported in v1
+ * (llama.cpp's HTTP server). The judge is opt-in and runs out-of-band — the
+ * regex+vocab scrubber remains the safety-critical synchronous gate.
+ *
+ * See `Plans/LLM_RESEARCH.md` and `SAFETY_CHECKLIST.md`.
+ */
+export type LlmRuntime = 'llama-server';
+
+export interface LlmValidateConfig {
+  /** Master switch. Default false — judge is fully opt-in. */
+  enabled: boolean;
+  /** Absolute path to the GGUF model file. null = not installed. */
+  model_path: string | null;
+  /** Inference runtime. Only `llama-server` is supported in v1. */
+  runtime: LlmRuntime;
+  /**
+   * External endpoint URL. null = the server lazy-starts its own llama-server
+   * subprocess on a random loopback port. If set, MUST resolve to 127.0.0.1
+   * or localhost — the hook refuses to POST to non-loopback hosts.
+   */
+  endpoint: string | null;
+  /** Hard cap on judge response tokens. */
+  max_tokens: number;
+  /** Per-call wall-clock budget on the server side (ms). */
+  timeout_ms: number;
+  /** Spans below this confidence are dropped before reaching the review queue. */
+  min_confidence: number;
+}
+
 export interface PrivacyConfig {
   /** Extra FQDN suffixes never to tokenize (e.g. ".helios.veeam.com"). */
   fqdn_allowlist_extra: string[];
@@ -44,6 +81,23 @@ export interface PrivacyConfig {
   mode: Mode;
   /** Per-tool input-field policy. Maps tool name → array of fields to skip scrubbing. */
   skip_scrub_fields: Record<string, string[]>;
+  /**
+   * Opt-in version-check channel. Default `off` — zero network activity.
+   * `stable` / `beta` cause `/api/version` to perform a single HTTPS GET
+   * to `update_manifest_url`. No telemetry, no auto-install. See
+   * `Plans/INSTALLER.md`.
+   */
+  update_channel: UpdateChannel;
+  /** URL of the release manifest (JSON). Used only when `update_channel !== 'off'`. */
+  update_manifest_url: string;
+  /**
+   * Opt-in LLM secondary validator. The judge runs AFTER the regex+vocab
+   * scrubber, sees the already-scrubbed text, and can only add items to the
+   * review queue — never mutate the hot-path output. Disabled by default;
+   * requires `bun cli/PrivacyScreen.ts install-judge` and a running server.
+   * See `Plans/LLM_RESEARCH.md`.
+   */
+  llm_validate: LlmValidateConfig;
 }
 
 const DEFAULTS: PrivacyConfig = {
@@ -68,6 +122,18 @@ const DEFAULTS: PrivacyConfig = {
     Glob: ['pattern'],
     NotebookEdit: ['old_string', 'new_string'],
   },
+  update_channel: 'off',
+  update_manifest_url:
+    'https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json',
+  llm_validate: {
+    enabled: false,
+    model_path: null,
+    runtime: 'llama-server',
+    endpoint: null,
+    max_tokens: 256,
+    timeout_ms: 2500,
+    min_confidence: 0.6,
+  },
 };
 
 export function loadConfig(explicitPath?: string): PrivacyConfig {
@@ -85,13 +151,16 @@ export function loadConfig(explicitPath?: string): PrivacyConfig {
 }
 
 function findConfigPath(): string | null {
-  const candidates: Array<string | undefined> = [
-    process.env.PRIVACY_SCREEN_CONFIG,
+  // Env-var override is authoritative — if set, never fall through to CWD or
+  // project-root candidates, even when the target file doesn't exist. Tests
+  // and isolated processes rely on this to keep the dev-machine config out.
+  const envOverride = process.env.PRIVACY_SCREEN_CONFIG;
+  if (envOverride) return envOverride;
+  for (const c of [
     join(process.cwd(), 'PRIVACY_CONFIG.yaml'),
     resolve(import.meta.dir, '..', 'PRIVACY_CONFIG.yaml'),
-  ];
-  for (const c of candidates) {
-    if (c && existsSync(c)) return c;
+  ]) {
+    if (existsSync(c)) return c;
   }
   return null;
 }
@@ -111,6 +180,12 @@ function mergeConfig(base: PrivacyConfig, override: unknown): PrivacyConfig {
     db_path: typeof o.db_path === 'string' && o.db_path.length > 0 ? o.db_path : base.db_path,
     mode: isMode(o.mode) ? o.mode : base.mode,
     skip_scrub_fields: mergeSkipFields(base.skip_scrub_fields, o.skip_scrub_fields),
+    update_channel: isUpdateChannel(o.update_channel) ? o.update_channel : base.update_channel,
+    update_manifest_url:
+      typeof o.update_manifest_url === 'string' && o.update_manifest_url.length > 0
+        ? o.update_manifest_url
+        : base.update_manifest_url,
+    llm_validate: mergeLlmValidate(base.llm_validate, o.llm_validate),
   };
 }
 
@@ -129,6 +204,48 @@ function arrayOfStrings(v: unknown, fallback: string[]): string[] {
 
 function isMode(v: unknown): v is Mode {
   return v === 'enforce' || v === 'observe' || v === 'disabled';
+}
+
+function isUpdateChannel(v: unknown): v is UpdateChannel {
+  return v === 'off' || v === 'stable' || v === 'beta';
+}
+
+function isLlmRuntime(v: unknown): v is LlmRuntime {
+  return v === 'llama-server';
+}
+
+function mergeLlmValidate(
+  base: LlmValidateConfig,
+  override: unknown,
+): LlmValidateConfig {
+  if (!override || typeof override !== 'object') return base;
+  const o = override as Record<string, unknown>;
+  return {
+    enabled: typeof o.enabled === 'boolean' ? o.enabled : base.enabled,
+    model_path:
+      typeof o.model_path === 'string' && o.model_path.length > 0
+        ? o.model_path
+        : base.model_path,
+    runtime: isLlmRuntime(o.runtime) ? o.runtime : base.runtime,
+    endpoint:
+      typeof o.endpoint === 'string' && o.endpoint.length > 0
+        ? o.endpoint
+        : base.endpoint,
+    max_tokens:
+      typeof o.max_tokens === 'number' && o.max_tokens > 0
+        ? Math.floor(o.max_tokens)
+        : base.max_tokens,
+    timeout_ms:
+      typeof o.timeout_ms === 'number' && o.timeout_ms > 0
+        ? Math.floor(o.timeout_ms)
+        : base.timeout_ms,
+    min_confidence:
+      typeof o.min_confidence === 'number' &&
+      o.min_confidence >= 0 &&
+      o.min_confidence <= 1
+        ? o.min_confidence
+        : base.min_confidence,
+  };
 }
 
 function mergeSkipFields(

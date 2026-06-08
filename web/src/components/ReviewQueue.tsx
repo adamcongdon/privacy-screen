@@ -8,6 +8,7 @@ export function ReviewQueue(): JSX.Element | null {
   const items = useStore((s) => s.reviewItems);
   const refreshReview = useStore((s) => s.refreshReview);
   const reviewAction = useStore((s) => s.reviewAction);
+  const isJudging = useStore((s) => s.isJudging);
 
   useEffect(() => {
     void refreshReview();
@@ -15,10 +16,16 @@ export function ReviewQueue(): JSX.Element | null {
     return () => clearInterval(id);
   }, [refreshReview]);
 
-  if (items.length === 0) return <PatternSuggestions />;
+  if (items.length === 0) return (
+    <>
+      {isJudging && <JudgeIndicator />}
+      <PatternSuggestions />
+    </>
+  );
 
   return (
     <>
+    {isJudging && <JudgeIndicator />}
     <PatternSuggestions />
     <section className="flex min-h-0 flex-col gap-2 border-t border-zinc-800 p-4">
       <header className="flex items-center justify-between">
@@ -77,6 +84,15 @@ export function ReviewQueue(): JSX.Element | null {
       </ul>
     </section>
     </>
+  );
+}
+
+function JudgeIndicator(): JSX.Element {
+  return (
+    <div className="flex items-center gap-1.5 border-t border-zinc-800 px-4 py-2 text-[11px] text-zinc-400">
+      <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400" />
+      LLM analyzing...
+    </div>
   );
 }
 

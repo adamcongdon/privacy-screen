@@ -86,3 +86,71 @@ skip_scrub_fields:
     expect(cfg.customer_names).toEqual([]);
   });
 });
+
+describe('loadConfig — llm_validate', () => {
+  test('defaults to disabled with safe values', () => {
+    const cfg = loadConfig('/nonexistent');
+    expect(cfg.llm_validate.enabled).toBe(false);
+    expect(cfg.llm_validate.model_path).toBeNull();
+    expect(cfg.llm_validate.runtime).toBe('llama-server');
+    expect(cfg.llm_validate.endpoint).toBeNull();
+    expect(cfg.llm_validate.max_tokens).toBe(256);
+    expect(cfg.llm_validate.timeout_ms).toBe(2500);
+    expect(cfg.llm_validate.min_confidence).toBe(0.6);
+  });
+
+  test('YAML override round-trips every field', () => {
+    writeFileSync(
+      TEST_CONFIG,
+      `
+llm_validate:
+  enabled: true
+  model_path: /tmp/qwen2.5-1.5b.gguf
+  runtime: llama-server
+  endpoint: http://127.0.0.1:9999
+  max_tokens: 128
+  timeout_ms: 1000
+  min_confidence: 0.75
+`,
+    );
+    const cfg = loadConfig(TEST_CONFIG);
+    expect(cfg.llm_validate.enabled).toBe(true);
+    expect(cfg.llm_validate.model_path).toBe('/tmp/qwen2.5-1.5b.gguf');
+    expect(cfg.llm_validate.endpoint).toBe('http://127.0.0.1:9999');
+    expect(cfg.llm_validate.max_tokens).toBe(128);
+    expect(cfg.llm_validate.timeout_ms).toBe(1000);
+    expect(cfg.llm_validate.min_confidence).toBe(0.75);
+  });
+
+  test('partial override keeps unspecified defaults', () => {
+    writeFileSync(TEST_CONFIG, `llm_validate:\n  enabled: true\n`);
+    const cfg = loadConfig(TEST_CONFIG);
+    expect(cfg.llm_validate.enabled).toBe(true);
+    expect(cfg.llm_validate.max_tokens).toBe(256);
+    expect(cfg.llm_validate.min_confidence).toBe(0.6);
+  });
+
+  test('invalid runtime falls back to default', () => {
+    writeFileSync(TEST_CONFIG, `llm_validate:\n  runtime: openai-cloud\n`);
+    const cfg = loadConfig(TEST_CONFIG);
+    expect(cfg.llm_validate.runtime).toBe('llama-server');
+  });
+
+  test('out-of-range min_confidence is rejected', () => {
+    writeFileSync(TEST_CONFIG, `llm_validate:\n  min_confidence: 1.5\n`);
+    const cfg = loadConfig(TEST_CONFIG);
+    expect(cfg.llm_validate.min_confidence).toBe(0.6);
+  });
+
+  test('negative timeout is rejected', () => {
+    writeFileSync(TEST_CONFIG, `llm_validate:\n  timeout_ms: -100\n`);
+    const cfg = loadConfig(TEST_CONFIG);
+    expect(cfg.llm_validate.timeout_ms).toBe(2500);
+  });
+
+  test('non-object llm_validate is ignored', () => {
+    writeFileSync(TEST_CONFIG, `llm_validate: "yes please"\n`);
+    const cfg = loadConfig(TEST_CONFIG);
+    expect(cfg.llm_validate.enabled).toBe(false);
+  });
+});
