@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     # Only on direct pushes to the protected branches (post-merge).
     # PRs do not trigger this workflow.
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/main')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -103,6 +103,25 @@ jobs:
         run: |
           CHANNEL="${{ steps.vars.outputs.channel }}"
           bun scripts/build-release.ts --channel "$CHANNEL"
+
+      - name: VirusTotal scan of release binaries
+        # Requires the VT_API_KEY secret (VirusTotal free API key has generous limits).
+        # Scans the final compiled binaries for reputation/malware before attaching
+        # them to the GitHub release. Highly recommended for any project shipping executables.
+        # Remove the `if` or the whole step if you prefer not to scan on every release.
+        if: ${{ secrets.VT_API_KEY != '' }}
+        uses: crazy-max/ghaction-virustotal@v4
+        with:
+          files: |
+            dist/privacy-screen-darwin-arm64
+            dist/privacy-screen-darwin-x64
+            dist/privacy-screen-win32-x64.exe
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          # Do not monitor for future changes (we control the build).
+          vt_monitor: false
+          # Fail the job (and thus the release) if VT flags the binary.
+          # In practice this should only trigger on supply-chain compromise of the build env.
+          vt_fail_on_detection: true
 
       - name: Create GitHub Release and upload assets
         env:
