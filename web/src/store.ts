@@ -128,6 +128,10 @@ type State = {
   judgeStatus: JudgeStatus | null;
   isJudging: boolean;
 
+  // Update (beta/stable channel + download/apply)
+  versionInfo: Awaited<ReturnType<typeof api.version>> | null;
+  updateStatus: Awaited<ReturnType<typeof api.updateStatus>> | null;
+
   // Toasts
   toasts: ToastEntry[];
 
@@ -161,6 +165,11 @@ type State = {
   setJudgeEnabled: (enabled: boolean) => Promise<void>;
   installJudgeModel: (model: string) => Promise<void>;
 
+  refreshVersion: () => Promise<void>;
+  refreshUpdateStatus: () => Promise<void>;
+  downloadUpdate: () => Promise<void>;
+  applyUpdate: () => Promise<void>;
+
   saveSettings: (partial: SettingsPatch) => Promise<void>;
   reviewAction: (
     id: number,
@@ -184,6 +193,7 @@ type State = {
 let activeAbort: AbortController | null = null;
 let toastCounter = 1;
 let judgePollerRef: ReturnType<typeof setInterval> | null = null;
+let updatePollerRef: ReturnType<typeof setInterval> | null = null;
 const MIN_JUDGE_PAYLOAD = 24;
 
 function mergeTokenUnion(prev: Map<string, Token>, incoming: Token[]): Map<string, Token> {
@@ -240,6 +250,28 @@ export const useStore = create<State>((set, get) => {
     }, 2000);
   };
 
+  // Poll /api/update/status while a download is active. Stops when active goes false
+  // or after a safety cap. Refreshes the versionInfo too so the UI can react.
+  const startUpdatePoller = () => {
+    if (updatePollerRef !== null) return;
+    const stop = () => {
+      if (updatePollerRef) clearInterval(updatePollerRef);
+      updatePollerRef = null;
+    };
+    let polls = 0;
+    updatePollerRef = setInterval(() => {
+      polls++;
+      if (polls > 120) { stop(); return; } // ~4 min max
+      void get().refreshUpdateStatus().then(() => {
+        const st = get().updateStatus;
+        if (st && !st.download?.active) {
+          stop();
+          void get().refreshVersion();
+        }
+      }).catch(() => {});
+    }, 1500);
+  };
+
   return ({
   composerText: '',
   files: [],
@@ -272,6 +304,9 @@ export const useStore = create<State>((set, get) => {
   health: null,
   judgeStatus: null,
   isJudging: false,
+
+  versionInfo: null,
+  updateStatus: null,
 
   toasts: [],
 
@@ -551,6 +586,57 @@ export const useStore = create<State>((set, get) => {
       const msg = err instanceof Error ? err.message : String(err);
       get().pushToast('error', `install failed: ${msg}`);
       throw err;
+    }
+  },
+
+  refreshVersion: async () => {
+    try {
+      const v = await api.version();
+      set({ versionInfo: v });
+    } catch (err) {
+      // Non-fatal; the drawer check button surfaces toasts for the user.
+      console.warn('version check failed:', err);
+    }
+  },
+
+  refreshUpdateStatus: async () => {
+    try {
+      const s = await api.updateStatus();
+      set({ updateStatus: s });
+    } catch (err) {
+      console.warn('update status fetch failed:', err);
+    }
+  },
+
+  downloadUpdate: async () => {
+    try {
+      const r = await api.startUpdateDownload();
+      if ('error' in r) {
+        get().pushToast('error', r.error);
+        return;
+      }
+      set({ updateStatus: r.status });
+      get().pushToast('info', 'Downloading update in background…');
+      // Start a short-lived poller while the download is active.
+      startUpdatePoller();
+    } catch (err) {
+      get().pushToast('error', `download failed: ${err instanceof Error ? err.message : err}`);
+    }
+  },
+
+  applyUpdate: async () => {
+    try {
+      const r = await api.applyUpdate();
+      if (!r.ok) {
+        get().pushToast('error', r.message || r.reason || 'apply failed');
+        await get().refreshUpdateStatus();
+        return;
+      }
+      get().pushToast('success', r.message || 'Restarting with new version…');
+      // The server will exit shortly; the page will lose its connection.
+      // Leave a hint in the UI (the caller in SettingsDrawer can also react).
+    } catch (err) {
+      get().pushToast('error', `apply failed: ${err instanceof Error ? err.message : err}`);
     }
   },
 

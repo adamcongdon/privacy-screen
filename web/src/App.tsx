@@ -46,6 +46,8 @@ export default function App(): JSX.Element {
   const refreshSettings = useStore((s) => s.refreshSettings);
   const refreshVocab = useStore((s) => s.refreshVocab);
   const refreshReview = useStore((s) => s.refreshReview);
+  const refreshVersion = useStore((s) => s.refreshVersion);
+  const refreshUpdateStatus = useStore((s) => s.refreshUpdateStatus);
   const health = useStore((s) => s.health);
   const settings = useStore((s) => s.settings);
   const toasts = useStore((s) => s.toasts);
@@ -69,7 +71,9 @@ export default function App(): JSX.Element {
     void refreshSettings();
     void refreshVocab();
     void refreshReview();
-  }, [refreshHealth, refreshSettings, refreshVocab, refreshReview]);
+    void refreshVersion();
+    void refreshUpdateStatus();
+  }, [refreshHealth, refreshSettings, refreshVocab, refreshReview, refreshVersion, refreshUpdateStatus]);
 
   // Auto-default preview mode from payload kind. Honors a user override until
   // the app returns to idle (empty composer + no files).
