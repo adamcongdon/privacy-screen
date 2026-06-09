@@ -33,7 +33,7 @@ import { scrubText } from '../../src/scrubber';
 import { ScrubMap } from '../../src/scrub-map';
 import { getVocab } from '../lib/vocab-store';
 import { checkClaudeCode } from '../lib/claude-code-check';
-import { collectDiagnostics, type Diagnostics } from '../lib/feedback-diagnostics';
+import { collectDiagnostics, type Diagnostics, assertRedacted } from '../lib/feedback-diagnostics';
 
 export const feedbackRoute = new Hono();
 
@@ -54,10 +54,21 @@ interface PostBody {
  * no spawn, no network egress.
  */
 feedbackRoute.get('/preview', (c) => {
-  const cfg = loadConfig();
-  const diag = collectDiagnostics(cfg);
-  const scrubbed = scrubDiagnostics(diag);
-  return c.json(scrubbed, 200);
+  try {
+    const cfg = loadConfig();
+    const diag = collectDiagnostics(cfg);
+    const scrubbed = scrubDiagnostics(diag);
+    try {
+      assertRedacted(scrubbed.config);
+    } catch (err) {
+      process.stderr.write('[privacy-screen] feedback.redaction.check.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
+      return c.json({ error: 'preview unavailable' }, 500);
+    }
+    return c.json(scrubbed, 200);
+  } catch (err) {
+    process.stderr.write('[privacy-screen] feedback.preview.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
+    return c.json({ error: 'preview unavailable' }, 500);
+  }
 });
 
 /**
@@ -100,19 +111,42 @@ feedbackRoute.post('/', async (c) => {
   const vocab = getVocab();
 
   const userSummary = String(body.summary).slice(0, MAX_SUMMARY_LEN);
-  const summaryScrub = scrubText(userSummary, map, vocab, {
-    sourceEvent: 'app:feedback:summary',
-    config: cfg,
-  });
 
-  // Run the diagnostics JSON string through the same scrubber. We re-serialize
-  // afterwards so the output is still valid JSON-shaped for the issue body.
-  const diagnosticsScrubJson = scrubText(
-    JSON.stringify(scrubDiagnostics(diagnostics), null, 2),
-    map,
-    vocab,
-    { sourceEvent: 'app:feedback:diagnostics', config: cfg },
-  );
+  // Defensive scrub: wrap scrubText invocations to avoid a crashing user
+  // input from bubbling up and echoing sensitive data.
+  let summaryScrub;
+  let diagnosticsScrubJson;
+  try {
+    if (
+      process.env.NODE_ENV !== 'production' &&
+      process.env.__PRIVACY_SCREEN_TEST_SCRUB_THROW === '1'
+    ) {
+      throw new Error('simulated scrub failure (test seam)');
+    }
+
+    summaryScrub = scrubText(userSummary, map, vocab, {
+      sourceEvent: 'app:feedback:summary',
+      config: cfg,
+    });
+
+    const scrubbedDiagnosticsObj = scrubDiagnostics(diagnostics);
+    try {
+      assertRedacted(scrubbedDiagnosticsObj.config);
+    } catch (err) {
+      process.stderr.write('[privacy-screen] feedback.redaction.check.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
+      return c.json({ ok: false, error: 'redaction integrity check failed' }, 500);
+    }
+
+    diagnosticsScrubJson = scrubText(
+      JSON.stringify(scrubbedDiagnosticsObj, null, 2),
+      map,
+      vocab,
+      { sourceEvent: 'app:feedback:diagnostics', config: cfg },
+    );
+  } catch (err) {
+    process.stderr.write('[privacy-screen] feedback.scrub.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
+    return c.json({ ok: false, error: 'scrub failed — feedback not sent' }, 500);
+  }
 
   // Defense in depth: if the user pasted a credential into the summary, the
   // scrubber sets hasCredentials. Refuse to relay — same posture as /api/send.
@@ -130,41 +164,43 @@ feedbackRoute.post('/', async (c) => {
   const prompt = buildPrompt(summaryScrub.scrubbed, diagnosticsScrubJson.scrubbed);
 
   // ── 3. Spawn claude -p <prompt> ─────────────────────────────────────────
-  //
-  // spawnSync (not Bun.spawn) so we get a deterministic synchronous result
-  // for the route. The 60s budget is enforced by the kernel via the timeout
-  // option; on timeout, status is null and signal is 'SIGTERM'.
-  const result = spawnSync(claudeBin, ['-p', prompt], {
-    encoding: 'utf-8',
-    timeout: SPAWN_TIMEOUT_MS,
-    // env preserved verbatim — `gh` needs $HOME/$PATH/$GH_* to authenticate
-    env: process.env,
-    // Inherit no stdin so claude doesn't sit waiting on a tty
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  // Use Bun.spawn so the event loop is not blocked by a long-running
+  // external process. AbortSignal.timeout enforces the wall-clock budget.
+  try {
+    const proc = Bun.spawn({
+      cmd: [claudeBin, '-p', prompt],
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: process.env,
+      signal: AbortSignal.timeout(SPAWN_TIMEOUT_MS),
+    });
 
-  if (result.error) {
-    return c.json(
-      { ok: false, error: `claude spawn failed: ${result.error.message}` },
-      502,
-    );
-  }
-  if (result.signal === 'SIGTERM') {
-    return c.json(
-      { ok: false, error: `claude timed out after ${SPAWN_TIMEOUT_MS}ms` },
-      504,
-    );
-  }
-  if (typeof result.status === 'number' && result.status !== 0) {
-    const stderr = (result.stderr ?? '').slice(0, STDOUT_TRUNCATE_LEN);
-    return c.json(
-      { ok: false, error: `claude exited ${result.status}: ${stderr}` },
-      502,
-    );
-  }
+    const stdoutPromise = new Response(proc.stdout).text().catch(() => '');
+    const stderrPromise = new Response(proc.stderr).text().catch(() => '');
+    const exitCode = await proc.exited;
+    const stdout = (await stdoutPromise).slice(0, STDOUT_TRUNCATE_LEN);
+    const stderr = (await stderrPromise).slice(0, STDOUT_TRUNCATE_LEN);
 
-  const stdout = (result.stdout ?? '').slice(0, STDOUT_TRUNCATE_LEN);
-  return c.json({ ok: true, output: stdout }, 200);
+    if (exitCode === null) {
+      return c.json({ ok: false, error: `claude timed out after ${SPAWN_TIMEOUT_MS}ms` }, 504);
+    }
+    if (exitCode !== 0) {
+      return c.json({ ok: false, error: `claude exited ${exitCode}: ${stderr}` }, 502);
+    }
+
+    // MEDIUM-2: only return a github.com URL if present
+    const urlMatch = stdout.match(/https:\/\/github\.com\/[^\s]+/);
+    const output = urlMatch ? urlMatch[0] : '(no url in output)';
+    return c.json({ ok: true, output }, 200);
+  } catch (err) {
+    // AbortError or spawn failure — map to 502/504 as appropriate
+    const msg = (err as Error)?.message ?? String(err);
+    if (msg && msg.toLowerCase().includes('aborted')) {
+      return c.json({ ok: false, error: `claude timed out after ${SPAWN_TIMEOUT_MS}ms` }, 504);
+    }
+    return c.json({ ok: false, error: `claude spawn failed: ${msg}` }, 502);
+  }
 });
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -175,8 +211,9 @@ feedbackRoute.post('/', async (c) => {
  * env var lets the feedback-route test substitute a stub script so we can
  * exercise the 503 path and the anti-leak capture without touching PATH.
  */
-function resolveClaudeBin(): string {
-  return process.env.PRIVACY_SCREEN_FEEDBACK_TEST_CLAUDE_BIN ?? 'claude';
+export function resolveClaudeBin(): string {
+  if (process.env.NODE_ENV === 'production') return 'claude';
+  return process.env.__PRIVACY_SCREEN_TEST_CLAUDE_BIN ?? 'claude';
 }
 
 /**
@@ -186,14 +223,23 @@ function resolveClaudeBin(): string {
  * to the same `checkClaudeCode()` helper the server uses at boot.
  */
 function checkClaudeBinary(bin: string): { found: boolean; version: string | null } {
-  if (bin === 'claude') return checkClaudeCode();
-  // Test-seam path — run --version directly against the supplied binary.
-  // A nonexistent file path becomes ENOENT, which we want to map to found:false.
+  if (bin === 'claude') {
+    try {
+      const r = spawnSync('claude', ['--version'], { encoding: 'utf-8', timeout: 1500 });
+      if (r && r.status === 0) return { found: true, version: (r.stdout ?? '').trim() };
+      return { found: false, version: null };
+    } catch (err) {
+      process.stderr.write('[privacy-screen] feedback.binary.check.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
+      return { found: false, version: null };
+    }
+  }
+
   try {
-    const r = spawnSync(bin, ['--version'], { encoding: 'utf-8', timeout: 5_000 });
+    const r = spawnSync(bin, ['--version'], { encoding: 'utf-8', timeout: 1500 });
     if (r.status === 0) return { found: true, version: (r.stdout ?? '').trim() };
     return { found: false, version: null };
-  } catch {
+  } catch (err) {
+    process.stderr.write('[privacy-screen] feedback.binary.check.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
     return { found: false, version: null };
   }
 }
@@ -227,6 +273,7 @@ function buildPrompt(summary: string, diagnosticsJson: string): string {
     'You are filing a GitHub issue on behalf of a privacy-screen user who clicked',
     'the in-app "Send feedback" button. Use the local `gh` CLI (already',
     'authenticated for the user) to open an issue at adamcongdon/privacy-screen.',
+    'When invoking gh, always pass --repo adamcongdon/privacy-screen; do not rely on the current working directory.',
     '',
     'Title: pick a short, specific title derived from the user summary below.',
     'Body: use the scrubbed user summary verbatim, then append a',
