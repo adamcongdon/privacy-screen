@@ -32,6 +32,16 @@ import { getVocab } from '../lib/vocab-store';
 import { getLlmClient } from '../lib/llm-process';
 import { rateLimited, getClientIp } from '../lib/rate-limit';
 
+/**
+ * Inbound POST body for `/api/judge/sync` — the synchronous variant used by
+ * the hook's auto-approve precheck (Issue #6). Same shape as the fire-and-
+ * forget body except `tokenMap` is optional (the precheck does not need it).
+ */
+interface JudgeSyncRequestBody {
+  scrubbed: string;
+  sourceEvent: string;
+}
+
 /** Hard cap on the POST body via Content-Length. Matches the 256 KB doc-comment + test contract. */
 const BODY_BYTE_LIMIT = 256 * 1024;
 /** Defensive cap on the scrubbed-text field itself. Judge chunks internally at 1800 chars. */
@@ -109,6 +119,94 @@ judgeRoute.post('/', async (c) => {
   });
 
   return c.json({ status: 'accepted' }, 202);
+});
+
+/**
+ * POST /api/judge/sync — synchronous confidence-gauge for the hook's
+ * auto-approve precheck (Issue #6).
+ *
+ * Returns inline `{ ok: true, suspicious_count: number }` on success.
+ * Bounded by `cfg.llm_validate.timeout_ms` — the same wall-clock budget
+ * used by the existing async path. On any error or disabled judge, returns
+ * a non-200 status; the hook treats every non-200 as fail-CLOSED.
+ *
+ * This is intentionally a *separate* route from the fire-and-forget POST /
+ * because the contract differs (inline result, no review_queue write) and
+ * mixing modes on one path would make the rate-limit + validation logic
+ * harder to reason about.
+ */
+judgeRoute.post('/sync', async (c) => {
+  if (rateLimited(getClientIp(c))) {
+    return c.json({ error: 'rate limited' }, 429);
+  }
+
+  const lenHeader = c.req.header('content-length');
+  if (lenHeader !== undefined) {
+    const len = Number(lenHeader);
+    if (Number.isFinite(len) && len > BODY_BYTE_LIMIT) {
+      return c.json({ error: 'payload too large' }, 413);
+    }
+  }
+
+  const raw: unknown = await c.req.json().catch(() => null);
+  if (raw === null || typeof raw !== 'object') {
+    return c.json({ error: 'invalid json' }, 400);
+  }
+  const body = raw as Record<string, unknown>;
+
+  if (typeof body.scrubbed !== 'string' || typeof body.sourceEvent !== 'string') {
+    return c.json({ error: 'invalid body shape' }, 400);
+  }
+  if (body.scrubbed.length > SCRUBBED_TEXT_LIMIT) {
+    return c.json({ error: 'scrubbed too large' }, 400);
+  }
+
+  const cfg = loadConfig();
+  if (!cfg.llm_validate.enabled) {
+    return c.json({ error: 'judge disabled' }, 503);
+  }
+
+  const validated: JudgeSyncRequestBody = {
+    scrubbed: body.scrubbed,
+    sourceEvent: body.sourceEvent,
+  };
+
+  // For the sync path we do not require a caller-supplied tokenMap — the
+  // precheck only cares about *whether* the judge sees anything suspicious,
+  // not what it would do with the tokens. Pass an empty map so judge filtering
+  // still works (no overlap suppressions to apply).
+  const tokenMap = new ScrubMap();
+
+  try {
+    const client = await acquireClient(cfg.llm_validate);
+    if (!client) {
+      return c.json({ error: 'judge unavailable' }, 503);
+    }
+
+    const result = await runJudge(validated.scrubbed, tokenMap, {
+      client,
+      timeoutMs: cfg.llm_validate.timeout_ms,
+      maxTokens: cfg.llm_validate.max_tokens,
+      maxSpans: MAX_SPANS,
+      minConfidence: cfg.llm_validate.min_confidence,
+    });
+
+    if (result.errorReason) {
+      process.stderr.write(
+        `[privacy-screen] judge.sync.error: ${result.errorReason}\n`,
+      );
+      // Fail-CLOSED: any judge-internal error denies the precheck, even if
+      // spans.length is 0. The hook will not auto-approve on a 503.
+      return c.json({ error: result.errorReason }, 503);
+    }
+
+    return c.json({ ok: true, suspicious_count: result.spans.length }, 200);
+  } catch (err) {
+    process.stderr.write(
+      `[privacy-screen] judge.sync.failed: ${errMessage(err)}\n`,
+    );
+    return c.json({ error: errMessage(err) }, 503);
+  }
 });
 
 /** Actual judge invocation + review_queue write. Failures are logged + swallowed. */

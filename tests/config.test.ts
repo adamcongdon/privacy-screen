@@ -153,4 +153,28 @@ llm_validate:
     const cfg = loadConfig(TEST_CONFIG);
     expect(cfg.llm_validate.enabled).toBe(false);
   });
+
+  // Issue #16 pentester hardening: non-HTTPS manifest URLs fall back to
+  // the safe default so an http:// beacon can't leak in plaintext.
+  test('http:// update_manifest_url falls back to default', () => {
+    writeFileSync(TEST_CONFIG, `update_manifest_url: "http://attacker.example/manifest.json"\n`);
+    const cfg = loadConfig(TEST_CONFIG);
+    expect(cfg.update_manifest_url.startsWith('https://')).toBe(true);
+    expect(cfg.update_manifest_url).not.toContain('attacker.example');
+  });
+
+  test('malformed update_manifest_url falls back to default', () => {
+    writeFileSync(TEST_CONFIG, `update_manifest_url: "not a url"\n`);
+    const cfg = loadConfig(TEST_CONFIG);
+    expect(cfg.update_manifest_url.startsWith('https://')).toBe(true);
+  });
+
+  test('valid https:// update_manifest_url is preserved', () => {
+    writeFileSync(
+      TEST_CONFIG,
+      `update_manifest_url: "https://example.invalid/manifest.json"\n`,
+    );
+    const cfg = loadConfig(TEST_CONFIG);
+    expect(cfg.update_manifest_url).toBe('https://example.invalid/manifest.json');
+  });
 });

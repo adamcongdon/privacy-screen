@@ -1,0 +1,480 @@
+name: release
+
+# Auto-deploy beta builds on pushes to the `beta` branch.
+#   (PRs landing on `beta` — typically from your primary ac-build branch — trigger beta.)
+# Generate full (stable) releases on pushes to main (PRs from `beta` to `main` only).
+
+on:
+  push:
+    branches: [beta, main]
+
+permissions:
+  contents: write   # create releases + upload assets; push updated manifest back to the branch
+  pull-requests: read
+
+jobs:
+  # Always run the normal test/lint before producing a release artifact.
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint (tsc --noEmit)
+        run: bun lint
+
+      - name: Test
+        run: bun test
+
+  build:
+    name: build (${{ github.ref_name }})
+    needs: test
+    runs-on: ubuntu-latest
+    # Only the build portion is conditioned on direct pushes; actual release creation
+    # (which needs signed artifacts) runs in the create-release job with its own guard.
+    # PRs do not trigger release builds.
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/main')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need full history for sha if we embed it; also for the later git commit of manifest.
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Compute version + channel + tag info
+        id: vars
+        run: |
+          BASE_VERSION=$(jq -r .version package.json)
+          BRANCH="${{ github.ref_name }}"
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          RUN_NUM="${{ github.run_number }}"
+
+          if [ "$BRANCH" = "beta" ]; then
+            CHANNEL="beta"
+            # Qualify the version baked into the binary + manifest for this beta build.
+            # Using run_number gives a monotonically increasing id for compareVersions.
+            QUAL_VERSION="${BASE_VERSION}-beta.${RUN_NUM}"
+            TAG="v${QUAL_VERSION}"
+            MANIFEST_NAME="release-manifest-beta.json"
+            PRERELEASE_FLAG="--prerelease"
+            RELEASE_TITLE="Beta ${BASE_VERSION} (run ${RUN_NUM}, ${SHORT_SHA})"
+          else
+            CHANNEL="stable"
+            QUAL_VERSION="${BASE_VERSION}"
+            TAG="v${QUAL_VERSION}"
+            MANIFEST_NAME="release-manifest.json"
+            PRERELEASE_FLAG=""
+            RELEASE_TITLE="v${QUAL_VERSION}"
+          fi
+
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "base_version=$BASE_VERSION" >> $GITHUB_OUTPUT
+          echo "qual_version=$QUAL_VERSION" >> $GITHUB_OUTPUT
+          echo "channel=$CHANNEL" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "manifest_name=$MANIFEST_NAME" >> $GITHUB_OUTPUT
+          echo "prerelease_flag=$PRERELEASE_FLAG" >> $GITHUB_OUTPUT
+          echo "release_title=$RELEASE_TITLE" >> $GITHUB_OUTPUT
+          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+
+          echo "channel=$CHANNEL version=$QUAL_VERSION tag=$TAG manifest=$MANIFEST_NAME"
+
+      - name: Prepare beta-qualified package.json version (ephemeral, for this build only)
+        if: steps.vars.outputs.channel == 'beta'
+        run: |
+          QUAL="${{ steps.vars.outputs.qual_version }}"
+          echo "Temporarily setting package.json version to ${QUAL} for beta binary + manifest"
+          jq --arg v "$QUAL" '.version = $v' package.json > package.json.tmp
+          mv package.json.tmp package.json
+
+      - name: Build release artifacts (web + compiled binaries + manifest)
+        run: |
+          CHANNEL="${{ steps.vars.outputs.channel }}"
+          bun scripts/build-release.ts --channel "$CHANNEL"
+
+      - name: Sign Windows binary (osslsigncode + timestamp; gated by RUN_CODE_SIGNING)
+        # Requires repo secrets:
+        #   WINDOWS_CERT_P12      (base64-encoded PKCS#12 / .p12 of your code signing cert; EV preferred)
+        #   WINDOWS_CERT_PASSWORD (password for the p12)
+        # And to activate the path:
+        #   Settings → Secrets and variables → Actions → Variables tab
+        #   Add variable: RUN_CODE_SIGNING = true
+        #
+        # When enabled, the built win32 exe is signed in-place before VT scan and before
+        # artifacts are uploaded for the (optional) macOS signing job and the create-release job.
+        # The sha256 recorded in the final release manifest will be that of the signed binary.
+        if: ${{ vars.RUN_CODE_SIGNING == 'true' }}
+        env:
+          WINDOWS_CERT_P12: ${{ secrets.WINDOWS_CERT_P12 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$WINDOWS_CERT_P12" ] || [ -z "$WINDOWS_CERT_PASSWORD" ]; then
+            echo "::error::RUN_CODE_SIGNING=true but one or more WINDOWS_CERT_* secrets are missing"
+            exit 1
+          fi
+          echo "Installing osslsigncode and signing Windows binary..."
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osslsigncode
+          echo "$WINDOWS_CERT_P12" | base64 -d > /tmp/win-cert.p12
+          IN="dist/privacy-screen-win32-x64.exe"
+          OUT="dist/privacy-screen-win32-x64.exe.signed"
+          osslsigncode sign \
+            -pkcs12 /tmp/win-cert.p12 \
+            -pass "$WINDOWS_CERT_PASSWORD" \
+            -n "privacy-screen" \
+            -i "https://github.com/adamcongdon/privacy-screen" \
+            -ts http://timestamp.acs.microsoft.com \
+            -in "$IN" \
+            -out "$OUT"
+          mv "$OUT" "$IN"
+          echo "Windows binary signed successfully."
+          rm -f /tmp/win-cert.p12
+
+      - name: VirusTotal scan of release binaries
+        # Requires the VT_API_KEY secret (VirusTotal free API key has generous limits).
+        # Scans the final compiled binaries for reputation/malware before attaching
+        # them to the GitHub release. Highly recommended for any project shipping executables.
+        #
+        # IMPORTANT: We use a repository *variable* (not a secret) to control whether
+        # this step runs. You cannot reliably use `secrets.XXX != ''` in `if:` conditions
+        # (GitHub redacts secrets in expressions for security reasons, so the condition
+        # almost always evaluates to false/skip even when the secret exists).
+        #
+        # To enable:
+        #   1. Settings → Secrets and variables → Actions → Variables tab
+        #   2. Add variable: RUN_VIRUSTOTAL_SCAN = true
+        if: ${{ vars.RUN_VIRUSTOTAL_SCAN == 'true' }}
+        uses: crazy-max/ghaction-virustotal@v4
+        with:
+          files: |
+            dist/privacy-screen-darwin-arm64
+            dist/privacy-screen-darwin-x64
+            dist/privacy-screen-win32-x64.exe
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          # Do not monitor for future changes (we control the build).
+          vt_monitor: false
+
+      - name: Upload built binaries (for macOS signing job and/or create-release assembly)
+        # These are the "build-*" artifacts. When code signing is enabled:
+        # - Windows binary here has already been signed (see step above).
+        # - Darwin binaries are unsigned; the sign-macos job will produce final-darwin-* overlays.
+        # When RUN_CODE_SIGNING is not enabled, these artifacts (with unsigned darwins) are used directly.
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-binaries
+          path: |
+            dist/privacy-screen-darwin-arm64
+            dist/privacy-screen-darwin-x64
+            dist/privacy-screen-win32-x64.exe
+
+      - name: Build artifacts ready
+        run: |
+          echo "✅ Build complete for ${{ steps.vars.outputs.branch }}"
+          echo "Channel: ${{ steps.vars.outputs.channel }}"
+          echo "Version (baked): ${{ steps.vars.outputs.qual_version }}"
+          echo "Artifacts uploaded for downstream signing (if enabled) and release creation."
+          ls -l dist/ || true
+
+  # ---------------------------------------------------------------------------
+  # macOS code signing + notarization (only when RUN_CODE_SIGNING=true).
+  # Produces final-darwin-* artifacts containing the Developer ID signed +
+  # Apple-notarized + stapled binaries. These overlay the build-binaries darwins
+  # in the create-release job.
+  # Requires Apple Developer ID Application cert (p12) + App Store Connect API key.
+  # ---------------------------------------------------------------------------
+  sign-macos:
+    name: sign-macos
+    needs: build
+    runs-on: macos-latest
+    if: ${{ vars.RUN_CODE_SIGNING == 'true' }}
+    steps:
+      - name: Download built darwin binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: build-binaries
+          path: dist/
+
+      - name: Import Apple Developer ID cert into temporary keychain
+        env:
+          CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          # Use a unique per-run password for the transient keychain.
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-kc
+        run: |
+          set -euo pipefail
+          echo "Creating temporary keychain for signing..."
+          security create-keychain -p "$KEYCHAIN_PASSWORD" signing.keychain
+          security default-keychain -s signing.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" signing.keychain
+          # Allow codesign to use the key without UI prompts in CI.
+          security set-keychain-settings -t 3600 -u signing.keychain
+
+          echo "$CERT_P12" | base64 -d > /tmp/apple-cert.p12
+          security import /tmp/apple-cert.p12 \
+            -k signing.keychain \
+            -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/productbuild || true
+
+          # Grant the codesign tool access to the private key.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" signing.keychain || true
+
+          echo "Cert imported. Identities:"
+          security find-identity -v -p codesigning signing.keychain
+
+      - name: Codesign darwin binaries (hardened runtime + secure timestamp)
+        env:
+          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          IDENTITY="${APPLE_SIGN_IDENTITY:-Developer ID Application}"
+          for f in dist/privacy-screen-darwin-*; do
+            echo "→ codesign $f"
+            codesign --force --options runtime --sign "$IDENTITY" --timestamp "$f"
+            echo "→ verify $f"
+            codesign --verify --deep --strict --verbose=2 "$f"
+          done
+
+      - name: Notarize + staple (App Store Connect API key)
+        # Modern notarization path (no Apple ID password). Provide:
+        #   APPLE_API_KEY      = base64 of the AuthKey_*.p8 file downloaded from App Store Connect
+        #   APPLE_API_KEY_ID   = e.g. 2X9R4HXF34
+        #   APPLE_API_ISSUER   = Issuer UUID (shown on the key page in ASC)
+        # The p8 is written to the conventional location notarytool looks for.
+        env:
+          API_KEY_B64: ${{ secrets.APPLE_API_KEY }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          if [ -z "$API_KEY_B64" ] || [ -z "$API_KEY_ID" ] || [ -z "$API_ISSUER" ]; then
+            echo "::error::APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER required when RUN_CODE_SIGNING=true"
+            exit 1
+          fi
+
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$API_KEY_B64" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8
+          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8
+
+          for f in dist/privacy-screen-darwin-*; do
+            echo "→ Preparing $f for notarization (zip for submission)"
+            ZIP="${f}.zip"
+            ditto -c -k --keepParent "$f" "$ZIP"
+
+            echo "→ notarytool submit $ZIP (waiting for result)"
+            xcrun notarytool submit "$ZIP" \
+              --key-id "$API_KEY_ID" \
+              --issuer "$API_ISSUER" \
+              --key ~/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8 \
+              --wait
+
+            echo "→ stapler staple $f"
+            xcrun stapler staple "$f" || echo "stapler returned non-zero (continuing; some CLIs are noisy for plain Mach-O)"
+
+            echo "→ post-notarize verify"
+            codesign --verify --deep --strict --verbose=2 "$f"
+            # spctl is best-effort for CLI tools; do not fail the build on it.
+            spctl --assess --type execute --verbose "$f" || true
+          done
+
+      - name: Upload final (signed + notarized + stapled) darwin binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-darwin-binaries
+          path: |
+            dist/privacy-screen-darwin-arm64
+            dist/privacy-screen-darwin-x64
+
+  # ---------------------------------------------------------------------------
+  # Create the GitHub Release (and commit the release-manifest-*.json).
+  # This job assembles the final (signed when enabled) binaries via artifacts,
+  # (re)generates the manifest with correct hashes using --manifest-only,
+  # creates/updates the release, and pushes the manifest to the branch.
+  # It runs for both beta and stable pushes (same guard as the old combined job).
+  # ---------------------------------------------------------------------------
+  create-release:
+    name: create-release (${{ github.ref_name }})
+    needs: [test, build, sign-macos]
+    runs-on: ubuntu-latest
+    # Only on direct pushes to the protected branches (post-merge). PRs never release.
+    # The "always()" + result check lets this proceed when sign-macos was skipped
+    # (i.e. when RUN_CODE_SIGNING != 'true').
+    if: |
+      always() &&
+      (github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/main')) &&
+      (needs.sign-macos.result == 'success' || needs.sign-macos.result == 'skipped')
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies (for manifest-only script run)
+        run: bun install --frozen-lockfile
+
+      - name: Compute version + channel + tag info
+        id: vars
+        run: |
+          BASE_VERSION=$(jq -r .version package.json)
+          BRANCH="${{ github.ref_name }}"
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          RUN_NUM="${{ github.run_number }}"
+
+          if [ "$BRANCH" = "beta" ]; then
+            CHANNEL="beta"
+            QUAL_VERSION="${BASE_VERSION}-beta.${RUN_NUM}"
+            TAG="v${QUAL_VERSION}"
+            MANIFEST_NAME="release-manifest-beta.json"
+            PRERELEASE_FLAG="--prerelease"
+            RELEASE_TITLE="Beta ${BASE_VERSION} (run ${RUN_NUM}, ${SHORT_SHA})"
+          else
+            CHANNEL="stable"
+            QUAL_VERSION="${BASE_VERSION}"
+            TAG="v${QUAL_VERSION}"
+            MANIFEST_NAME="release-manifest.json"
+            PRERELEASE_FLAG=""
+            RELEASE_TITLE="v${QUAL_VERSION}"
+          fi
+
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "base_version=$BASE_VERSION" >> $GITHUB_OUTPUT
+          echo "qual_version=$QUAL_VERSION" >> $GITHUB_OUTPUT
+          echo "channel=$CHANNEL" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "manifest_name=$MANIFEST_NAME" >> $GITHUB_OUTPUT
+          echo "prerelease_flag=$PRERELEASE_FLAG" >> $GITHUB_OUTPUT
+          echo "release_title=$RELEASE_TITLE" >> $GITHUB_OUTPUT
+          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+
+          echo "channel=$CHANNEL version=$QUAL_VERSION tag=$TAG manifest=$MANIFEST_NAME"
+
+      - name: Prepare beta-qualified package.json (ephemeral, for manifest generation only)
+        if: steps.vars.outputs.channel == 'beta'
+        run: |
+          QUAL="${{ steps.vars.outputs.qual_version }}"
+          echo "Temporarily setting package.json version to ${QUAL} for manifest"
+          jq --arg v "$QUAL" '.version = $v' package.json > package.json.tmp
+          mv package.json.tmp package.json
+
+      - name: Download built binaries (base layer)
+        uses: actions/download-artifact@v4
+        with:
+          name: build-binaries
+          path: dist/
+
+      - name: Overlay final signed+notarized darwin binaries (when code signing enabled)
+        if: ${{ vars.RUN_CODE_SIGNING == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: final-darwin-binaries
+          path: dist/
+
+      - name: Verify we have the three platform binaries in dist/
+        run: |
+          for name in privacy-screen-darwin-arm64 privacy-screen-darwin-x64 privacy-screen-win32-x64.exe; do
+            if [ ! -f "dist/$name" ]; then
+              echo "::error::Missing expected dist/$name"
+              ls -l dist/ || true
+              exit 1
+            fi
+          done
+          echo "All three binaries present:"
+          ls -l dist/privacy-screen-*
+
+      - name: (Re)generate release manifest from final (signed) binaries
+        # Uses the (possibly beta-qualified) package.json version for the manifest
+        # and the asset URLs inside it. Hashes are taken from whatever is currently
+        # in dist/ (the signed versions when code signing ran).
+        run: |
+          CHANNEL="${{ steps.vars.outputs.channel }}"
+          bun scripts/build-release.ts --manifest-only --channel "$CHANNEL"
+
+      - name: Prepare manifest file for GitHub release assets
+        run: |
+          MANIFEST="${{ steps.vars.outputs.manifest_name }}"
+          cp dist/release-manifest.json "dist/$MANIFEST"
+
+      - name: Create GitHub Release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          TITLE="${{ steps.vars.outputs.release_title }}"
+          PRERELEASE="${{ steps.vars.outputs.prerelease_flag }}"
+          MANIFEST="${{ steps.vars.outputs.manifest_name }}"
+
+          gh release create "$TAG" \
+            --title "$TITLE" \
+            $PRERELEASE \
+            --generate-notes \
+            dist/privacy-screen-darwin-arm64 \
+            dist/privacy-screen-darwin-x64 \
+            dist/privacy-screen-win32-x64.exe \
+            "dist/${MANIFEST}" \
+            || ( \
+              echo "Release may already exist; uploading assets to existing tag..." && \
+              gh release upload "$TAG" \
+                dist/privacy-screen-darwin-arm64 \
+                dist/privacy-screen-darwin-x64 \
+                dist/privacy-screen-win32-x64.exe \
+                "dist/${MANIFEST}" \
+                --clobber \
+            )
+
+          echo "Release $TAG created/updated with assets."
+
+      - name: Restore clean package.json (do not commit the beta-qualified version)
+        if: steps.vars.outputs.channel == 'beta'
+        run: |
+          git checkout -- package.json || true
+
+      - name: Update release manifest in repo (for raw URL consumption by the app)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${{ steps.vars.outputs.branch }}"
+          MANIFEST_NAME="${{ steps.vars.outputs.manifest_name }}"
+          TAG="${{ steps.vars.outputs.tag }}"
+
+          echo "Updating ${MANIFEST_NAME} on ${BRANCH} from dist/release-manifest.json"
+
+          cp dist/release-manifest.json "./${MANIFEST_NAME}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add "${MANIFEST_NAME}"
+          if git commit -m "chore(release): update ${MANIFEST_NAME} for ${TAG} [skip ci]"; then
+            git push origin "HEAD:${BRANCH}"
+            echo "Pushed updated ${MANIFEST_NAME} to ${BRANCH}"
+          else
+            echo "No changes to ${MANIFEST_NAME} (already up to date or identical)"
+          fi
+
+      - name: Summary
+        run: |
+          echo "✅ create-release complete for ${{ steps.vars.outputs.branch }}"
+          echo "Channel: ${{ steps.vars.outputs.channel }}"
+          echo "Version (baked): ${{ steps.vars.outputs.qual_version }}"
+          echo "Tag: ${{ steps.vars.outputs.tag }}"
+          echo "Manifest committed as: ${{ steps.vars.outputs.manifest_name }}"
+          echo "Code signing: ${{ vars.RUN_CODE_SIGNING == 'true' && 'enabled (binaries are signed+notarized where applicable)' || 'disabled (binaries are unsigned)' }}"

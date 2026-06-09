@@ -1,0 +1,59 @@
+name: Claude Issue Triage
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+
+    steps:
+      # Post an @claude triage request as a comment using a PAT (not GITHUB_TOKEN)
+      # so the resulting issue_comment event actually fires and triggers claude.yml.
+      # GITHUB_TOKEN-authored comments do NOT trigger other workflows by design.
+      - name: Post @claude triage request
+        env:
+          GH_TOKEN: ${{ secrets.PRIVACY_SCREEN_TRIAGE_PAT }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          BODY=$(cat <<'EOF'
+          @claude Please triage this issue for privacy-screen — a local-first PII anonymization layer for AI providers (bun + TypeScript; Hono server on 127.0.0.1:31338; React + Vite web UI; Claude Code hook; optional local LLM judge via llama-server).
+
+          Do ALL of the following:
+
+          1. Apply labels via gh CLI (pre-installed on ubuntu-latest):
+             ```bash
+             gh issue edit "$ISSUE_NUMBER" --add-label "type-label,priority-label,component-label"
+             ```
+             Use only these labels (create any missing ones if needed):
+             - **Type**: bug, enhancement, question, documentation, wontfix
+             - **Priority**: P0-critical, P1-high, P2-medium, P3-low
+             - **Component**: hook, scrubber, judge, web, server, cli, release, ci, security, deployment, ui
+             Apply 1 type + 1 priority + 1 component label.
+
+          2. Post a triage comment with:
+             - **Type**: bug / enhancement / question / other
+             - **Priority**: P0-P3 + one-sentence justification
+             - **Component**: affected subsystem (hook / scrubber / judge / web / server / cli / release / ci)
+             - **Root cause hypothesis**: search the codebase, name the specific file and line most likely responsible (e.g. `hooks/PrivacyScreen.hook.ts:142`, `src/scrubber.ts:78`, `web/src/components/Composer.tsx:55`)
+             - **Suggested fix**: concrete next step, not vague advice. Reference existing patterns (`scrubText()`, `VocabStore`, `runJudge()`, `loadConfig()`) where they apply.
+             - **Effort**: XS / S / M / L / XL - calibrated for a single-author TypeScript codebase
+
+          3. If the issue is a bug, also note:
+             - Whether reproduction steps are present; if not, ask for them
+             - Whether `PRIVACY_CONFIG.yaml` `mode:` matters (observe vs enforce)
+             - Whether the LLM judge is involved (`llm_validate:` enabled?)
+
+          Be concise. Local-first privacy is the project's prime directive - flag any suggestion that would weaken loopback-only / fail-CLOSED / scrub-before-send guarantees.
+          EOF
+          )
+
+          gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "$BODY"
+          echo "Triage comment posted on issue #$ISSUE_NUMBER"
