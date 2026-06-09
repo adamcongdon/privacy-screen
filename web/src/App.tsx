@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Shield, CircleDot, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Shield, CircleDot, AlertCircle, CheckCircle2, MessageSquareWarning } from 'lucide-react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Composer } from './components/Composer';
 import { PreviewPane } from './components/PreviewPane';
@@ -8,6 +8,7 @@ import { ReviewQueue } from './components/ReviewQueue';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { ContextMenu } from './components/ContextMenu';
 import { CustomCategoryDialog } from './components/CustomCategoryDialog';
+import { FeedbackDialog } from './components/FeedbackDialog';
 import { useContextMenuShortcuts } from './lib/useContextMenu';
 import { useStore, type ToastEntry } from './store';
 import { getPayloadKind } from './lib/payloadKind';
@@ -56,6 +57,8 @@ export default function App(): JSX.Element {
   const files = useStore((s) => s.files);
   const tokenMapOpen = useStore((s) => s.tokenMapOpen);
   const setTokenMapOpen = useStore((s) => s.setTokenMapOpen);
+  const feedbackOpen = useStore((s) => s.feedbackOpen);
+  const setFeedbackOpen = useStore((s) => s.setFeedbackOpen);
   const autoSetPreviewMode = useStore((s) => s.autoSetPreviewMode);
   const resetPreviewModeOverride = useStore((s) => s.resetPreviewModeOverride);
 
@@ -120,6 +123,15 @@ export default function App(): JSX.Element {
           <KeyStatus />
           <HealthDot />
           <TokenMapDrawer />
+          <button
+            type="button"
+            onClick={() => setFeedbackOpen(true)}
+            className="flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+            title="Send feedback — files a GitHub issue"
+            aria-label="Send feedback"
+          >
+            <MessageSquareWarning className="h-3.5 w-3.5" /> send feedback
+          </button>
           <SettingsDrawer />
         </div>
       </header>
@@ -160,6 +172,7 @@ export default function App(): JSX.Element {
       {/* Global overlays */}
       <ContextMenu />
       <CustomCategoryDialog />
+      <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />
 
       {/* Toast stack */}
       <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-80 flex-col gap-2">

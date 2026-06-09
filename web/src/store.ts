@@ -118,6 +118,8 @@ type State = {
   previewModeUserOverrode: boolean;
   /** Token Map slide-in drawer open/closed. Persisted to localStorage. */
   tokenMapOpen: boolean;
+  /** Send-feedback dialog open/closed. Not persisted — ephemeral per session. */
+  feedbackOpen: boolean;
 
   // Server data
   vocab: VocabRow[];
@@ -145,6 +147,7 @@ type State = {
   autoSetPreviewMode: (m: PreviewMode) => void;
   resetPreviewModeOverride: () => void;
   setTokenMapOpen: (o: boolean) => void;
+  setFeedbackOpen: (o: boolean) => void;
   resetConversation: () => void;
 
   addFiles: (incoming: FileList | File[]) => Promise<void>;
@@ -296,6 +299,7 @@ export const useStore = create<State>((set, get) => {
   previewMode: readLsPreviewMode(),
   previewModeUserOverrode: false,
   tokenMapOpen: readLsTokenMapOpen(),
+  feedbackOpen: false,
 
   vocab: [],
   reviewItems: [],
@@ -331,6 +335,8 @@ export const useStore = create<State>((set, get) => {
     writeLs(LS_TOKENMAP_OPEN, o ? '1' : '0');
     set({ tokenMapOpen: o });
   },
+
+  setFeedbackOpen: (o) => set({ feedbackOpen: o }),
 
   resetConversation: () =>
     set({
