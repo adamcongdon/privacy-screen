@@ -1,0 +1,36 @@
+name: semgrep
+
+on:
+  push:
+    branches: [ac-build, beta, main]
+  pull_request:
+    branches: [ac-build, beta, main]
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: semgrep
+    runs-on: ubuntu-latest
+    # Skip on PRs from forks for now (no secrets, but semgrep can still run read-only)
+    if: (github.event_name == 'push') || (github.event.pull_request.head.repo.full_name == github.repository)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        uses: semgrep/semgrep-action@v1
+        with:
+          # Use a mix of CI, security, and secrets rules suitable for TS/JS/Bun.
+          # p/ci: recommended for CI (bugs, best practices)
+          # p/security: security-related
+          # p/secrets: additional secret patterns (complements gitleaks)
+          config: >-
+            p/ci
+            p/security
+            p/secrets
+        env:
+          # Semgrep can use GITHUB_TOKEN for PR comments / status if desired.
+          # For private repos it works for posting findings.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

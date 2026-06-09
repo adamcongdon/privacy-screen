@@ -21,7 +21,8 @@
  */
 
 const SHA256_HEX = /^[a-f0-9]{64}$/;
-const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/;
+// Supports clean semver and our beta prereleases: 1.2.3 or 1.2.3-beta.42
+const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.([0-9a-z]+))?$/i;
 
 export type UpdateChannel = 'stable' | 'beta';
 
@@ -64,24 +65,55 @@ export interface CheckOptions {
 }
 
 /**
- * Compare two `major.minor.patch` strings numerically.
- * Returns -1 if a<b, 0 if equal, 1 if a>b. Pre-release tags are not supported.
- * Invalid input compares as equal (the caller's malformed-input fallback).
+ * Parsed semver supporting an optional beta prerelease suffix of the form
+ * `-beta.<alphanum>` (used for auto beta builds on dev). The beta part is
+ * treated as a string identifier; numeric beta segments are compared as
+ * numbers when both sides look numeric.
+ */
+interface ParsedVersion {
+  major: number;
+  minor: number;
+  patch: number;
+  beta: string | null; // e.g. "42" or "a1b2c3d" or null for clean release
+}
+
+/**
+ * Compare two semver-ish strings.
+ * - Pure numeric major.minor.patch first.
+ * - A clean release is greater than any beta of the same base (1.2.3 > 1.2.3-beta.9).
+ * - For two betas of the same base, try numeric compare on the beta segment if both parse as int; otherwise lexical.
+ * - Invalid input compares as equal (graceful fallback).
  */
 export function compareVersions(a: string, b: string): -1 | 0 | 1 {
   const pa = parseSemver(a);
   const pb = parseSemver(b);
   if (!pa || !pb) return 0;
-  for (let i = 0; i < 3; i++) {
-    const ai = pa[i] as number;
-    const bi = pb[i] as number;
-    if (ai < bi) return -1;
-    if (ai > bi) return 1;
+
+  if (pa.major !== pb.major) return pa.major < pb.major ? -1 : 1;
+  if (pa.minor !== pb.minor) return pa.minor < pb.minor ? -1 : 1;
+  if (pa.patch !== pb.patch) return pa.patch < pb.patch ? -1 : 1;
+
+  // Bases equal — decide on prerelease
+  const ba = pa.beta;
+  const bb = pb.beta;
+  if (ba === null && bb === null) return 0;
+  if (ba === null) return 1; // a is clean release, b is beta of same base
+  if (bb === null) return -1; // a is beta, b is clean release
+
+  // Both betas: prefer numeric if possible (e.g. run numbers), else lexical for shas etc.
+  const na = /^\d+$/.test(ba) ? Number(ba) : null;
+  const nb = /^\d+$/.test(bb) ? Number(bb) : null;
+  if (na !== null && nb !== null) {
+    if (na < nb) return -1;
+    if (na > nb) return 1;
+    return 0;
   }
+  if (ba < bb) return -1;
+  if (ba > bb) return 1;
   return 0;
 }
 
-function parseSemver(v: string): [number, number, number] | null {
+function parseSemver(v: string): ParsedVersion | null {
   if (typeof v !== 'string') return null;
   const m = SEMVER.exec(v.trim());
   if (!m) return null;
@@ -91,7 +123,8 @@ function parseSemver(v: string): [number, number, number] | null {
   if (!Number.isFinite(major) || !Number.isFinite(minor) || !Number.isFinite(patch)) {
     return null;
   }
-  return [major, minor, patch];
+  const beta = m[4] ? m[4].toLowerCase() : null;
+  return { major, minor, patch, beta };
 }
 
 /**

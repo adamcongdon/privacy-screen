@@ -86,7 +86,12 @@ describe('hook contract — UserPromptSubmit', () => {
     });
     expect(out.exitCode).toBe(0);
     expect(out.parsed).toMatchObject({ decision: 'block' });
-    expect((out.parsed as { reason: string }).reason).toContain('{IP}');
+    const reason = (out.parsed as { reason: string }).reason;
+    expect(reason).toContain('{IP}');
+    // ISC-18: hook BLOCK includes the canonical findings-preview phrase
+    expect(reason).toContain('Double check it for sensitive data, personal data, PII');
+    // ISC-19: findings enumerated as category×count
+    expect(reason).toMatch(/IP\s*×\s*1/);
   });
 
   test('customer name from config → block', async () => {
@@ -96,7 +101,11 @@ describe('hook contract — UserPromptSubmit', () => {
       prompt: 'Acme Corp is having issues',
     });
     expect(out.parsed).toMatchObject({ decision: 'block' });
-    expect((out.parsed as { reason: string }).reason).toContain('{CUSTOMER}');
+    const reason = (out.parsed as { reason: string }).reason;
+    expect(reason).toContain('{CUSTOMER}');
+    // ISC-18 + ISC-19
+    expect(reason).toContain('Double check it for sensitive data, personal data, PII');
+    expect(reason).toMatch(/CUSTOMER\s*×\s*1/);
   });
 
   test('credential in prompt → block with credential warning', async () => {
