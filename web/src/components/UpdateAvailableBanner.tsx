@@ -43,12 +43,12 @@ export default function UpdateAvailableBanner(): JSX.Element | null {
     <div
       role="status"
       aria-live="polite"
-      className="flex w-full items-center justify-between gap-3 bg-emerald-600 px-3 py-1.5 text-xs text-white"
+      className="flex w-full items-center justify-between gap-3 bg-emerald-700 px-3 py-1.5 text-xs text-white"
     >
       <button
         type="button"
         onClick={openSettingsAtUpdate}
-        className="flex-1 text-left font-medium hover:underline focus:underline focus:outline-none"
+        className="flex-1 text-left font-medium hover:underline focus:underline focus:outline-none focus:ring-1 focus:ring-white"
       >
         Update available: v{version} ({channel}) — Open Settings to install
       </button>
@@ -56,7 +56,7 @@ export default function UpdateAvailableBanner(): JSX.Element | null {
         type="button"
         onClick={() => dismissUpdate(version)}
         aria-label="Dismiss update notification"
-        className="rounded p-0.5 text-white/80 hover:bg-emerald-700 hover:text-white focus:outline-none focus:ring-1 focus:ring-white"
+        className="rounded p-0.5 text-white/80 hover:bg-emerald-800 hover:text-white focus:outline-none focus:ring-1 focus:ring-white"
       >
         <X className="h-3.5 w-3.5" />
       </button>
