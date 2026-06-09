@@ -44,6 +44,7 @@ import { versionRoute } from './routes/version';
 import { judgeRoute } from './routes/judge';
 import { judgeControlRoute } from './routes/judge-control';
 import { updateRoute } from './routes/update';
+import { feedbackRoute } from './routes/feedback';
 import { reportClaudeCodeStatus } from './lib/claude-code-check';
 import { shutdownLlmProcess, getLlmClient } from './lib/llm-process';
 import { loadConfig } from '../src/config';
@@ -117,6 +118,7 @@ app.route('/api/version', versionRoute);
 app.route('/api/update', updateRoute);
 app.route('/api/judge', judgeRoute);
 app.route('/api/judge-control', judgeControlRoute);
+app.route('/api/feedback', feedbackRoute);
 
 // Static frontend bundle (built via `bun run web:build`).
 const webDist = join(import.meta.dir, '..', 'web', 'dist');
