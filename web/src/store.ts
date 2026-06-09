@@ -54,6 +54,16 @@ export type ToastEntry = {
   message: string;
 };
 
+// Async feedback job types — polled by the UI to surface filing progress.
+export type JobStatus = 'queued' | 'drafting' | 'filing' | 'done' | 'error';
+export type FeedbackJobState = {
+  jobId: string;
+  status: JobStatus;
+  issueNumber?: number;
+  issueUrl?: string;
+  error?: string;
+};
+
 export type PreviewMode = 'source' | 'rendered';
 
 const LS_PREVIEW_MODE = 'ps.preview-mode';
@@ -175,6 +185,9 @@ type State = {
   // Toasts
   toasts: ToastEntry[];
 
+  // Active async feedback job (polled state from the backend)
+  activeFeedbackJob: FeedbackJobState | null;
+
   // ── actions ──────────────────────────────────────────────────────────────
   setComposerText: (t: string) => void;
   setShowRawTokens: (v: boolean) => void;
@@ -237,6 +250,11 @@ type State = {
 
   pushToast: (kind: ToastEntry['kind'], message: string) => void;
   dismissToast: (id: number) => void;
+
+  // Async feedback job actions
+  startFeedbackJob: (jobId: string) => void;
+  setFeedbackJobState: (state: FeedbackJobState) => void;
+  clearFeedbackJob: () => void;
 };
 
 // Module-level so the AbortController survives state recreations and store
@@ -365,6 +383,9 @@ export const useStore = create<State>((set, get) => {
 
   toasts: [],
 
+    // Active async feedback job, polled by useFeedbackJob
+    activeFeedbackJob: null,
+
   setComposerText: (t) => set({ composerText: t }),
   setShowRawTokens: (v) => set({ showRawTokens: v }),
   setSettingsOpen: (v) => set({ settingsOpen: v }),
@@ -408,6 +429,10 @@ export const useStore = create<State>((set, get) => {
   },
 
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+
+  startFeedbackJob: (jobId) => set({ activeFeedbackJob: { jobId, status: 'queued' } }),
+  setFeedbackJobState: (state) => set({ activeFeedbackJob: state }),
+  clearFeedbackJob: () => set({ activeFeedbackJob: null }),
 
   buildPayload: (useOriginal = false) => {
     const { composerText, files } = get();
