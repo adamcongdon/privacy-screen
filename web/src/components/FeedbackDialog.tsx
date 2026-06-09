@@ -23,9 +23,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { X, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { useStore } from '../store';
 import { cn } from '../lib/cn';
+import { DialogHeader, ScrollableDialogBody, DialogFooter } from './ui/DialogScroll';
 
 const MAX_SUMMARY_LEN = 8_000;
 
@@ -149,79 +150,71 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm animate-fade-in" />
         <Dialog.Content
-          className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[min(640px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col gap-4 rounded-lg border border-zinc-800 bg-zinc-950 p-5 shadow-2xl"
+          className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[min(640px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-zinc-800 bg-zinc-950 shadow-2xl"
           onOpenAutoFocus={(e) => {
-            // We focus the textarea ourselves once the preview is ready.
             e.preventDefault();
           }}
         >
-          <div className="flex items-center justify-between">
-            <Dialog.Title className="text-sm font-semibold uppercase tracking-wider text-zinc-200">
-              Send feedback
-            </Dialog.Title>
-            <Dialog.Close asChild>
-              <button
-                type="button"
-                className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
-                aria-label="close"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </Dialog.Close>
-          </div>
-          <Dialog.Description className="text-xs text-zinc-500">
-            Files a GitHub issue at <code className="font-mono">adamcongdon/privacy-screen</code>{' '}
-            via your local <code className="font-mono">claude</code> +{' '}
-            <code className="font-mono">gh</code> CLIs. The diagnostics below have already
-            been scrubbed — that's exactly what gets attached to the issue.
-          </Dialog.Description>
+          <DialogHeader
+            title="Send feedback"
+            description={
+              <>
+                Files a GitHub issue at <code className="font-mono">adamcongdon/privacy-screen</code>{' '}
+                via your local <code className="font-mono">claude</code> +{' '}
+                <code className="font-mono">gh</code> CLIs. The diagnostics below have already
+                been scrubbed — that's exactly what gets attached to the issue.
+              </>
+            }
+          />
 
-          {/* Diagnostics preview — read-only audit surface. */}
-          <section className="flex min-h-0 flex-col gap-1.5">
-            <header className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
-              Diagnostics (scrubbed)
-            </header>
-            <div className="min-h-0 flex-1 overflow-auto rounded-md border border-zinc-800 bg-zinc-900/60">
-              {preview.kind === 'loading' && (
-                <div className="flex items-center gap-2 px-3 py-2 text-xs text-zinc-400">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Loading diagnostics…
-                </div>
-              )}
-              {preview.kind === 'error' && (
-                <div className="px-3 py-2 text-xs text-rose-300">
-                  Failed to load diagnostics: {preview.message}
-                </div>
-              )}
-              {preview.kind === 'ready' && (
-                <pre className="max-h-56 overflow-auto px-3 py-2 font-mono text-[11px] leading-relaxed text-zinc-200">
-                  {preview.json}
-                </pre>
-              )}
-            </div>
-          </section>
+          <ScrollableDialogBody>
+            {/* Diagnostics preview — read-only audit surface, collapsed by default. */}
+            <details className="mb-6">
+              <summary className="cursor-pointer text-xs text-zinc-400 hover:text-zinc-300 select-none">
+                Diagnostics (click to expand)
+              </summary>
+              <div className="mt-2 rounded-md border border-zinc-800 bg-zinc-900/60 overflow-auto">
+                {preview.kind === 'loading' && (
+                  <div className="flex items-center gap-2 px-3 py-2 text-xs text-zinc-400">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Loading diagnostics…
+                  </div>
+                )}
+                {preview.kind === 'error' && (
+                  <div className="px-3 py-2 text-xs text-rose-300">
+                    Failed to load diagnostics: {preview.message}
+                  </div>
+                )}
+                {preview.kind === 'ready' && (
+                  <pre className="max-h-56 overflow-auto px-3 py-2 font-mono text-[11px] leading-relaxed text-zinc-200">
+                    {preview.json}
+                  </pre>
+                )}
+              </div>
+            </details>
 
-          {/* Free-text summary. */}
-          <label className="flex min-h-0 flex-col gap-1.5">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
-              What went wrong?
-            </span>
-            <textarea
-              ref={textareaRef}
-              value={summary}
-              onChange={(e) => setSummary(e.target.value)}
-              rows={5}
-              maxLength={MAX_SUMMARY_LEN}
-              spellCheck
-              placeholder="Describe the bug or paste the steps that triggered it. Anything sensitive will be scrubbed before it leaves your machine."
-              className="w-full resize-y rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
-            />
-            <span className="self-end text-[10px] text-zinc-500">
-              {summary.length} / {MAX_SUMMARY_LEN}
-            </span>
-          </label>
+            {/* Free-text summary. */}
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+                What went wrong?
+              </span>
+              <textarea
+                ref={textareaRef}
+                value={summary}
+                onChange={(e) => setSummary(e.target.value)}
+                rows={5}
+                maxLength={MAX_SUMMARY_LEN}
+                spellCheck
+                placeholder="Describe the bug or paste the steps that triggered it. Anything sensitive will be scrubbed before it leaves your machine."
+                className="w-full resize-y rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+              />
+              <span className="self-end text-[10px] text-zinc-500">
+                {summary.length} / {MAX_SUMMARY_LEN}
+              </span>
+            </label>
+          </ScrollableDialogBody>
 
-          <div className="mt-1 flex items-center justify-end gap-2 border-t border-zinc-800 pt-3">
+          <DialogFooter>
             <Dialog.Close asChild>
               <button
                 type="button"
@@ -248,7 +241,7 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
               {sending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
               {sending ? 'Sending…' : 'Send'}
             </button>
-          </div>
+          </DialogFooter>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
