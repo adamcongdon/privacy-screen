@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { useStore, type FeedbackJobState } from '../store';
+import { useStore } from '../store';
 import { Loader2, X, ExternalLink } from 'lucide-react';
 import { cn } from '../lib/cn';
 
