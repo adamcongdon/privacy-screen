@@ -224,7 +224,7 @@ test('dismissUpdate writes localStorage and updates store state', () => {
   useStore.getState().dismissUpdate('9.9.9');
   expect(useStore.getState().dismissedUpdateVersion).toBe('9.9.9');
   try {
-    expect(globalThis.localStorage?.getItem('ps:dismissedUpdateVersion')).toBe('9.9.9');
+    expect(globalThis.localStorage?.getItem('ps.dismissed-update-version')).toBe('9.9.9');
   } catch {
     // localStorage may be disabled in some test envs — that's fine.
   }

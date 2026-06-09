@@ -58,7 +58,7 @@ export type PreviewMode = 'source' | 'rendered';
 
 const LS_PREVIEW_MODE = 'ps.preview-mode';
 const LS_TOKENMAP_OPEN = 'ps.tokenmap-open';
-const LS_DISMISSED_UPDATE = 'ps:dismissedUpdateVersion';
+const LS_DISMISSED_UPDATE = 'ps.dismissed-update-version';
 
 /**
  * Periodic version-poll cadence. 4 hours — quiet enough to be invisible, frequent
