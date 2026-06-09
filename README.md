@@ -27,6 +27,32 @@ open http://127.0.0.1:31338
 
 `SAFETY_CHECKLIST.md` (the older one) covers the Claude Code hook flow. Hook is NOT yet registered in your `settings.json` — opt in only after the checklist passes.
 
+## Auto-update
+
+privacy-screen ships GitHub releases on two channels:
+
+| Channel | Source branch | Cadence |
+|---|---|---|
+| `stable` | `main` | Tagged releases only |
+| `beta` | `beta` | Auto-built on every push (pre-release tags) |
+
+**Opt-in via `PRIVACY_CONFIG.yaml`:**
+
+```yaml
+update_channel: stable   # or beta — default: off (no network)
+update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
+```
+
+When enabled, the app polls the manifest URL every 4 hours while open (skipped when the tab is hidden) and surfaces a slim banner when a new version exists. Dismissing the banner remembers that exact version; a newer version brings it back. Click the banner to jump to Settings → Update where you can download and apply the new binary in one click. The app re-launches itself with the verified replacement.
+
+**Privacy guarantees:**
+- `update_channel: off` (the default) ⇒ zero outbound network for update checks.
+- No telemetry — the request is anonymous, body-less, header-less.
+- SHA256 verification is enforced before any binary is swapped in.
+- Channel mismatches are rejected (a beta manifest won't be applied if you're on stable).
+
+See `release-manifest.example.json` for the manifest shape and `Plans/INSTALLER.md` for the underlying install mechanics.
+
 ## What it covers
 
 PrivacyScreen ships with deterministic regex coverage for the 8-category taxonomy used by [OpenAI's Privacy Filter](https://openai.com/index/introducing-openai-privacy-filter/) plus infrastructure-specific categories Adam works with daily:
