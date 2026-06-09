@@ -48,7 +48,7 @@ beforeEach(() => {
     settingsOpen: false,
   });
   try {
-    globalThis.localStorage?.removeItem('ps:dismissedUpdateVersion');
+    globalThis.localStorage?.removeItem('ps.dismissed-update-version');
   } catch {
     /* ignore */
   }
@@ -139,7 +139,7 @@ test('dismiss button updates store and localStorage', () => {
 
   expect(useStore.getState().dismissedUpdateVersion).toBe('1.2.3');
   try {
-    expect(globalThis.localStorage?.getItem('ps:dismissedUpdateVersion')).toBe('1.2.3');
+    expect(globalThis.localStorage?.getItem('ps.dismissed-update-version')).toBe('1.2.3');
   } catch {
     /* localStorage may be disabled — store assertion above already proves it */
   }

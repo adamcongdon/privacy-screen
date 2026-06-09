@@ -29,14 +29,10 @@ export default function UpdateAvailableBanner(): JSX.Element | null {
   const dismissUpdate = useStore((s) => s.dismissUpdate);
 
   const updateInfo = versionInfo?.updateInfo;
-  const available = versionInfo?.updateAvailable === true && !!updateInfo?.version;
-  if (!available) return null;
-  if (dismissedUpdateVersion && dismissedUpdateVersion === updateInfo!.version) {
-    return null;
-  }
+  if (!versionInfo?.updateAvailable || !updateInfo?.version) return null;
+  if (dismissedUpdateVersion === updateInfo.version) return null;
 
-  const version = updateInfo!.version;
-  const channel = updateInfo!.channel;
+  const { version, channel } = updateInfo;
 
   const openSettingsAtUpdate = (): void => {
     setSettingsDeepLink('update');
