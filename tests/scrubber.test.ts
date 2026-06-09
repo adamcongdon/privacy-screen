@@ -200,6 +200,9 @@ const baseCfg: PrivacyConfig = {
     timeout_ms: 2500,
     min_confidence: 0.6,
   },
+  hook: {
+    auto_approve_clean: false,
+  },
 };
 
 describe('scrubText — customer_names from config', () => {

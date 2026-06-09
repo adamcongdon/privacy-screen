@@ -10,6 +10,7 @@ import {
   Brain,
 } from 'lucide-react';
 import { useStore } from '../store';
+import { api } from '../api';
 import { cn } from '../lib/cn';
 
 // Common aliases accepted by `claude --model`.
@@ -22,47 +23,103 @@ const MODEL_CHOICES = [
   'claude-haiku-4-5-20251001',
 ];
 
+// Canonical manifest URLs.
+// - Stable: committed to main on stable releases.
+// - Beta: committed to the `beta` branch. PRs landing on `beta` (from ac-build) auto-deploy beta builds.
+const STABLE_MANIFEST =
+  'https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json';
+const BETA_MANIFEST =
+  'https://raw.githubusercontent.com/adamcongdon/privacy-screen/beta/release-manifest-beta.json';
+
+
 export function SettingsDrawer(): JSX.Element {
   const settings = useStore((s) => s.settings);
   const open = useStore((s) => s.settingsOpen);
   const setOpen = useStore((s) => s.setSettingsOpen);
   const refreshSettings = useStore((s) => s.refreshSettings);
   const saveSettings = useStore((s) => s.saveSettings);
+  const pushToast = useStore((s) => s.pushToast);
+  const versionInfo = useStore((s) => s.versionInfo);
+  const updateStatus = useStore((s) => s.updateStatus);
+  const refreshVersion = useStore((s) => s.refreshVersion);
+  const refreshUpdateStatus = useStore((s) => s.refreshUpdateStatus);
+  const downloadUpdate = useStore((s) => s.downloadUpdate);
+  const applyUpdate = useStore((s) => s.applyUpdate);
 
   const [model, setModel] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [updateChannel, setUpdateChannel] = useState<'off' | 'stable' | 'beta'>('off');
+  const [updateManifestUrl, setUpdateManifestUrl] = useState('');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     void refreshSettings();
-  }, [open, refreshSettings]);
+    void refreshVersion();
+    void refreshUpdateStatus();
+  }, [open, refreshSettings, refreshVersion, refreshUpdateStatus]);
 
   useEffect(() => {
     if (!settings) return;
     setModel(settings.model);
     setSystemPrompt(settings.system_prompt);
+    setUpdateChannel(settings.update_channel ?? 'off');
+    setUpdateManifestUrl(settings.update_manifest_url ?? '');
   }, [settings]);
 
   const dirty = useMemo(() => {
     if (!settings) return false;
     if (model !== settings.model) return true;
     if (systemPrompt !== settings.system_prompt) return true;
+    if (updateChannel !== settings.update_channel) return true;
+    if (updateManifestUrl !== settings.update_manifest_url) return true;
     return false;
-  }, [settings, model, systemPrompt]);
+  }, [settings, model, systemPrompt, updateChannel, updateManifestUrl]);
 
   const onSave = async (): Promise<void> => {
     if (!dirty || saving) return;
     setSaving(true);
+    const channelChanged = settings && updateChannel !== settings.update_channel;
     try {
-      const patch: { model?: string; system_prompt?: string } = {};
+      const patch: {
+        model?: string;
+        system_prompt?: string;
+        update_channel?: 'off' | 'stable' | 'beta';
+        update_manifest_url?: string;
+      } = {};
       if (settings && model !== settings.model) patch.model = model;
       if (settings && systemPrompt !== settings.system_prompt) patch.system_prompt = systemPrompt;
+      if (settings && updateChannel !== settings.update_channel) patch.update_channel = updateChannel;
+      if (settings && updateManifestUrl !== settings.update_manifest_url) patch.update_manifest_url = updateManifestUrl;
       await saveSettings(patch);
+      if (channelChanged) {
+        // Give the server a beat to persist, then re-check so the UI reflects the new channel default.
+        setTimeout(() => {
+          void refreshVersion();
+          void refreshUpdateStatus();
+        }, 120);
+      }
     } catch {
       // Toast already pushed by store. Keep drawer open so user can retry.
     } finally {
       setSaving(false);
+    }
+  };
+
+  const doCheckForUpdates = async () => {
+    try {
+      await refreshVersion();
+      const v = useStore.getState().versionInfo;
+      if (v?.updateAvailable && v.updateInfo) {
+        pushToast('success', `Update available: ${v.latestKnown} (${v.updateInfo.channel}).`);
+      } else if (v?.error) {
+        pushToast('error', 'Could not reach the update manifest (network or config).');
+      } else if (v) {
+        pushToast('info', `You are on ${v.version} — no newer ${v.channel} release found.`);
+      }
+      await refreshUpdateStatus();
+    } catch (e) {
+      pushToast('error', `Update check failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -162,6 +219,213 @@ export function SettingsDrawer(): JSX.Element {
           </Field>
 
           <JudgePanel />
+
+          {/* Update channel — first-class UX for the "how to use beta" flow + real download/apply */}
+          <section className="flex flex-col gap-2 rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-3">
+            <header className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-300">
+              Updates (opt-in)
+            </header>
+            <p className="text-[11px] text-zinc-500">
+              Opt-in check against a static manifest. When a newer release exists for your channel you can
+              download it here (verified by sha256) and apply with one click. Nothing phones home or installs
+              without you clicking.
+            </p>
+
+            {/* Live status line */}
+            <div className="flex items-center justify-between text-[11px]">
+              <div>
+                Running <span className="font-mono text-zinc-200">{versionInfo?.version ?? '…'}</span>
+                {versionInfo?.channel && versionInfo.channel !== 'off' && (
+                  <span className="ml-1 text-zinc-500">· {versionInfo.channel}</span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => void doCheckForUpdates()}
+                className="rounded-md border border-zinc-700 bg-zinc-900/60 px-2 py-0.5 text-[10px] text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+              >
+                Check now
+              </button>
+            </div>
+
+            {/* Update available banner + actions */}
+            {(versionInfo?.updateAvailable || updateStatus?.readyToApply || updateStatus?.download?.active) && (
+              <div className="mt-1 rounded-md border border-emerald-900/60 bg-emerald-950/20 p-2 text-xs">
+                {updateStatus?.download?.active && (
+                  <div className="mb-2">
+                    <div className="flex items-center justify-between text-emerald-300">
+                      <span>Downloading v{updateStatus.download.version}…</span>
+                      <span className="font-mono text-[10px]">
+                        {Math.round((updateStatus.download.bytesDownloaded / (updateStatus.download.totalBytes || 1)) * 100)}%
+                      </span>
+                    </div>
+                    <div className="mt-1 h-1 w-full overflow-hidden rounded bg-emerald-900/60">
+                      <div
+                        className="h-1 bg-emerald-400 transition-all"
+                        style={{
+                          width: `${Math.min(100, Math.round((updateStatus.download.bytesDownloaded / (updateStatus.download.totalBytes || 1)) * 100))}%`,
+                        }}
+                      />
+                    </div>
+                    <div className="mt-0.5 font-mono text-[10px] text-emerald-400/80">
+                      {Math.round(updateStatus.download.bytesDownloaded / 1024 / 1024)} MB
+                      {updateStatus.download.totalBytes > 0 && ` / ${Math.round(updateStatus.download.totalBytes / 1024 / 1024)} MB`}
+                    </div>
+                  </div>
+                )}
+
+                {!updateStatus?.download?.active && versionInfo?.updateAvailable && versionInfo.updateInfo && (
+                  <div className="flex flex-col gap-1">
+                    <div className="font-medium text-emerald-200">
+                      Update available: v{versionInfo.updateInfo.version} ({versionInfo.updateInfo.channel})
+                    </div>
+                    <div className="text-[10px] text-emerald-300/80">
+                      Released {new Date(versionInfo.updateInfo.releasedAt || Date.now()).toLocaleDateString()}
+                    </div>
+                    {versionInfo.updateInfo.notesUrl && (
+                      <a
+                        href={versionInfo.updateInfo.notesUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[10px] text-emerald-400 underline"
+                      >
+                        View release notes →
+                      </a>
+                    )}
+                  </div>
+                )}
+
+                {updateStatus?.readyToApply && !updateStatus?.download?.active && (
+                  <div className="mt-2 text-emerald-200">
+                    Ready to install. The app will quit and relaunch from the new binary.
+                  </div>
+                )}
+
+                <div className="mt-2 flex gap-2">
+                  {!updateStatus?.download?.active && versionInfo?.updateAvailable && (
+                    <button
+                      type="button"
+                      onClick={() => void downloadUpdate()}
+                      className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+                    >
+                      Download update
+                    </button>
+                  )}
+                  {(updateStatus?.readyToApply || (!updateStatus?.download?.active && updateStatus?.updateInfo)) && (
+                    <button
+                      type="button"
+                      onClick={() => void applyUpdate()}
+                      className="rounded-md border border-emerald-700 bg-emerald-900/40 px-2.5 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-800"
+                      title="The running binary will be replaced and a new instance started. You will need to refresh the page."
+                    >
+                      Install & restart
+                    </button>
+                  )}
+                  {updateStatus?.download?.error && (
+                    <div className="text-rose-400 text-[10px]">Download error: {updateStatus.download.error}</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="mt-1 flex flex-col gap-1.5">
+              {(
+                [
+                  {
+                    value: 'off' as const,
+                    title: 'Off (default)',
+                    desc: 'Zero network activity for updates. Recommended unless you want to be notified of new versions.',
+                  },
+                  {
+                    value: 'stable' as const,
+                    title: 'Stable',
+                    desc: 'Check the official release manifest on the main branch. Full releases only (PRs from beta → main).',
+                  },
+                  {
+                    value: 'beta' as const,
+                    title: 'Beta',
+                    desc: 'Track builds from the `beta` branch. Merging a PR into `beta` (usually from your primary ac-build branch) auto-deploys a beta (prerelease + manifest).',
+                  },
+                ] as const
+              ).map((opt) => {
+                const selected = updateChannel === opt.value;
+                return (
+                  <label
+                    key={opt.value}
+                    className={cn(
+                      'flex cursor-pointer items-start gap-2 rounded-md border px-2.5 py-1.5 text-xs transition-colors',
+                      selected
+                        ? 'border-indigo-500/60 bg-indigo-950/20 text-zinc-100'
+                        : 'border-zinc-800 bg-zinc-900/50 text-zinc-300 hover:bg-zinc-800/60',
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="update-channel"
+                      value={opt.value}
+                      checked={selected}
+                      onChange={() => {
+                        const next = opt.value;
+                        setUpdateChannel(next);
+                        // Smart default: when picking beta, switch the manifest URL to the dev one
+                        // if it still points at the stable default (or is empty).
+                        if (next === 'beta') {
+                          const looksStable =
+                            !updateManifestUrl ||
+                            updateManifestUrl === STABLE_MANIFEST ||
+                            updateManifestUrl.includes('/main/release-manifest.json');
+                          if (looksStable) {
+                            setUpdateManifestUrl(BETA_MANIFEST);
+                          }
+                        } else if (next === 'stable') {
+                          // Switching back to stable: if it was the beta url, flip to stable.
+                          if (updateManifestUrl === BETA_MANIFEST) {
+                            setUpdateManifestUrl(STABLE_MANIFEST);
+                          }
+                        }
+                      }}
+                      className="mt-0.5 accent-indigo-500"
+                    />
+                    <div className="min-w-0">
+                      <div className="font-medium">{opt.title}</div>
+                      <div className="text-[11px] text-zinc-500">{opt.desc}</div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+
+            {/* Manifest URL — only relevant when not off. Editable for power users / mirrors. */}
+            {updateChannel !== 'off' && (
+              <div className="mt-1">
+                <Field label="Manifest URL">
+                  <input
+                    type="text"
+                    value={updateManifestUrl}
+                    onChange={(e) => setUpdateManifestUrl(e.target.value)}
+                    spellCheck={false}
+                    className="w-full rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1 font-mono text-[11px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+                    placeholder={updateChannel === 'beta' ? BETA_MANIFEST : STABLE_MANIFEST}
+                  />
+                  <p className="mt-1 text-[10px] text-zinc-500">
+                    {updateChannel === 'beta' ? (
+                      <>
+                        Beta manifest lives on the <code>beta</code> branch. Merging into <code>beta</code>
+                        (from ac-build) auto-updates it. Point here (or your own mirror) to receive beta builds.
+                      </>
+                    ) : (
+                      <>Points at the stable manifest committed on merges to main.</>
+                    )}
+                  </p>
+                </Field>
+              </div>
+            )}
+
+            <p className="text-[10px] text-zinc-500">
+              Downloads are staged to ~/.privacy-screen/updates and verified before the Install button is enabled.
+              See <code className="font-mono">Plans/INSTALLER.md</code>.
+            </p>
+          </section>
 
           <div className="mt-auto flex items-center justify-end gap-2 border-t border-zinc-800 pt-3">
             <Dialog.Close asChild>

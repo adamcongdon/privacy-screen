@@ -219,19 +219,29 @@ Add your own via `skip_scrub_fields:` in `PRIVACY_CONFIG.yaml`.
 
 ## CI
 
-Workflows live in [`.github/workflows/`](.github/workflows/) and run on every push to `main` and every pull request unless noted.
+Workflows live in [`.github/workflows/`](.github/workflows/) .
 
-- [`ci.yml`](.github/workflows/ci.yml) — `bun install --frozen-lockfile`, `bun lint` (tsc --noEmit), then `bun test`. Catches type regressions and broken tests.
-- [`codeql.yml`](.github/workflows/codeql.yml) — GitHub's CodeQL static analysis for JavaScript/TypeScript. Catches SAST findings (injection, unsafe sinks, prototype pollution). Also runs weekly on a schedule.
+- [`ci.yml`](.github/workflows/ci.yml) — lint + test on push to ac-build / beta / main and all PRs. Also enforces two `main`-targeting rules as required status checks:
+  - Only PRs **from `beta`** are allowed to target `main` (hard fail otherwise).
+  - PRs to `main` require an approving review **from the repo owner** (`@adamcongdon`).
+- [`release.yml`](.github/workflows/release.yml) — **beta builds** are auto-deployed when PRs land on the `beta` branch (as GitHub prereleases, with `channel: "beta"` in the manifest and `release-manifest-beta.json` committed to the `beta` branch). **Full stable releases** are generated on merges from `beta` to `main` (regular GitHub releases + `release-manifest.json` on `main`). Also runs VirusTotal scans on the built platform binaries (when `VT_API_KEY` secret is set).
 - [`gitleaks.yml`](.github/workflows/gitleaks.yml) — git history secret scan via gitleaks, configured by [`.gitleaks.toml`](.gitleaks.toml). Catches accidentally committed credentials. Fake fixtures under `tests/` are allowlisted.
-- [`dependency-review.yml`](.github/workflows/dependency-review.yml) — GitHub's dependency-review action on PRs. Fails the PR if a newly added dependency carries a CVE of `moderate` severity or higher.
-- [`osv-scanner.yml`](.github/workflows/osv-scanner.yml) — Google OSV scanner against `package.json` + `bun.lock` for the full transitive graph. Also runs weekly.
+- [`semgrep.yml`](.github/workflows/semgrep.yml) — static application security testing (SAST) using Semgrep with `p/ci`, `p/security`, and `p/secrets` rule packs. Runs on push + PRs. No GitHub Advanced Security required.
 
-All workflows use least-privilege `permissions:` blocks and rely on the free tier of each action — no repo secrets are required.
+See [`.github/workflows/README.md`](.github/workflows/README.md) for the full list of workflows, branch protection requirements on `main`, and notes on disabled scans (CodeQL, OSV, dependency-review) that need GHAS or a public repo.
+
+All workflows use least-privilege `permissions:` blocks. The release workflow requires `contents: write` to create releases and push manifest updates.
 
 ## Updates
 
-PrivacyScreen ships an **opt-in** update check. There is no auto-install, no telemetry, and the check is off by default. When enabled, the app makes one HTTPS GET per start against a static release manifest you control — that's the entire network footprint.
+PrivacyScreen ships an **opt-in** update check + explicit download/apply. There is no background phoning, no telemetry, and `update_channel: off` is the default (zero network activity for updates until you flip it in Settings).
+
+In the web UI (open the app at http://127.0.0.1:31338 → **settings** → **Updates (opt-in)**) you choose Stable or Beta, optionally tweak the manifest URL, then:
+
+- Click **Check now** (or let the app check on settings open).
+- When a newer release for your channel is found, a **Download update** button appears.
+- The server streams the platform binary, verifies its sha256 against the manifest, and stages it under `~/.privacy-screen/updates/`.
+- Once verified, **Install & restart** becomes available. One click replaces the running binary (best-effort) and spawns the new version detached. The old binary is left next to it as `.old` for manual rollback.
 
 ```yaml
 # PRIVACY_CONFIG.yaml
@@ -239,25 +249,24 @@ update_channel: off               # off | stable | beta. Default off.
 update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
 ```
 
-When `update_channel` is `stable` or `beta`, hit `GET /api/version` to see whether a newer release is available:
+### Channels & manifests (auto-published by CI)
 
-```json
-{
-  "version": "1.0.0",
-  "channel": "stable",
-  "updateAvailable": true,
-  "latestKnown": "1.0.1",
-  "updateInfo": {
-    "version": "1.0.1",
-    "channel": "stable",
-    "url": "https://github.com/.../privacy-screen-darwin-arm64",
-    "sha256": "0000…",
-    "releasedAt": "2026-06-02T00:00:00Z"
-  }
-}
-```
+- `stable` (most users): points at `main/release-manifest.json`. Full releases are generated only when a PR from `beta` lands on `main`.
+- `beta`: set `update_channel: beta` and point the manifest at the `beta` branch:
+  ```yaml
+  update_channel: beta
+  update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/beta/release-manifest-beta.json
+  ```
+  Every time a PR lands on the `beta` branch (typically merged from your primary `ac-build` branch), it triggers an automatic beta build (GitHub prerelease + updated beta manifest). Beta manifests use qualified versions like `1.2.3-beta.42` (based on workflow run number) so the update check can offer newer betas.
 
-The check is *informational only* in this iteration — downloading and installing the new binary is still a manual step. See [`Plans/INSTALLER.md`](Plans/INSTALLER.md) for the full distribution roadmap.
+Branch flow:
+- `ac-build` — your primary day-to-day branch.
+- `beta` — PR into `beta` deploys beta.
+- `main` — PR from `beta` to `main` deploys stable release (protected, only you approve).
+
+See `privacy-config.example.yaml` for the commented examples and [`Plans/INSTALLER.md`](Plans/INSTALLER.md) for design rationale (local-first, content-addressed, no surprises).
+
+`GET /api/version` (and the UI) surface the check result. `GET /api/update/status`, `POST /api/update/download`, and `POST /api/update/apply` drive the download + restart flow. All actions are user-initiated.
 
 ## What's gitignored
 

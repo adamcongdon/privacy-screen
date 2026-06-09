@@ -75,14 +75,24 @@ db_path: ~
 #   beta    — Same as stable but only considers releases tagged
 #             `channel: "beta"` in the manifest.
 #
-# Even with this set to stable/beta, NOTHING is ever downloaded or executed
-# automatically. See Plans/INSTALLER.md for the full design and the
-# explicit out-of-scope list.
+# Even with this set to stable/beta, downloads and installs are never automatic.
+# In the web UI (Settings → Updates) you explicitly click "Download update" and later
+# "Install & restart". The server verifies the sha256 from the manifest before the
+# Install button is offered. See Plans/INSTALLER.md.
 update_channel: off
 
 # URL of the release manifest. Default points at the upstream repo on
 # GitHub raw. Override this to pin a mirror, an air-gapped copy, or your
 # own fork. Must be https://.
+#
+# Stable (default for most users):
+#   https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
+#
+# Beta (auto beta builds + manifest when PRs land on the `beta` branch):
+#   https://raw.githubusercontent.com/adamcongdon/privacy-screen/beta/release-manifest-beta.json
+#   (set update_channel: beta when using the beta manifest)
+#
+# Branch flow: ac-build (daily) → PR to beta (deploys beta) → PR from beta to main (deploys stable)
 update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
 
 # ---------------------------------------------------------------------------

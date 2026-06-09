@@ -24,6 +24,12 @@ export interface LlmValidatePatch {
   model_path?: string | null;
 }
 
+/** Top-level update prefs the GUI may patch (from PRIVACY_CONFIG.yaml). */
+export interface UpdateConfigPatch {
+  update_channel?: 'off' | 'stable' | 'beta';
+  update_manifest_url?: string;
+}
+
 /** Write the patch to PRIVACY_CONFIG.yaml. Returns the post-write config. */
 export function patchLlmValidate(patch: LlmValidatePatch): PrivacyConfig {
   const path = resolveConfigPath();
@@ -76,5 +82,37 @@ export function patchLlmValidate(patch: LlmValidatePatch): PrivacyConfig {
   writeFileSync(path, out);
 
   // Re-load so we surface back the canonicalized + defaulted view.
+  return loadConfig(path);
+}
+
+/** Write update_channel / update_manifest_url at the YAML root (comment-preserving). */
+export function patchUpdateConfig(patch: UpdateConfigPatch): PrivacyConfig {
+  const path = resolveConfigPath();
+  const existing = existsSync(path) ? readFileSync(path, 'utf-8') : '';
+
+  let doc: Document;
+  try {
+    doc = parseDocument(existing);
+    if (doc.errors.length > 0) {
+      doc = new Document(new YAMLMap());
+    }
+  } catch {
+    doc = new Document(new YAMLMap());
+  }
+
+  if (!isMap(doc.contents)) {
+    doc.contents = new YAMLMap();
+  }
+
+  if (typeof patch.update_channel === 'string') {
+    doc.set('update_channel', patch.update_channel);
+  }
+  if (typeof patch.update_manifest_url === 'string' && patch.update_manifest_url.length > 0) {
+    doc.set('update_manifest_url', patch.update_manifest_url);
+  }
+
+  const out = String(doc);
+  writeFileSync(path, out);
+
   return loadConfig(path);
 }

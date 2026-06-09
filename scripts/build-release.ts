@@ -4,6 +4,7 @@
  *
  * Run from project root:
  *   bun scripts/build-release.ts
+ *   bun scripts/build-release.ts --channel beta
  *
  * Outputs:
  *   dist/privacy-screen-darwin-arm64
@@ -11,9 +12,11 @@
  *   dist/privacy-screen-win32-x64.exe
  *   dist/release-manifest.json
  *
+ * Use --channel beta to produce a beta-channel manifest (for dev-branch
+ * auto-builds). Default is 'stable'.
+ *
  * This script does NOT push anything anywhere. It produces local artifacts;
- * publishing a release is a separate, deliberate human step. See
- * Plans/INSTALLER.md.
+ * publishing a release is a separate step handled by CI for dev/main.
  */
 
 import { mkdir, readFile, writeFile, stat } from 'fs/promises';
@@ -69,36 +72,52 @@ const TARGETS: Target[] = [
 async function main(): Promise<void> {
   process.stdout.write('--- build-release ---\n');
 
+  const channel = parseChannel();
+  process.stdout.write(`channel: ${channel}\n`);
+
+  const manifestOnly = parseManifestOnly();
+  if (manifestOnly) {
+    process.stdout.write('manifest-only: will (re)generate manifest from existing dist/ binaries (no web build, no compile)\n');
+  }
+
   const pkg = await readPkg();
   process.stdout.write(`version: ${pkg.version}\n`);
 
   await ensureDir(DIST_DIR);
 
-  // 1. Build the web bundle first. The server serves web/dist at runtime;
-  //    a release with no UI is useless.
-  await runStep('web build', ['bun', 'run', 'web:build']);
+  if (!manifestOnly) {
+    // 1. Build the web bundle first. The server serves web/dist at runtime;
+    //    a release with no UI is useless.
+    await runStep('web build', ['bun', 'run', 'web:build']);
 
-  // 2. Compile each platform target.
+    // 2. Compile each platform target.
+    for (const t of TARGETS) {
+      const outfile = join(DIST_DIR, t.outName);
+      if (existsSync(outfile)) {
+        // Remove stale binary so size + hash don't get confused by reuse.
+        await Bun.write(outfile, ''); // truncate (Bun has no rm helper here)
+      }
+      await runStep(
+        `compile ${t.manifestKey}`,
+        [
+          'bun',
+          'build',
+          '--compile',
+          `--target=${t.bunTarget}`,
+          'server/server.ts',
+          '--outfile',
+          outfile,
+        ],
+      );
+    }
+  } else {
+    process.stdout.write('manifest-only: skipping web build and platform compiles\n');
+  }
+
+  // 3. Hash (and for non-manifest-only, already compiled) each platform target.
   const platforms: Record<string, PlatformAsset> = {};
   for (const t of TARGETS) {
     const outfile = join(DIST_DIR, t.outName);
-    if (existsSync(outfile)) {
-      // Remove stale binary so size + hash don't get confused by reuse.
-      await Bun.write(outfile, ''); // truncate (Bun has no rm helper here)
-    }
-    await runStep(
-      `compile ${t.manifestKey}`,
-      [
-        'bun',
-        'build',
-        '--compile',
-        `--target=${t.bunTarget}`,
-        'server/server.ts',
-        '--outfile',
-        outfile,
-      ],
-    );
-
     const { sha256, size } = await hashFile(outfile);
     platforms[t.manifestKey] = {
       url: releaseUrl(pkg.version, t.outName),
@@ -111,7 +130,7 @@ async function main(): Promise<void> {
   // 3. Write manifest.
   const manifest: ReleaseManifest = {
     version: pkg.version,
-    channel: 'stable',
+    channel,
     released_at: new Date().toISOString(),
     notes_url: `https://github.com/adamcongdon/privacy-screen/releases/tag/v${pkg.version}`,
     platforms,
@@ -120,6 +139,29 @@ async function main(): Promise<void> {
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
   process.stdout.write(`wrote ${manifestPath}\n`);
   process.stdout.write('--- done ---\n');
+}
+
+function parseChannel(): 'stable' | 'beta' {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--channel' || a === '-c') {
+      const val = args[i + 1];
+      if (val === 'beta' || val === 'stable') return val;
+      throw new Error(`--channel must be 'stable' or 'beta', got '${val}'`);
+    }
+    if (a.startsWith('--channel=')) {
+      const val = a.slice('--channel='.length);
+      if (val === 'beta' || val === 'stable') return val;
+      throw new Error(`--channel must be 'stable' or 'beta', got '${val}'`);
+    }
+  }
+  return 'stable';
+}
+
+function parseManifestOnly(): boolean {
+  const args = process.argv.slice(2);
+  return args.includes('--manifest-only') || args.includes('--manifest-only=true');
 }
 
 async function readPkg(): Promise<PkgJson> {
