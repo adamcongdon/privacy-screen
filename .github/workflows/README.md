@@ -6,13 +6,30 @@
   - `enforce-beta-to-main` — fails any PR targeting `main` whose source branch is not `beta`.
   - `require-owner-approval` — fails PRs to `main` until the repository owner (`@adamcongdon`) has provided an approving review. Complements branch protection + CODEOWNERS.
 - `release.yml` — **beta builds on every push to `beta`**; **full stable releases on every push to `main`** (only from `beta`).
-  - Runs the normal test/lint first.
-  - For `beta`: mutates version to `<base>-beta.<run_number>` (ephemeral for the build), produces a GitHub **prerelease**, uploads the three platform binaries + `release-manifest.json` (with `channel: "beta"`), then commits the manifest to repo root as `release-manifest-beta.json` on the `beta` branch (with `[skip ci]`).
-  - For main: produces a regular GitHub release (not prerelease), uploads binaries + `release-manifest.json` (with `channel: "stable"`), then commits the manifest to `release-manifest.json` on `main`.
+  - Runs the normal test/lint first (in a separate `test` job).
+  - `build` job: compiles web bundle + the three platform binaries (cross-compile on ubuntu), optionally signs the Windows exe (see code signing below), runs optional VirusTotal scan, uploads `build-binaries` artifact.
+  - `sign-macos` job (only when `RUN_CODE_SIGNING=true`): downloads darwin binaries, imports Apple Developer ID cert into a transient keychain, `codesign --options runtime --timestamp`, submits to Apple notary via `notarytool` (App Store Connect API key), staples, uploads `final-darwin-binaries`.
+  - `create-release` job: downloads base build binaries + (when signing) the final darwin overlays, (re)generates the release manifest via `bun scripts/build-release.ts --manifest-only` (so hashes are of the final signed bytes), creates the GitHub Release (prerelease for beta) with the three binaries + named manifest, then commits the manifest to the branch root (`release-manifest*.json`) with `[skip ci]`.
+  - For `beta`: version is mutated to `<base>-beta.<run_number>` (ephemeral) so the baked manifest + release title reflect the beta qualifier.
   - Beta users point `update_manifest_url` at the `beta` branch's `release-manifest-beta.json` and set `update_channel: beta`.
+  - The manifest's `sha256` values (consumed by the in-app updater) are *always* taken from the final artifacts that users will actually download.
 - `gitleaks.yml` — secret-scanning on push + PR
 - `semgrep.yml` — SAST/code security scanning (Semgrep p/ci + p/security + p/secrets rules) on push + PR. No GitHub Advanced Security required.
 - Release workflow also performs VirusTotal scanning of the built platform binaries (when `VT_API_KEY` secret is configured).
+- Release workflow supports optional code signing (see "Code signing" section below).
+
+### Claude automation (ported from `adamcongdon/se-lz`)
+
+- `claude.yml` — `@claude` mention handler. Replies on issues, issue comments, PR review comments, and PR reviews that contain `@claude`. Uses [`anthropics/claude-code-action@v1`](https://github.com/anthropics/claude-code-action). Requires secret `CLAUDE_CODE_OAUTH_TOKEN` (generate via `claude setup-token`). Without the secret, the workflow runs but the action step fails — the rest of the repo is unaffected.
+- `claude-code-review.yml` — auto code review on every PR open/sync/reopen/ready_for_review. Calls the `code-review:code-review` plugin via `claude-code-action`. Same `CLAUDE_CODE_OAUTH_TOKEN` secret as `claude.yml`.
+- `claude-triage.yml` — fires when a new issue opens; posts an `@claude` triage request (labels + root-cause hypothesis + suggested fix + effort estimate) so `claude.yml` picks it up. Uses a PAT (`PRIVACY_SCREEN_TRIAGE_PAT`, fine-scoped `repo` scope) instead of `GITHUB_TOKEN` so the comment fires a downstream `issue_comment` event — `GITHUB_TOKEN`-authored comments are intentionally muted by GitHub to prevent loops. Without the PAT, the `gh issue comment` step fails and the new issue stays untriaged; the repo is otherwise unaffected.
+
+**Secret setup checklist:**
+
+1. `gh auth refresh -s admin:public_key,workflow` (one-time, if you haven't already)
+2. `claude setup-token` → paste the OAuth token as repo secret `CLAUDE_CODE_OAUTH_TOKEN`
+3. Create a fine-scoped PAT (Settings → Developer settings → Personal access tokens → Fine-grained, repo-scoped, Read/Write on Issues + Metadata) → paste as repo secret `PRIVACY_SCREEN_TRIAGE_PAT`
+4. (Optional) add component labels: `gh label create hook scrubber judge web server cli release ci` so triage can apply them
 
 ## Branch protection expectations for `main`
 - Require pull requests.
@@ -43,3 +60,42 @@ They can be re-enabled by renaming the files once GHAS is available.
 - gitleaks (active)
 - VirusTotal binary scanning on releases (when secret configured)
 - Consider enabling Dependabot (add `.github/dependabot.yml`) for automated dependency security updates.
+
+## Code signing for releases (issue #14)
+
+Releases can (and should) be code-signed so that end users get properly signed+notarized macOS binaries (Developer ID + hardened runtime + Apple notarization + staple) and Authenticode-signed Windows binaries. This matches the signing flow used in related VeeamHub projects.
+
+### Enabling
+1. In the repo: Settings → Secrets and variables → Actions → Variables tab
+   - Create variable `RUN_CODE_SIGNING` with value `true`
+2. Add the following **secrets** (only required when the variable above is `true`):
+
+   **Windows (osslsigncode path on the ubuntu build runner):**
+   - `WINDOWS_CERT_P12` — base64 of your code-signing `.p12` (EV certificate recommended for SmartScreen)
+   - `WINDOWS_CERT_PASSWORD` — passphrase for the p12
+
+   **macOS (on a dedicated `macos-latest` runner):**
+   - `APPLE_CERT_P12` — base64 of a "Developer ID Application" certificate export (.p12)
+   - `APPLE_CERT_PASSWORD` — passphrase for the p12
+   - `APPLE_API_KEY` — base64 of an App Store Connect API key file (AuthKey_*.p8)
+   - `APPLE_API_KEY_ID` — e.g. `2X9R4HXF34`
+   - `APPLE_API_ISSUER` — the Issuer UUID for that key (shown in App Store Connect)
+   - `APPLE_SIGN_IDENTITY` (optional) — full identity string, e.g. `Developer ID Application: Your Name (TEAMID)`. Falls back to a generic "Developer ID Application" lookup.
+
+3. (Optional but recommended) Also set `RUN_VIRUSTOTAL_SCAN=true` (and provide `VT_API_KEY`) so the *signed* Windows binary (and the pre-mac-sign darwins) are scanned.
+
+When `RUN_CODE_SIGNING` is not `true` (or secrets are absent), the workflow still produces and releases *unsigned* binaries (the pre-#14 behavior). The `create-release` job gracefully handles the case where the macOS signing job is skipped.
+
+### What changes in the artifacts
+- The release manifest (`release-manifest*.json`) and the asset URLs it contains always describe the bytes users actually download.
+- The in-app updater (`server/lib/update-install.ts`) verifies the manifest `sha256` against the downloaded file; signing therefore "just works" for users on the new flow.
+- Beta and stable channels are unaffected except for the added signatures on the binaries.
+
+### Local testing of the manifest step
+```bash
+# After a normal build (unsigned is fine for testing the script path)
+bun scripts/build-release.ts --channel stable
+# Later, to simulate the post-sign manifest regeneration used by create-release:
+bun scripts/build-release.ts --manifest-only --channel stable
+```
+The `--manifest-only` flag (added for #14) skips the web build and compiles and simply (re)hashes whatever platform binaries are present in `dist/`, using the current `package.json` version (or a beta-qualified one you arrange) for the manifest.

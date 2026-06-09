@@ -27,6 +27,32 @@ open http://127.0.0.1:31338
 
 `SAFETY_CHECKLIST.md` (the older one) covers the Claude Code hook flow. Hook is NOT yet registered in your `settings.json` — opt in only after the checklist passes.
 
+## Auto-update
+
+privacy-screen ships GitHub releases on two channels:
+
+| Channel | Source branch | Cadence |
+|---|---|---|
+| `stable` | `main` | Tagged releases only |
+| `beta` | `beta` | Auto-built on every push (pre-release tags) |
+
+**Opt-in via `PRIVACY_CONFIG.yaml`:**
+
+```yaml
+update_channel: stable   # or beta — default: off (no network)
+update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
+```
+
+When enabled, the app polls the manifest URL every 4 hours while open (skipped when the tab is hidden) and surfaces a slim banner when a new version exists. Dismissing the banner remembers that exact version; a newer version brings it back. Click the banner to jump to Settings → Update where you can download and apply the new binary in one click. The app re-launches itself with the verified replacement.
+
+**Privacy guarantees:**
+- `update_channel: off` (the default) ⇒ zero outbound network for update checks.
+- No telemetry — the request is anonymous, body-less, header-less.
+- SHA256 verification is enforced before any binary is swapped in.
+- Channel mismatches are rejected (a beta manifest won't be applied if you're on stable).
+
+See `release-manifest.example.json` for the manifest shape and `Plans/INSTALLER.md` for the underlying install mechanics.
+
 ## What it covers
 
 PrivacyScreen ships with deterministic regex coverage for the 8-category taxonomy used by [OpenAI's Privacy Filter](https://openai.com/index/introducing-openai-privacy-filter/) plus infrastructure-specific categories Adam works with daily:
@@ -234,7 +260,14 @@ All workflows use least-privilege `permissions:` blocks. The release workflow re
 
 ## Updates
 
-PrivacyScreen ships an **opt-in** update check. There is no auto-install, no telemetry, and the check is off by default. When enabled, the app makes one HTTPS GET per start against a static release manifest you control — that's the entire network footprint.
+PrivacyScreen ships an **opt-in** update check + explicit download/apply. There is no background phoning, no telemetry, and `update_channel: off` is the default (zero network activity for updates until you flip it in Settings).
+
+In the web UI (open the app at http://127.0.0.1:31338 → **settings** → **Updates (opt-in)**) you choose Stable or Beta, optionally tweak the manifest URL, then:
+
+- Click **Check now** (or let the app check on settings open).
+- When a newer release for your channel is found, a **Download update** button appears.
+- The server streams the platform binary, verifies its sha256 against the manifest, and stages it under `~/.privacy-screen/updates/`.
+- Once verified, **Install & restart** becomes available. One click replaces the running binary (best-effort) and spawns the new version detached. The old binary is left next to it as `.old` for manual rollback.
 
 ```yaml
 # PRIVACY_CONFIG.yaml
@@ -257,27 +290,9 @@ Branch flow:
 - `beta` — PR into `beta` deploys beta.
 - `main` — PR from `beta` to `main` deploys stable release (protected, only you approve).
 
-See `privacy-config.example.yaml` for the commented examples and [`Plans/INSTALLER.md`](Plans/INSTALLER.md) for design rationale.
+See `privacy-config.example.yaml` for the commented examples and [`Plans/INSTALLER.md`](Plans/INSTALLER.md) for design rationale (local-first, content-addressed, no surprises).
 
-When `update_channel` is `stable` or `beta`, hit `GET /api/version` to see whether a newer release is available:
-
-```json
-{
-  "version": "1.0.0",
-  "channel": "stable",
-  "updateAvailable": true,
-  "latestKnown": "1.0.1",
-  "updateInfo": {
-    "version": "1.0.1",
-    "channel": "stable",
-    "url": "https://github.com/.../privacy-screen-darwin-arm64",
-    "sha256": "0000…",
-    "releasedAt": "2026-06-02T00:00:00Z"
-  }
-}
-```
-
-The check is *informational only* — downloading and installing the new binary is still a manual step. Beta users get the latest dev bits via the beta manifest after merges to `dev`.
+`GET /api/version` (and the UI) surface the check result. `GET /api/update/status`, `POST /api/update/download`, and `POST /api/update/apply` drive the download + restart flow. All actions are user-initiated.
 
 ## What's gitignored
 

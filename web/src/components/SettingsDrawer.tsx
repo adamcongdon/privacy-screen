@@ -39,6 +39,14 @@ export function SettingsDrawer(): JSX.Element {
   const refreshSettings = useStore((s) => s.refreshSettings);
   const saveSettings = useStore((s) => s.saveSettings);
   const pushToast = useStore((s) => s.pushToast);
+  const versionInfo = useStore((s) => s.versionInfo);
+  const updateStatus = useStore((s) => s.updateStatus);
+  const refreshVersion = useStore((s) => s.refreshVersion);
+  const refreshUpdateStatus = useStore((s) => s.refreshUpdateStatus);
+  const downloadUpdate = useStore((s) => s.downloadUpdate);
+  const applyUpdate = useStore((s) => s.applyUpdate);
+  const settingsDeepLink = useStore((s) => s.settingsDeepLink);
+  const setSettingsDeepLink = useStore((s) => s.setSettingsDeepLink);
 
   const [model, setModel] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -49,7 +57,23 @@ export function SettingsDrawer(): JSX.Element {
   useEffect(() => {
     if (!open) return;
     void refreshSettings();
-  }, [open, refreshSettings]);
+    void refreshVersion();
+    void refreshUpdateStatus();
+  }, [open, refreshSettings, refreshVersion, refreshUpdateStatus]);
+
+  // Deep-link handler: when the drawer opens with `settingsDeepLink === 'update'`,
+  // scroll the #update-section anchor into view, then clear the deep link so
+  // re-opening manually doesn't re-trigger. We defer to the next frame so the
+  // Radix slide-in animation has mounted the content before we measure.
+  useEffect(() => {
+    if (!open || settingsDeepLink !== 'update') return;
+    const tick = requestAnimationFrame(() => {
+      const el = document.getElementById('update-section');
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setSettingsDeepLink(null);
+    });
+    return () => cancelAnimationFrame(tick);
+  }, [open, settingsDeepLink, setSettingsDeepLink]);
 
   useEffect(() => {
     if (!settings) return;
@@ -71,6 +95,7 @@ export function SettingsDrawer(): JSX.Element {
   const onSave = async (): Promise<void> => {
     if (!dirty || saving) return;
     setSaving(true);
+    const channelChanged = settings && updateChannel !== settings.update_channel;
     try {
       const patch: {
         model?: string;
@@ -83,6 +108,13 @@ export function SettingsDrawer(): JSX.Element {
       if (settings && updateChannel !== settings.update_channel) patch.update_channel = updateChannel;
       if (settings && updateManifestUrl !== settings.update_manifest_url) patch.update_manifest_url = updateManifestUrl;
       await saveSettings(patch);
+      if (channelChanged) {
+        // Give the server a beat to persist, then re-check so the UI reflects the new channel default.
+        setTimeout(() => {
+          void refreshVersion();
+          void refreshUpdateStatus();
+        }, 120);
+      }
     } catch {
       // Toast already pushed by store. Keep drawer open so user can retry.
     } finally {
@@ -90,19 +122,18 @@ export function SettingsDrawer(): JSX.Element {
     }
   };
 
-  const checkForUpdates = async () => {
+  const doCheckForUpdates = async () => {
     try {
-      const v = await api.version();
-      if (v.updateAvailable && v.updateInfo) {
-        pushToast(
-          'success',
-          `Update available: ${v.latestKnown} (${v.updateInfo.channel}). See the release for the new binary.`,
-        );
-      } else if (v.error) {
+      await refreshVersion();
+      const v = useStore.getState().versionInfo;
+      if (v?.updateAvailable && v.updateInfo) {
+        pushToast('success', `Update available: ${v.latestKnown} (${v.updateInfo.channel}).`);
+      } else if (v?.error) {
         pushToast('error', 'Could not reach the update manifest (network or config).');
-      } else {
+      } else if (v) {
         pushToast('info', `You are on ${v.version} — no newer ${v.channel} release found.`);
       }
+      await refreshUpdateStatus();
     } catch (e) {
       pushToast('error', `Update check failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -205,27 +236,116 @@ export function SettingsDrawer(): JSX.Element {
 
           <JudgePanel />
 
-          {/* Update channel — first-class UX for the "how to use beta" flow */}
-          <section className="flex flex-col gap-2 rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-3">
+          {/* Update channel — first-class UX for the "how to use beta" flow + real download/apply */}
+          <section
+            id="update-section"
+            className="flex flex-col gap-2 rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-3"
+          >
             <header className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-300">
               Updates (opt-in)
             </header>
             <p className="text-[11px] text-zinc-500">
-              Privacy-screen can quietly check a static manifest for newer releases. Nothing is ever
-              downloaded or installed without you. The check only runs when you open the app (or hit{' '}
-              <code className="font-mono">/api/version</code>).
+              Opt-in check against a static manifest. When a newer release exists for your channel you can
+              download it here (verified by sha256) and apply with one click. Nothing phones home or installs
+              without you clicking.
             </p>
 
-            <div className="flex items-center justify-between">
+            {/* Live status line */}
+            <div className="flex items-center justify-between text-[11px]">
+              <div>
+                Running <span className="font-mono text-zinc-200">{versionInfo?.version ?? '…'}</span>
+                {versionInfo?.channel && versionInfo.channel !== 'off' && (
+                  <span className="ml-1 text-zinc-500">· {versionInfo.channel}</span>
+                )}
+              </div>
               <button
                 type="button"
-                onClick={() => void checkForUpdates()}
-                className="rounded-md border border-zinc-700 bg-zinc-900/60 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                onClick={() => void doCheckForUpdates()}
+                className="rounded-md border border-zinc-700 bg-zinc-900/60 px-2 py-0.5 text-[10px] text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
               >
-                Check for updates now
+                Check now
               </button>
-              <span className="text-[10px] text-zinc-500">Uses the channel + manifest URL above</span>
             </div>
+
+            {/* Update available banner + actions */}
+            {(versionInfo?.updateAvailable || updateStatus?.readyToApply || updateStatus?.download?.active) && (
+              <div className="mt-1 rounded-md border border-emerald-900/60 bg-emerald-950/20 p-2 text-xs">
+                {updateStatus?.download?.active && (
+                  <div className="mb-2">
+                    <div className="flex items-center justify-between text-emerald-300">
+                      <span>Downloading v{updateStatus.download.version}…</span>
+                      <span className="font-mono text-[10px]">
+                        {Math.round((updateStatus.download.bytesDownloaded / (updateStatus.download.totalBytes || 1)) * 100)}%
+                      </span>
+                    </div>
+                    <div className="mt-1 h-1 w-full overflow-hidden rounded bg-emerald-900/60">
+                      <div
+                        className="h-1 bg-emerald-400 transition-all"
+                        style={{
+                          width: `${Math.min(100, Math.round((updateStatus.download.bytesDownloaded / (updateStatus.download.totalBytes || 1)) * 100))}%`,
+                        }}
+                      />
+                    </div>
+                    <div className="mt-0.5 font-mono text-[10px] text-emerald-400/80">
+                      {Math.round(updateStatus.download.bytesDownloaded / 1024 / 1024)} MB
+                      {updateStatus.download.totalBytes > 0 && ` / ${Math.round(updateStatus.download.totalBytes / 1024 / 1024)} MB`}
+                    </div>
+                  </div>
+                )}
+
+                {!updateStatus?.download?.active && versionInfo?.updateAvailable && versionInfo.updateInfo && (
+                  <div className="flex flex-col gap-1">
+                    <div className="font-medium text-emerald-200">
+                      Update available: v{versionInfo.updateInfo.version} ({versionInfo.updateInfo.channel})
+                    </div>
+                    <div className="text-[10px] text-emerald-300/80">
+                      Released {new Date(versionInfo.updateInfo.releasedAt || Date.now()).toLocaleDateString()}
+                    </div>
+                    {versionInfo.updateInfo.notesUrl && (
+                      <a
+                        href={versionInfo.updateInfo.notesUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[10px] text-emerald-400 underline"
+                      >
+                        View release notes →
+                      </a>
+                    )}
+                  </div>
+                )}
+
+                {updateStatus?.readyToApply && !updateStatus?.download?.active && (
+                  <div className="mt-2 text-emerald-200">
+                    Ready to install. The app will quit and relaunch from the new binary.
+                  </div>
+                )}
+
+                <div className="mt-2 flex gap-2">
+                  {!updateStatus?.download?.active && versionInfo?.updateAvailable && (
+                    <button
+                      type="button"
+                      onClick={() => void downloadUpdate()}
+                      className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+                    >
+                      Download update
+                    </button>
+                  )}
+                  {(updateStatus?.readyToApply || (!updateStatus?.download?.active && updateStatus?.updateInfo)) && (
+                    <button
+                      type="button"
+                      onClick={() => void applyUpdate()}
+                      className="rounded-md border border-emerald-700 bg-emerald-900/40 px-2.5 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-800"
+                      title="The running binary will be replaced and a new instance started. You will need to refresh the page."
+                    >
+                      Install & restart
+                    </button>
+                  )}
+                  {updateStatus?.download?.error && (
+                    <div className="text-rose-400 text-[10px]">Download error: {updateStatus.download.error}</div>
+                  )}
+                </div>
+              </div>
+            )}
 
             <div className="mt-1 flex flex-col gap-1.5">
               {(
@@ -238,7 +358,7 @@ export function SettingsDrawer(): JSX.Element {
                   {
                     value: 'stable' as const,
                     title: 'Stable',
-                    desc: 'Check the official release manifest on the main branch. Full releases only (PRs from dev → main).',
+                    desc: 'Check the official release manifest on the main branch. Full releases only (PRs from beta → main).',
                   },
                   {
                     value: 'beta' as const,
@@ -321,8 +441,8 @@ export function SettingsDrawer(): JSX.Element {
             )}
 
             <p className="text-[10px] text-zinc-500">
-              See <code className="font-mono">Plans/INSTALLER.md</code> for the full design (opt-in only,
-              no telemetry, no auto-install).
+              Downloads are staged to ~/.privacy-screen/updates and verified before the Install button is enabled.
+              See <code className="font-mono">Plans/INSTALLER.md</code>.
             </p>
           </section>
 
