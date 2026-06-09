@@ -146,6 +146,41 @@ export const api = {
     return json(await fetch('/api/version'));
   },
 
+  // --- Update (download + apply) ---
+  async updateStatus(): Promise<{
+    currentVersion: string;
+    platform: string | null;
+    updateAvailable: boolean;
+    updateInfo: { version: string; channel: string; url: string; sha256: string; releasedAt: string; notesUrl?: string } | null;
+    download: {
+      active: boolean;
+      version: string | null;
+      channel: string | null;
+      bytesDownloaded: number;
+      totalBytes: number;
+      startedAt: number;
+      finishedAt: number | null;
+      error: string | null;
+      stagedPath: string | null;
+      sha256: string | null;
+    };
+    readyToApply: boolean;
+    currentExePath: string;
+    canAutoApply: boolean;
+  }> {
+    return json(await fetch('/api/update/status'));
+  },
+
+  async startUpdateDownload(): Promise<{ ok: true; status: any } | { error: string }> {
+    const res = await fetch('/api/update/download', { method: 'POST' });
+    return json(res);
+  },
+
+  async applyUpdate(): Promise<{ ok: boolean; restarting?: boolean; message?: string; reason?: string; stagedPath?: string }> {
+    const res = await fetch('/api/update/apply', { method: 'POST' });
+    return json(res);
+  },
+
   async scrub(text: string, persist = false): Promise<ScrubResponse> {
     const res = await fetch('/api/scrub', {
       method: 'POST',

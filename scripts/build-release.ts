@@ -75,36 +75,49 @@ async function main(): Promise<void> {
   const channel = parseChannel();
   process.stdout.write(`channel: ${channel}\n`);
 
+  const manifestOnly = parseManifestOnly();
+  if (manifestOnly) {
+    process.stdout.write('manifest-only: will (re)generate manifest from existing dist/ binaries (no web build, no compile)\n');
+  }
+
   const pkg = await readPkg();
   process.stdout.write(`version: ${pkg.version}\n`);
 
   await ensureDir(DIST_DIR);
 
-  // 1. Build the web bundle first. The server serves web/dist at runtime;
-  //    a release with no UI is useless.
-  await runStep('web build', ['bun', 'run', 'web:build']);
+  if (!manifestOnly) {
+    // 1. Build the web bundle first. The server serves web/dist at runtime;
+    //    a release with no UI is useless.
+    await runStep('web build', ['bun', 'run', 'web:build']);
 
-  // 2. Compile each platform target.
+    // 2. Compile each platform target.
+    for (const t of TARGETS) {
+      const outfile = join(DIST_DIR, t.outName);
+      if (existsSync(outfile)) {
+        // Remove stale binary so size + hash don't get confused by reuse.
+        await Bun.write(outfile, ''); // truncate (Bun has no rm helper here)
+      }
+      await runStep(
+        `compile ${t.manifestKey}`,
+        [
+          'bun',
+          'build',
+          '--compile',
+          `--target=${t.bunTarget}`,
+          'server/server.ts',
+          '--outfile',
+          outfile,
+        ],
+      );
+    }
+  } else {
+    process.stdout.write('manifest-only: skipping web build and platform compiles\n');
+  }
+
+  // 3. Hash (and for non-manifest-only, already compiled) each platform target.
   const platforms: Record<string, PlatformAsset> = {};
   for (const t of TARGETS) {
     const outfile = join(DIST_DIR, t.outName);
-    if (existsSync(outfile)) {
-      // Remove stale binary so size + hash don't get confused by reuse.
-      await Bun.write(outfile, ''); // truncate (Bun has no rm helper here)
-    }
-    await runStep(
-      `compile ${t.manifestKey}`,
-      [
-        'bun',
-        'build',
-        '--compile',
-        `--target=${t.bunTarget}`,
-        'server/server.ts',
-        '--outfile',
-        outfile,
-      ],
-    );
-
     const { sha256, size } = await hashFile(outfile);
     platforms[t.manifestKey] = {
       url: releaseUrl(pkg.version, t.outName),
@@ -144,6 +157,11 @@ function parseChannel(): 'stable' | 'beta' {
     }
   }
   return 'stable';
+}
+
+function parseManifestOnly(): boolean {
+  const args = process.argv.slice(2);
+  return args.includes('--manifest-only') || args.includes('--manifest-only=true');
 }
 
 async function readPkg(): Promise<PkgJson> {
