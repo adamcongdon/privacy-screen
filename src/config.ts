@@ -201,10 +201,7 @@ function mergeConfig(base: PrivacyConfig, override: unknown): PrivacyConfig {
     mode: isMode(o.mode) ? o.mode : base.mode,
     skip_scrub_fields: mergeSkipFields(base.skip_scrub_fields, o.skip_scrub_fields),
     update_channel: isUpdateChannel(o.update_channel) ? o.update_channel : base.update_channel,
-    update_manifest_url:
-      typeof o.update_manifest_url === 'string' && o.update_manifest_url.length > 0
-        ? o.update_manifest_url
-        : base.update_manifest_url,
+    update_manifest_url: safeManifestUrl(o.update_manifest_url, base.update_manifest_url),
     llm_validate: mergeLlmValidate(base.llm_validate, o.llm_validate),
     hook: mergeHook(base.hook, o.hook),
   };
@@ -240,6 +237,32 @@ function isMode(v: unknown): v is Mode {
 
 function isUpdateChannel(v: unknown): v is UpdateChannel {
   return v === 'off' || v === 'stable' || v === 'beta';
+}
+
+/**
+ * Validate the manifest URL: must be a parseable URL with `https:` protocol.
+ * Anything else (http://, missing, malformed, non-string) falls back to the
+ * built-in default and emits a one-line stderr warning. The 4-hour update
+ * poll only reaches whatever this resolves to, so we refuse to leak the
+ * version-check beacon in plaintext.
+ */
+function safeManifestUrl(value: unknown, fallback: string): string {
+  if (typeof value !== 'string' || value.length === 0) return fallback;
+  try {
+    const u = new URL(value);
+    if (u.protocol !== 'https:') {
+      process.stderr.write(
+        `[PrivacyScreen] update_manifest_url must use https:// — got '${u.protocol}//...'. Falling back to default.\n`,
+      );
+      return fallback;
+    }
+    return value;
+  } catch {
+    process.stderr.write(
+      `[PrivacyScreen] update_manifest_url is not a valid URL. Falling back to default.\n`,
+    );
+    return fallback;
+  }
 }
 
 function isLlmRuntime(v: unknown): v is LlmRuntime {

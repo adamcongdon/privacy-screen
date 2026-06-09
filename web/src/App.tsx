@@ -9,6 +9,7 @@ import { SettingsDrawer } from './components/SettingsDrawer';
 import { ContextMenu } from './components/ContextMenu';
 import { CustomCategoryDialog } from './components/CustomCategoryDialog';
 import { FeedbackDialog } from './components/FeedbackDialog';
+import UpdateAvailableBanner from './components/UpdateAvailableBanner';
 import { useContextMenuShortcuts } from './lib/useContextMenu';
 import { useStore, type ToastEntry } from './store';
 import { getPayloadKind } from './lib/payloadKind';
@@ -61,6 +62,9 @@ export default function App(): JSX.Element {
   const setFeedbackOpen = useStore((s) => s.setFeedbackOpen);
   const autoSetPreviewMode = useStore((s) => s.autoSetPreviewMode);
   const resetPreviewModeOverride = useStore((s) => s.resetPreviewModeOverride);
+  const updateChannel = useStore((s) => s.settings?.update_channel);
+  const startVersionPoller = useStore((s) => s.startVersionPoller);
+  const stopVersionPoller = useStore((s) => s.stopVersionPoller);
 
   // Global keyboard shortcuts for the mint-selection workflow.
   useContextMenuShortcuts();
@@ -77,6 +81,20 @@ export default function App(): JSX.Element {
     void refreshVersion();
     void refreshUpdateStatus();
   }, [refreshHealth, refreshSettings, refreshVocab, refreshReview, refreshVersion, refreshUpdateStatus]);
+
+  // Periodic version poller — lifecycle keyed on `settings.update_channel`.
+  // First pass after mount has `updateChannel === undefined` (settings still
+  // loading) and is a no-op; the second pass — once settings hydrate — picks
+  // the right state. Channel changes (user flips in the drawer) tear down the
+  // existing interval and reinstall a fresh one against the new channel.
+  // Off-state cleanup stops the poller; the store's `startVersionPoller` is
+  // also defensive and refuses to start when channel !== 'stable'|'beta'.
+  useEffect(() => {
+    if (updateChannel === 'stable' || updateChannel === 'beta') {
+      startVersionPoller();
+    }
+    return () => stopVersionPoller();
+  }, [updateChannel, startVersionPoller, stopVersionPoller]);
 
   // Auto-default preview mode from payload kind. Honors a user override until
   // the app returns to idle (empty composer + no files).
@@ -135,6 +153,10 @@ export default function App(): JSX.Element {
           <SettingsDrawer />
         </div>
       </header>
+
+      {/* Global update strip — slim, sits between header and main. Self-hides
+          when no update is available or the current version has been dismissed. */}
+      <UpdateAvailableBanner />
 
       {/* Two-column layout — horizontally resizable. */}
       <main className="flex min-h-0 flex-1">

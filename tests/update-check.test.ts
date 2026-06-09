@@ -291,4 +291,38 @@ describe('checkForUpdate', () => {
     expect(result).toBeNull();
     expect(elapsed).toBeLessThan(timeoutMs + slack);
   });
+
+  // Pentester hardening (issue #16): cross-origin redirects on the manifest
+  // GET are a beacon-forwarding vector. The fetch is invoked with
+  // `redirect: 'error'`, which causes the platform fetch to throw on a 30x.
+  // checkForUpdate's catch returns null. We verify the contract by passing
+  // an init-aware fetchImpl that asserts the option, and a throwing one
+  // that simulates the redirect-error throw.
+  test('fetch is called with redirect: "error" (no cross-origin redirect follow)', async () => {
+    let observedInit: RequestInit | undefined;
+    const spyingFetch = (async (_url: string, init?: RequestInit) => {
+      observedInit = init;
+      return jsonResponse(manifest());
+    }) as unknown as typeof fetch;
+    await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: spyingFetch,
+    });
+    expect(observedInit?.redirect).toBe('error');
+  });
+
+  test('manifest GET that errors on redirect returns null (no beacon forwarded)', async () => {
+    const redirectErrorFetch = (async () => {
+      throw new TypeError("Failed to fetch: redirect mode 'error' got redirect");
+    }) as unknown as typeof fetch;
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: redirectErrorFetch,
+    });
+    expect(result).toBeNull();
+  });
 });

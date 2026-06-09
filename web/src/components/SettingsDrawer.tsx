@@ -45,6 +45,8 @@ export function SettingsDrawer(): JSX.Element {
   const refreshUpdateStatus = useStore((s) => s.refreshUpdateStatus);
   const downloadUpdate = useStore((s) => s.downloadUpdate);
   const applyUpdate = useStore((s) => s.applyUpdate);
+  const settingsDeepLink = useStore((s) => s.settingsDeepLink);
+  const setSettingsDeepLink = useStore((s) => s.setSettingsDeepLink);
 
   const [model, setModel] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -58,6 +60,20 @@ export function SettingsDrawer(): JSX.Element {
     void refreshVersion();
     void refreshUpdateStatus();
   }, [open, refreshSettings, refreshVersion, refreshUpdateStatus]);
+
+  // Deep-link handler: when the drawer opens with `settingsDeepLink === 'update'`,
+  // scroll the #update-section anchor into view, then clear the deep link so
+  // re-opening manually doesn't re-trigger. We defer to the next frame so the
+  // Radix slide-in animation has mounted the content before we measure.
+  useEffect(() => {
+    if (!open || settingsDeepLink !== 'update') return;
+    const tick = requestAnimationFrame(() => {
+      const el = document.getElementById('update-section');
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setSettingsDeepLink(null);
+    });
+    return () => cancelAnimationFrame(tick);
+  }, [open, settingsDeepLink, setSettingsDeepLink]);
 
   useEffect(() => {
     if (!settings) return;
@@ -221,7 +237,10 @@ export function SettingsDrawer(): JSX.Element {
           <JudgePanel />
 
           {/* Update channel — first-class UX for the "how to use beta" flow + real download/apply */}
-          <section className="flex flex-col gap-2 rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-3">
+          <section
+            id="update-section"
+            className="flex flex-col gap-2 rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-3"
+          >
             <header className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-300">
               Updates (opt-in)
             </header>
