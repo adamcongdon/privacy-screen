@@ -58,6 +58,24 @@ export type PreviewMode = 'source' | 'rendered';
 
 const LS_PREVIEW_MODE = 'ps.preview-mode';
 const LS_TOKENMAP_OPEN = 'ps.tokenmap-open';
+const LS_DISMISSED_UPDATE = 'ps.dismissed-update-version';
+
+/**
+ * Periodic version-poll cadence. 4 hours — quiet enough to be invisible, frequent
+ * enough that beta builds catch each other within a working session. Module-level
+ * + greppable so tests and ops folks can find the knob fast.
+ */
+export const VERSION_POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * Test seam: lets the test suite shorten the interval to something measurable
+ * (e.g. 10 ms) without bending the production cadence. Production code should
+ * never call this — only tests/update-poll.test.ts via the `__test_` export.
+ */
+let versionPollIntervalMsOverride: number | null = null;
+export function __test_setVersionPollIntervalMs(ms: number | null): void {
+  versionPollIntervalMsOverride = ms;
+}
 
 function readLsPreviewMode(): PreviewMode {
   try {
@@ -73,6 +91,14 @@ function readLsTokenMapOpen(): boolean {
     return globalThis.localStorage?.getItem(LS_TOKENMAP_OPEN) === '1';
   } catch {
     return false;
+  }
+}
+
+function readLsDismissedUpdate(): string | null {
+  try {
+    return globalThis.localStorage?.getItem(LS_DISMISSED_UPDATE) ?? null;
+  } catch {
+    return null;
   }
 }
 
@@ -133,6 +159,18 @@ type State = {
   // Update (beta/stable channel + download/apply)
   versionInfo: Awaited<ReturnType<typeof api.version>> | null;
   updateStatus: Awaited<ReturnType<typeof api.updateStatus>> | null;
+  /**
+   * Version string the user has explicitly dismissed for the update banner.
+   * Hydrated from localStorage on init; persists across reloads so a "no thanks"
+   * sticks until a NEWER version ships.
+   */
+  dismissedUpdateVersion: string | null;
+  /**
+   * Drives the SettingsDrawer to auto-scroll/highlight a specific section when
+   * opened from a deep-link (e.g. the global UpdateAvailableBanner). The drawer
+   * is responsible for consuming this and clearing it.
+   */
+  settingsDeepLink: 'update' | null;
 
   // Toasts
   toasts: ToastEntry[];
@@ -173,6 +211,16 @@ type State = {
   downloadUpdate: () => Promise<void>;
   applyUpdate: () => Promise<void>;
 
+  /**
+   * Start the periodic version poller. No-op if already running OR if the
+   * current update_channel is 'off' — defense in depth alongside the server's
+   * channel=off short-circuit in routes/version.ts.
+   */
+  startVersionPoller: () => void;
+  stopVersionPoller: () => void;
+  dismissUpdate: (version: string) => void;
+  setSettingsDeepLink: (target: 'update' | null) => void;
+
   saveSettings: (partial: SettingsPatch) => Promise<void>;
   reviewAction: (
     id: number,
@@ -197,6 +245,7 @@ let activeAbort: AbortController | null = null;
 let toastCounter = 1;
 let judgePollerRef: ReturnType<typeof setInterval> | null = null;
 let updatePollerRef: ReturnType<typeof setInterval> | null = null;
+let versionPollerRef: ReturnType<typeof setInterval> | null = null;
 const MIN_JUDGE_PAYLOAD = 24;
 
 function mergeTokenUnion(prev: Map<string, Token>, incoming: Token[]): Map<string, Token> {
@@ -311,6 +360,8 @@ export const useStore = create<State>((set, get) => {
 
   versionInfo: null,
   updateStatus: null,
+  dismissedUpdateVersion: readLsDismissedUpdate(),
+  settingsDeepLink: null,
 
   toasts: [],
 
@@ -629,6 +680,38 @@ export const useStore = create<State>((set, get) => {
       get().pushToast('error', `download failed: ${err instanceof Error ? err.message : err}`);
     }
   },
+
+  startVersionPoller: () => {
+    if (versionPollerRef !== null) return;
+    // Channel gate — never set an interval if updates are off. This is the
+    // client-side half of the defense; routes/version.ts enforces it again
+    // on the server. Both must agree.
+    const channel = get().settings?.update_channel;
+    if (channel !== 'stable' && channel !== 'beta') return;
+    const intervalMs = versionPollIntervalMsOverride ?? VERSION_POLL_INTERVAL_MS;
+    versionPollerRef = setInterval(() => {
+      // Skip while the tab is hidden — saves battery and avoids piling up
+      // requests for a UI the user can't see. The next visible tick picks up.
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return;
+      }
+      void get().refreshVersion();
+    }, intervalMs);
+  },
+
+  stopVersionPoller: () => {
+    if (versionPollerRef !== null) {
+      clearInterval(versionPollerRef);
+      versionPollerRef = null;
+    }
+  },
+
+  dismissUpdate: (version) => {
+    writeLs(LS_DISMISSED_UPDATE, version);
+    set({ dismissedUpdateVersion: version });
+  },
+
+  setSettingsDeepLink: (target) => set({ settingsDeepLink: target }),
 
   applyUpdate: async () => {
     try {
