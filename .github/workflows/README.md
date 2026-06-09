@@ -18,6 +18,19 @@
 - Release workflow also performs VirusTotal scanning of the built platform binaries (when `VT_API_KEY` secret is configured).
 - Release workflow supports optional code signing (see "Code signing" section below).
 
+### Claude automation (ported from `adamcongdon/se-lz`)
+
+- `claude.yml` — `@claude` mention handler. Replies on issues, issue comments, PR review comments, and PR reviews that contain `@claude`. Uses [`anthropics/claude-code-action@v1`](https://github.com/anthropics/claude-code-action). Requires secret `CLAUDE_CODE_OAUTH_TOKEN` (generate via `claude setup-token`). Without the secret, the workflow runs but the action step fails — the rest of the repo is unaffected.
+- `claude-code-review.yml` — auto code review on every PR open/sync/reopen/ready_for_review. Calls the `code-review:code-review` plugin via `claude-code-action`. Same `CLAUDE_CODE_OAUTH_TOKEN` secret as `claude.yml`.
+- `claude-triage.yml` — fires when a new issue opens; posts an `@claude` triage request (labels + root-cause hypothesis + suggested fix + effort estimate) so `claude.yml` picks it up. Uses a PAT (`PRIVACY_SCREEN_TRIAGE_PAT`, fine-scoped `repo` scope) instead of `GITHUB_TOKEN` so the comment fires a downstream `issue_comment` event — `GITHUB_TOKEN`-authored comments are intentionally muted by GitHub to prevent loops. Without the PAT, the `gh issue comment` step fails and the new issue stays untriaged; the repo is otherwise unaffected.
+
+**Secret setup checklist:**
+
+1. `gh auth refresh -s admin:public_key,workflow` (one-time, if you haven't already)
+2. `claude setup-token` → paste the OAuth token as repo secret `CLAUDE_CODE_OAUTH_TOKEN`
+3. Create a fine-scoped PAT (Settings → Developer settings → Personal access tokens → Fine-grained, repo-scoped, Read/Write on Issues + Metadata) → paste as repo secret `PRIVACY_SCREEN_TRIAGE_PAT`
+4. (Optional) add component labels: `gh label create hook scrubber judge web server cli release ci` so triage can apply them
+
 ## Branch protection expectations for `main`
 - Require pull requests.
 - Require at least 1 approving review.
