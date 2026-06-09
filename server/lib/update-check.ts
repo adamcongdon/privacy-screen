@@ -207,6 +207,10 @@ export async function checkForUpdate(
     const res = await fetchImpl(opts.manifestUrl, {
       method: 'GET',
       signal: controller.signal,
+      // Manifests are static files; cross-origin redirects are never
+      // legitimate here and would let a manifest-host adversary forward
+      // the beacon to a third party. Reject 30x at the fetch layer.
+      redirect: 'error',
       // Explicitly: no custom headers, no body, no credentials.
       // We send nothing about this machine beyond what an anonymous
       // GET inherently reveals to the host.
