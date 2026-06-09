@@ -40,6 +40,7 @@ import { reviewRoute } from './routes/review';
 import { patternsRoute } from './routes/patterns';
 import { settingsRoute } from './routes/settings';
 import { filesRoute } from './routes/files';
+import { filesXlsxRoute } from './routes/files-xlsx';
 import { versionRoute } from './routes/version';
 import { judgeRoute } from './routes/judge';
 import { judgeControlRoute } from './routes/judge-control';
@@ -119,6 +120,9 @@ app.route('/api/vocab', vocabRoute);
 app.route('/api/review', reviewRoute);
 app.route('/api/patterns', patternsRoute);
 app.route('/api/settings', settingsRoute);
+// Order matters: register the sub-route BEFORE the parent so Hono's matcher
+// resolves /api/files/xlsx/* to filesXlsxRoute, not the catch-all in filesRoute.
+app.route('/api/files/xlsx', filesXlsxRoute);
 app.route('/api/files', filesRoute);
 app.route('/api/version', versionRoute);
 app.route('/api/update', updateRoute);
