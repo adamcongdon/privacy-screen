@@ -16,6 +16,7 @@
 - `gitleaks.yml` — secret-scanning on push + PR
 - `semgrep.yml` — SAST/code security scanning (Semgrep p/ci + p/security + p/secrets rules) on push + PR. No GitHub Advanced Security required.
 - Release workflow also performs VirusTotal scanning of the built platform binaries (when `VT_API_KEY` secret is configured).
+- Release workflow supports optional code signing (see "Code signing" section below).
 
 ## Branch protection expectations for `main`
 - Require pull requests.
@@ -47,17 +48,41 @@ They can be re-enabled by renaming the files once GHAS is available.
 - VirusTotal binary scanning on releases (when secret configured)
 - Consider enabling Dependabot (add `.github/dependabot.yml`) for automated dependency security updates.
 
-## Code signing status (issue #14)
+## Code signing for releases (issue #14)
 
-Code signing for releases was prototyped (Windows via osslsigncode + macOS Developer ID + notarization). It is currently **paused**.
+Releases can (and should) be code-signed so that end users get properly signed+notarized macOS binaries (Developer ID + hardened runtime + Apple notarization + staple) and Authenticode-signed Windows binaries. This matches the signing flow used in related VeeamHub projects.
 
-- No `RUN_CODE_SIGNING` variable or signing secrets are configured.
-- Releases are produced **unsigned** (current behavior).
-- The implementation attempt lives in the immediately preceding git commit on this branch for future reference.
+### Enabling
+1. In the repo: Settings → Secrets and variables → Actions → Variables tab
+   - Create variable `RUN_CODE_SIGNING` with value `true`
+2. Add the following **secrets** (only required when the variable above is `true`):
 
-When work resumes:
-- Windows signing can potentially use existing Azure key material (no Apple account needed for that part).
-- macOS still requires a paid Apple Developer account ($99/yr) + Developer ID Application cert + notarization for good Gatekeeper behavior on web downloads.
-- User will research distribution/signing options in a follow-up session.
+   **Windows (osslsigncode path on the ubuntu build runner):**
+   - `WINDOWS_CERT_P12` — base64 of your code-signing `.p12` (EV certificate recommended for SmartScreen)
+   - `WINDOWS_CERT_PASSWORD` — passphrase for the p12
 
-For now the release workflow is intentionally simple and matches the pre-#14 state.
+   **macOS (on a dedicated `macos-latest` runner):**
+   - `APPLE_CERT_P12` — base64 of a "Developer ID Application" certificate export (.p12)
+   - `APPLE_CERT_PASSWORD` — passphrase for the p12
+   - `APPLE_API_KEY` — base64 of an App Store Connect API key file (AuthKey_*.p8)
+   - `APPLE_API_KEY_ID` — e.g. `2X9R4HXF34`
+   - `APPLE_API_ISSUER` — the Issuer UUID for that key (shown in App Store Connect)
+   - `APPLE_SIGN_IDENTITY` (optional) — full identity string, e.g. `Developer ID Application: Your Name (TEAMID)`. Falls back to a generic "Developer ID Application" lookup.
+
+3. (Optional but recommended) Also set `RUN_VIRUSTOTAL_SCAN=true` (and provide `VT_API_KEY`) so the *signed* Windows binary (and the pre-mac-sign darwins) are scanned.
+
+When `RUN_CODE_SIGNING` is not `true` (or secrets are absent), the workflow still produces and releases *unsigned* binaries (the pre-#14 behavior). The `create-release` job gracefully handles the case where the macOS signing job is skipped.
+
+### What changes in the artifacts
+- The release manifest (`release-manifest*.json`) and the asset URLs it contains always describe the bytes users actually download.
+- The in-app updater (`server/lib/update-install.ts`) verifies the manifest `sha256` against the downloaded file; signing therefore "just works" for users on the new flow.
+- Beta and stable channels are unaffected except for the added signatures on the binaries.
+
+### Local testing of the manifest step
+```bash
+# After a normal build (unsigned is fine for testing the script path)
+bun scripts/build-release.ts --channel stable
+# Later, to simulate the post-sign manifest regeneration used by create-release:
+bun scripts/build-release.ts --manifest-only --channel stable
+```
+The `--manifest-only` flag (added for #14) skips the web build and compiles and simply (re)hashes whatever platform binaries are present in `dist/`, using the current `package.json` version (or a beta-qualified one you arrange) for the manifest.
