@@ -170,7 +170,7 @@ Land a single PR from `ac-build` to `dev` that (a) ports the three `claude-*.yml
 - ISC-31..ISC-32 — anti-leak test passes; redaction snapshot now has runtime `assertRedacted()` guard (Pentester HIGH-3 remediation).
 - ISC-33 — `bun lint` exit 0 verified.
 - ISC-34..ISC-35 — `bun test` 371/0/6 verified; baseline 359 still passing, 6 skips unchanged.
-- ISC-36 — PR opened at the end of this run; URL appended below.
+- ISC-36 — PR opened: https://github.com/adamcongdon/privacy-screen/pull/17 (ac-build → dev, 14 commits ahead).
 
 **Doctrine compliance:**
 - Rule 1 (live-probe): scrub + spawn paths verified by passing tests; lint + test exit codes captured. UI verification via Interceptor deferred — local web flow only; no deploy step in this PR.
