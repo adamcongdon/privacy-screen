@@ -30,6 +30,21 @@ export type UpdateChannel = 'off' | 'stable' | 'beta';
  */
 export type LlmRuntime = 'llama-server';
 
+/**
+ * Hook-side knobs. Currently a single switch — confidence-gauge auto-approve
+ * (Issue #6). When `auto_approve_clean = true` AND the synchronous judge
+ * sync endpoint confirms zero suspicious spans AND the scrubber found zero
+ * PII, the hook passes through silently instead of blocking.
+ *
+ * Default is `false`: behavior is unchanged from the v1 contract. This flag
+ * is fail-CLOSED — any judge error/timeout/non-clean response disables
+ * auto-approve for that call. See `hooks/lib/judge-sync.ts`.
+ */
+export interface HookConfig {
+  /** Opt-in. Default false. See above. */
+  auto_approve_clean: boolean;
+}
+
 export interface LlmValidateConfig {
   /** Master switch. Default false — judge is fully opt-in. */
   enabled: boolean;
@@ -98,6 +113,8 @@ export interface PrivacyConfig {
    * See `Plans/LLM_RESEARCH.md`.
    */
   llm_validate: LlmValidateConfig;
+  /** Hook-side opt-in knobs (auto-approve precheck, etc). */
+  hook: HookConfig;
 }
 
 const DEFAULTS: PrivacyConfig = {
@@ -133,6 +150,9 @@ const DEFAULTS: PrivacyConfig = {
     max_tokens: 256,
     timeout_ms: 2500,
     min_confidence: 0.6,
+  },
+  hook: {
+    auto_approve_clean: false,
   },
 };
 
@@ -186,6 +206,18 @@ function mergeConfig(base: PrivacyConfig, override: unknown): PrivacyConfig {
         ? o.update_manifest_url
         : base.update_manifest_url,
     llm_validate: mergeLlmValidate(base.llm_validate, o.llm_validate),
+    hook: mergeHook(base.hook, o.hook),
+  };
+}
+
+function mergeHook(base: HookConfig, override: unknown): HookConfig {
+  if (!override || typeof override !== 'object') return base;
+  const o = override as Record<string, unknown>;
+  return {
+    auto_approve_clean:
+      typeof o.auto_approve_clean === 'boolean'
+        ? o.auto_approve_clean
+        : base.auto_approve_clean,
   };
 }
 
