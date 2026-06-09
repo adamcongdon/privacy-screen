@@ -65,6 +65,12 @@ reportClaudeCodeStatus();
 
 const app = new Hono();
 
+// Global error handler: never echo request bodies or internals to clients.
+app.onError((err, c) => {
+  process.stderr.write('[privacy-screen] onError: ' + ((err as Error)?.message ?? String(err)) + '\n');
+  return c.json({ error: 'internal server error' }, 500);
+});
+
 const HOST_ALLOWLIST = new Set([
   `127.0.0.1:${PORT}`,
   `localhost:${PORT}`,

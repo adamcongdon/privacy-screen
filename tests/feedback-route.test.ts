@@ -18,8 +18,9 @@ import { Hono } from 'hono';
 import { writeFileSync, mkdtempSync, rmSync, chmodSync, readFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { feedbackRoute } from '../server/routes/feedback';
+import { feedbackRoute, resolveClaudeBin } from '../server/routes/feedback';
 import { resetVocab } from '../server/lib/vocab-store';
+import { assertRedacted } from '../server/lib/feedback-diagnostics';
 
 let workDir: string;
 let configPath: string;
@@ -56,7 +57,7 @@ beforeAll(() => {
 afterAll(() => {
   resetVocab();
   delete process.env.PRIVACY_SCREEN_CONFIG;
-  delete process.env.PRIVACY_SCREEN_FEEDBACK_TEST_CLAUDE_BIN;
+  delete process.env.__PRIVACY_SCREEN_TEST_CLAUDE_BIN;
   delete process.env.PRIVACY_SCREEN_FEEDBACK_TEST_CAPTURE;
   delete process.env.PRIVACY_SCREEN_SKIP_CLAUDE_CHECK;
   rmSync(workDir, { recursive: true, force: true });
@@ -64,7 +65,7 @@ afterAll(() => {
 
 beforeEach(() => {
   // Reset the per-test seam envs
-  delete process.env.PRIVACY_SCREEN_FEEDBACK_TEST_CLAUDE_BIN;
+  delete process.env.__PRIVACY_SCREEN_TEST_CLAUDE_BIN;
   delete process.env.PRIVACY_SCREEN_FEEDBACK_TEST_CAPTURE;
   delete process.env.PRIVACY_SCREEN_SKIP_CLAUDE_CHECK;
   // Clean any previous capture file
@@ -110,13 +111,13 @@ function installClaudeStub(out: string, exitCode = 0): void {
   ].join('\n');
   writeFileSync(stubPath, script);
   chmodSync(stubPath, 0o755);
-  process.env.PRIVACY_SCREEN_FEEDBACK_TEST_CLAUDE_BIN = stubPath;
+  process.env.__PRIVACY_SCREEN_TEST_CLAUDE_BIN = stubPath;
 }
 
 describe('POST /api/feedback — 503 gating', () => {
   test('returns 503 when claude is not on PATH and skip-check is unset', async () => {
     // Point the seam at a nonexistent binary so checkClaudeCode() returns found=false
-    process.env.PRIVACY_SCREEN_FEEDBACK_TEST_CLAUDE_BIN = join(workDir, 'does-not-exist');
+    process.env.__PRIVACY_SCREEN_TEST_CLAUDE_BIN = join(workDir, 'does-not-exist');
     const app = makeApp();
     const res = await app.fetch(
       makeRequest({ summary: 'something is broken in the UI' }),
@@ -166,7 +167,7 @@ describe('GET /api/feedback/preview — scrubbed diagnostics', () => {
   test('returns scrubbed diagnostics JSON without spawning claude', async () => {
     // Even with a deliberately-broken stub, preview must succeed without
     // touching claude — it's a pure read.
-    process.env.PRIVACY_SCREEN_FEEDBACK_TEST_CLAUDE_BIN = join(workDir, 'should-not-be-called');
+    process.env.__PRIVACY_SCREEN_TEST_CLAUDE_BIN = join(workDir, 'should-not-be-called');
     const app = makeApp();
     const res = await app.fetch(
       new Request('http://127.0.0.1/api/feedback/preview', { method: 'GET' }),
@@ -182,5 +183,77 @@ describe('GET /api/feedback/preview — scrubbed diagnostics', () => {
     expect(j.config.llm_validate.enabled).toBe(false);
     // The raw unique customer name must not appear in the preview body
     expect(JSON.stringify(j)).not.toContain(UNIQUE_CUSTOMER);
+  });
+});
+
+// TDD: new tests for the pentester remediation
+
+describe('security regressions', () => {
+  test('POST returns 500 generic when scrubText throws', async () => {
+    installClaudeStub('ok');
+    process.env.__PRIVACY_SCREEN_TEST_SCRUB_THROW = '1';
+    const app = makeApp();
+    const summary = 'This is a secret summary that must not be echoed';
+    const res = await app.fetch(makeRequest({ summary }));
+    expect(res.status).toBe(500);
+    const j = await res.json();
+    expect(j).toEqual({ ok: false, error: 'scrub failed — feedback not sent' });
+    expect(JSON.stringify(j)).not.toContain(summary);
+    delete process.env.__PRIVACY_SCREEN_TEST_SCRUB_THROW;
+  });
+
+  test('GET /preview returns 500 generic when collectDiagnostics throws', async () => {
+    process.env.__PRIVACY_SCREEN_TEST_PREVIEW_THROW = '1';
+    const app = makeApp();
+    const res = await app.fetch(new Request('http://127.0.0.1/api/feedback/preview', { method: 'GET' }));
+    expect(res.status).toBe(500);
+    const j = await res.json();
+    expect(j).toEqual({ error: 'preview unavailable' });
+    delete process.env.__PRIVACY_SCREEN_TEST_PREVIEW_THROW;
+  });
+
+  test('assertRedacted throws on oversized string', () => {
+    const bad: any = {
+      mode: 'enforce',
+      llm_validate: { enabled: false },
+      hook: { auto_approve_clean: false },
+      update_channel: 'a'.repeat(65),
+      fqdn_allowlist_extra_count: 0,
+      customer_names_count: 0,
+      person_names_count: 0,
+      name_allowlist_count: 0,
+    };
+    expect(() => assertRedacted(bad as any)).toThrow();
+  });
+
+  test('assertRedacted throws on array in nested', () => {
+    const bad2: any = {
+      mode: 'observe',
+      llm_validate: { enabled: false },
+      hook: { auto_approve_clean: false },
+      update_channel: 'stable',
+      fqdn_allowlist_extra_count: 0,
+      customer_names_count: 0,
+      person_names_count: 0,
+      name_allowlist_count: 0,
+    };
+    (bad2 as any).extra = [1, 2, 3];
+    expect(() => assertRedacted(bad2 as any)).toThrow();
+  });
+
+  test('production-gated test-seam env var', () => {
+    // Production mode: env override is ignored, resolver returns literal 'claude'.
+    const oldNodeEnv = process.env.NODE_ENV;
+    process.env.__PRIVACY_SCREEN_TEST_CLAUDE_BIN = '/tmp/fake-claude-binary';
+
+    process.env.NODE_ENV = 'production';
+    expect(resolveClaudeBin()).toBe('claude');
+
+    // Non-production: override IS honored.
+    process.env.NODE_ENV = 'test';
+    expect(resolveClaudeBin()).toBe('/tmp/fake-claude-binary');
+
+    process.env.NODE_ENV = oldNodeEnv ?? '';
+    delete process.env.__PRIVACY_SCREEN_TEST_CLAUDE_BIN;
   });
 });

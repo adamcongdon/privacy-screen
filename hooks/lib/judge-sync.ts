@@ -85,7 +85,8 @@ export async function checkJudgeSync(
     if (typeof body.suspicious_count !== 'number') return SYNC_RESULT_FAIL_CLOSED;
 
     return { clean: body.suspicious_count === 0, available: true };
-  } catch {
+  } catch (err) {
+    process.stderr.write('[PrivacyScreen] judge-sync unavailable: ' + ((err as Error)?.message ?? String(err)) + '\n');
     return SYNC_RESULT_FAIL_CLOSED;
   }
 }
@@ -112,6 +113,7 @@ function resolveSyncEndpoint(): string | null {
   } catch {
     return null;
   }
+  if (parsed.protocol !== 'http:') return null;
   if (!LOOPBACK_HOSTS.has(parsed.hostname)) return null;
   return url;
 }

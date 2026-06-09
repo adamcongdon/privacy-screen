@@ -20,6 +20,7 @@
 
 import { existsSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
+import { spawnSync } from 'child_process';
 import { checkClaudeCode } from './claude-code-check';
 import type { PrivacyConfig } from '../../src/config';
 
@@ -47,10 +48,29 @@ export interface RedactedConfigSnapshot {
 }
 
 export function collectDiagnostics(cfg: PrivacyConfig): Diagnostics {
+  // Test seam: allow forcing a diagnostics collection failure for TDD.
+  // Gated on NODE_ENV !== 'production' AND a __-prefixed env var so production
+  // builds never honor the toggle even if the env leaks in.
+  if (
+    process.env.NODE_ENV !== 'production' &&
+    process.env.__PRIVACY_SCREEN_TEST_PREVIEW_THROW === '1'
+  ) {
+    throw new Error('collectDiagnostics forced failure (test seam)');
+  }
+
   return {
     version: readPackageVersion(),
-    claudeCode: checkClaudeCode(),
-    judge: probeJudge(cfg),
+    // Quick local probe for the preview path: short timeout so the UI stays snappy
+    claudeCode: ((): { found: boolean; version: string | null } => {
+      try {
+        const r = spawnSync('claude', ['--version'], { encoding: 'utf-8', timeout: 1500 });
+        if (r && r.status === 0) return { found: true, version: (r.stdout ?? '').trim() };
+        return { found: false, version: null };
+      } catch {
+        return { found: false, version: null };
+      }
+    })(),
+    judge: judgeConfigPresent(cfg),
     config: redactConfig(cfg),
   };
 }
@@ -87,17 +107,14 @@ function readPackageVersion(): string {
  * endpoint is set AND the loopback TCP fetch returned anything (even a 404),
  * within a hard 50ms budget so the preview stays snappy.
  */
-function probeJudge(cfg: PrivacyConfig): { enabled: boolean; configured: boolean } {
+export function judgeConfigPresent(cfg: PrivacyConfig): { enabled: boolean; configured: boolean } {
   const enabled = cfg.llm_validate.enabled;
   const endpoint = cfg.llm_validate.endpoint;
   if (!endpoint) {
     return { enabled, configured: false };
   }
-  // We are intentionally synchronous here — the caller is happy to receive
-  // configured:false if the probe didn't finish, and a true async probe would
-  // complicate the contract. So we return the "config presence" signal, not
-  // a live network probe. Anyone reading the field gets a deterministic
-  // answer based on whether the user pointed the endpoint at something.
+  // Deterministic presence check: true when an endpoint string is present.
+  // This function does NOT perform network I/O.
   return { enabled, configured: endpoint.length > 0 };
 }
 
@@ -122,4 +139,25 @@ function redactConfig(cfg: PrivacyConfig): RedactedConfigSnapshot {
     person_names_count: cfg.person_names.length,
     name_allowlist_count: cfg.name_allowlist.length,
   };
+}
+
+/**
+ * Runtime assertion that the redacted snapshot contains no arrays and no
+ * oversized string values. Throws on failure so callers can fail the request
+ * rather than accidentally returning unredacted PII.
+ */
+export function assertRedacted(snapshot: RedactedConfigSnapshot): void {
+  function walk(val: unknown, path = ''): void {
+    if (Array.isArray(val)) throw new Error(`redacted snapshot contains array at ${path}`);
+    if (typeof val === 'string') {
+      if (val.length > 64) throw new Error(`redacted snapshot contains long string at ${path}`);
+      return;
+    }
+    if (val && typeof val === 'object') {
+      for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+        walk(v, path ? `${path}.${k}` : k);
+      }
+    }
+  }
+  walk(snapshot);
 }

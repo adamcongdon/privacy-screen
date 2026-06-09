@@ -104,7 +104,11 @@ async function main(): Promise<void> {
         `[PrivacyScreen] ⚠️  Scrub took ${elapsed}ms (budget ${SCRUB_BUDGET_MS}ms) on event ${event}.\n`,
       );
     }
-    vocab.close();
+    try {
+      vocab.close();
+    } catch (err) {
+      process.stderr.write('[PrivacyScreen] vocab.close failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
+    }
   }
 }
 
@@ -400,8 +404,11 @@ async function dispatchJudge(
       }),
       signal: AbortSignal.timeout(JUDGE_DISPATCH_BUDGET_MS),
     });
-  } catch {
-    // Silent. Judge is best-effort; the regex+vocab layer already shipped.
+  } catch (err) {
+    if (process.env.PRIVACY_SCREEN_DEBUG_JUDGE === '1') {
+      process.stderr.write('[PrivacyScreen] dispatchJudge: ' + ((err as Error)?.message ?? String(err)) + '\n');
+    }
+    // Silent by default. Judge is best-effort; the regex+vocab layer already shipped.
   }
 }
 
@@ -420,6 +427,7 @@ function judgeEndpoint(): string | null {
   } catch {
     return null;
   }
+  if (parsed.protocol !== 'http:') return null;
   if (!LOOPBACK_HOSTS.has(parsed.hostname)) return null;
   return url;
 }
