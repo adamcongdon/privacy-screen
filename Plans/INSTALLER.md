@@ -9,9 +9,10 @@ issue: #4
 
 # Installer + Auto-Update — Design + Scoping
 
-> **Scope of THIS iteration:** scaffold the version-**check** path only.
-> No download. No install. No execution of foreign bytes. No telemetry.
-> The user must opt-in by flipping `update_channel` from `off` to `stable`.
+> **Historical note (2026-06):** The first iteration scoped only the version-check path.
+> Download + explicit one-click apply & restart were implemented later to address #13
+> (beta/stable channel selection + auto-update capability). The same local-first,
+> opt-in, no-telemetry, sha256-content-addressed principles apply to the download/apply steps.
 
 ## Why
 

@@ -53,6 +53,10 @@ export type ReviewItem = {
 export type SettingsView = {
   model: string;
   system_prompt: string;
+  /** Opt-in update channel persisted in PRIVACY_CONFIG.yaml */
+  update_channel: 'off' | 'stable' | 'beta';
+  /** Manifest URL used when channel is not 'off' */
+  update_manifest_url: string;
   claude_code: {
     found: boolean;
     version: string | null;
@@ -63,6 +67,8 @@ export type SettingsView = {
 export type SettingsPatch = Partial<{
   model: string;
   system_prompt: string;
+  update_channel: 'off' | 'stable' | 'beta';
+  update_manifest_url: string;
 }>;
 
 export type UploadedFile = {
@@ -127,6 +133,52 @@ async function json<T>(res: Response): Promise<T> {
 export const api = {
   async health(): Promise<{ ok: boolean; version: string }> {
     return json(await fetch('/api/health'));
+  },
+
+  async version(): Promise<{
+    version: string;
+    channel: string;
+    updateAvailable: boolean;
+    updateInfo: { version: string; channel: string; url: string; sha256: string; releasedAt: string; notesUrl?: string } | null;
+    latestKnown: string | null;
+    error?: 'unreachable';
+  }> {
+    return json(await fetch('/api/version'));
+  },
+
+  // --- Update (download + apply) ---
+  async updateStatus(): Promise<{
+    currentVersion: string;
+    platform: string | null;
+    updateAvailable: boolean;
+    updateInfo: { version: string; channel: string; url: string; sha256: string; releasedAt: string; notesUrl?: string } | null;
+    download: {
+      active: boolean;
+      version: string | null;
+      channel: string | null;
+      bytesDownloaded: number;
+      totalBytes: number;
+      startedAt: number;
+      finishedAt: number | null;
+      error: string | null;
+      stagedPath: string | null;
+      sha256: string | null;
+    };
+    readyToApply: boolean;
+    currentExePath: string;
+    canAutoApply: boolean;
+  }> {
+    return json(await fetch('/api/update/status'));
+  },
+
+  async startUpdateDownload(): Promise<{ ok: true; status: any } | { error: string }> {
+    const res = await fetch('/api/update/download', { method: 'POST' });
+    return json(res);
+  },
+
+  async applyUpdate(): Promise<{ ok: boolean; restarting?: boolean; message?: string; reason?: string; stagedPath?: string }> {
+    const res = await fetch('/api/update/apply', { method: 'POST' });
+    return json(res);
   },
 
   async scrub(text: string, persist = false): Promise<ScrubResponse> {
