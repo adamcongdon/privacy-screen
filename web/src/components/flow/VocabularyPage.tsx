@@ -357,7 +357,7 @@ export function VocabHeaderRight({
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search values or tokens…"
           aria-label="Search vocabulary"
-          className="min-w-0 flex-1 bg-transparent text-[13px] text-text outline-none placeholder:text-text-faint"
+          className="min-w-0 flex-1 bg-transparent text-[13px] text-text placeholder:text-text-faint"
         />
       </div>
       <button

@@ -138,9 +138,10 @@ export function ClaudeNotFound(): JSX.Element {
 
 /**
  * Server-offline banner. Rendered when `health.ok === false` (local server
- * unreachable). Scrubbing still works on-device, so this is a non-blocking
- * banner with a Retry that re-checks health. Status carried by icon + the word
- * "Offline" (no color-alone).
+ * unreachable). Scrub/tokenize routes through the local server (api.scrub), so
+ * this prompts the user to reconnect; it is a non-blocking banner with a Retry
+ * that re-checks health. Status carried by icon + the word "Offline" (no
+ * color-alone).
  */
 export function ServerOffline(): JSX.Element {
   const refreshHealth = useStore((s) => s.refreshHealth);
@@ -158,7 +159,7 @@ export function ServerOffline(): JSX.Element {
       <Zap size={14} aria-hidden="true" />
       <span className="font-semibold">Offline</span>
       <span className="font-medium text-text-dim">
-        Local server unreachable. Scrubbing still works on-device.
+        Local server unreachable. Reconnect to keep tokenizing.
       </span>
       <button
         type="button"

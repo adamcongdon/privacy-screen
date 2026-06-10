@@ -24,7 +24,8 @@
  *
  * WCAG: mode rows = role="radiogroup" + role="radio"/aria-checked; the judge
  * toggle uses .ps-toggle with role="switch" + aria-checked; the channel control
- * is role="radiogroup" + aria-pressed; chip remove + icon buttons have aria-label.
+ * is role="radiogroup" + role="radio"/aria-checked; chip remove + icon buttons
+ * have aria-label.
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -226,7 +227,7 @@ function CustomerNamesCard(): JSX.Element {
           }}
           placeholder="Add a name…"
           aria-label="Add a customer name"
-          className="min-w-0 flex-1 rounded-[10px] border border-border bg-surface-2 px-2.5 text-[13px] text-text outline-none placeholder:text-text-faint"
+          className="min-w-0 flex-1 rounded-[10px] border border-border bg-surface-2 px-2.5 text-[13px] text-text placeholder:text-text-faint"
           style={{ height: 32 }}
         />
         <button
@@ -426,7 +427,6 @@ function UpdatesCard(): JSX.Element {
                 type="button"
                 role="radio"
                 aria-checked={active}
-                aria-pressed={active}
                 onClick={() => onChannel(c)}
                 className="rounded-md px-2.5 py-1 text-[12px] font-medium capitalize transition-colors"
                 style={active ? { background: 'var(--acc-tint)', color: 'var(--acc)' } : { color: 'var(--text-dim)' }}

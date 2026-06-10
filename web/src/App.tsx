@@ -13,7 +13,7 @@ import { FeedbackDialog } from './components/FeedbackDialog';
 import { XlsxColumnReview } from './components/XlsxColumnReview';
 import UpdateAvailableBanner from './components/UpdateAvailableBanner';
 import { useContextMenuShortcuts } from './lib/useContextMenu';
-import { useStore, applyTheme, type ToastEntry, type Route, type ScreenMode } from './store';
+import { useStore, applyTheme, readHashRoute, type ToastEntry, type Route, type ScreenMode } from './store';
 import { getPayloadKind } from './lib/payloadKind';
 import { cn } from './lib/cn';
 import { useFeedbackJob } from './hooks/useFeedbackJob';
@@ -119,6 +119,18 @@ export default function App(): JSX.Element {
     return () => window.removeEventListener('keydown', onKey);
   }, [setRoute]);
 
+  // Browser Back/Forward changes location.hash but not the store route — sync
+  // them. `setRoute` itself writes the hash, so guard the self-write loop by
+  // only dispatching when the hash route actually differs from the current one.
+  useEffect(() => {
+    const onHashChange = () => {
+      const next = readHashRoute();
+      if (next !== useStore.getState().route) setRoute(next);
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, [setRoute]);
+
   return (
     <div className="flex h-screen min-h-0 bg-bg text-text">
       <Rail />
@@ -126,8 +138,9 @@ export default function App(): JSX.Element {
         {/* Global update strip — slim, sits above the routed screen. Self-hides
             when no update is available or the current version was dismissed. */}
         <UpdateAvailableBanner />
-        {/* Server-offline banner — non-blocking; scrubbing still works on-device.
-            Rendered above the routed screen when the health probe failed. */}
+        {/* Server-offline banner — non-blocking; surfaced above the routed screen
+            when the health probe failed so the user reconnects to keep tokenizing
+            (scrub routes through the local server via api.scrub). */}
         {health && !health.ok && <ServerOffline />}
         {/* Claude-not-found takes over the workspace: the server can't send to
             Claude until the CLI is present, so a corner toast under-sold it.

@@ -20,9 +20,12 @@
  * call" rule we keep it CLIENT-SIDE. As of Engineer-C2 it is lifted into the
  * Zustand store (store.mode / store.setMode) so this screen and the Settings
  * radio group share ONE source of truth; setMode re-runs refreshScrub. The
- * segmented control here writes store.setMode. It gates the credential-block UX
- * (Enforce blocks send on a credential; Observe/Disabled do not). When the
- * settings API later exposes a real mode, wire setMode to it.
+ * segmented control here writes store.setMode. NOTE: credentials block the send
+ * in EVERY mode — store.send() re-scrubs server-side and aborts on
+ * hasCredentials regardless of mode — so the credential-block UX here is keyed
+ * on hasCredentials, not on Enforce. Mode currently only affects labeling/copy;
+ * the tokenization + credential guard are always on. When the settings API
+ * later exposes a real mode, wire setMode to it.
  */
 import {
   useCallback,
@@ -127,7 +130,8 @@ function BlockedChip(): JSX.Element {
   );
 }
 
-/** Segmented control. WCAG: role="radiogroup" with aria-pressed per option, the
+/** Segmented control. WCAG: role="radiogroup" with role="radio"/aria-checked per
+ * option (aria-pressed is for toggle buttons, not radios — omitted here); the
  * label text carries meaning (no color-alone). */
 function Segmented<T extends string>({
   label,
@@ -154,7 +158,6 @@ function Segmented<T extends string>({
             type="button"
             role="radio"
             aria-checked={active}
-            aria-pressed={active}
             onClick={() => onChange(opt.value)}
             className="flex items-center gap-1 rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors"
             style={
@@ -265,31 +268,36 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
     }
   }, [composerText, isStreaming, lastAssistant, streamError, resetConversation]);
 
-  // Disabled mode passes text through untouched (no tokens). We reflect that by
-  // showing the raw text as a single plain run and zero protected items.
+  // Credentials ALWAYS block the send — store.send() re-scrubs server-side and
+  // aborts on hasCredentials regardless of mode (Observe/Enforce/Disabled). So
+  // the blocked UX (red seam, "Cannot send", banner, blocked chips, footer
+  // count, disabled Send) is keyed on hasCredentials in EVERY mode, not just
+  // Enforce — the UI must match the always-protective store.
   const disabled = mode === 'disabled';
-  const blocked = mode === 'enforce' && hasCredentials;
+  const blocked = hasCredentials;
   const empty = !composerText.trim();
 
   // ── Live scrub (debounced, ported from Composer.tsx) ───────────────────────
-  // Skip while streaming / in Disabled mode. The store's refreshScrub already
-  // short-circuits on empty payload.
+  // Runs in EVERY mode (incl. Disabled) — send() always tokenizes server-side,
+  // so the preview + credential detection must reflect that too. Skipped only
+  // while streaming. The store's refreshScrub short-circuits on empty payload.
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
-    if (disabled || isStreaming) return;
+    if (isStreaming) return;
     timerRef.current = setTimeout(() => {
       void refreshScrub();
     }, DEBOUNCE_MS);
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [composerText, refreshScrub, disabled, isStreaming]);
+  }, [composerText, refreshScrub, isStreaming]);
 
   const runs = useMemo(() => {
-    if (disabled) return composerText ? [{ type: 'text', text: composerText } as Run] : [];
+    // Always show the tokenized preview — even in Disabled mode the send path
+    // tokenizes, so the preview must never imply raw PII goes on the wire.
     return tokenizeForRender(scrubbed, tokens);
-  }, [disabled, composerText, scrubbed, tokens]);
+  }, [scrubbed, tokens]);
 
   const categories = useMemo(() => {
     const seen: string[] = [];
@@ -300,7 +308,7 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
   }, [tokens]);
 
   const credCount = credentialSnippets.length;
-  const protectedCount = disabled ? 0 : tokens.length;
+  const protectedCount = tokens.length;
 
   const replyTokens = useMemo(() => {
     // Merge current tokens with the cross-session union so deanon resolves
@@ -377,7 +385,7 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
             autoComplete="off"
             aria-label="Text to scrub"
             placeholder="Paste or type text containing sensitive data…"
-            className="ps-mono min-h-0 flex-1 font-mono"
+            className="ps-mono min-h-0 flex-1"
             style={{
               padding: 16,
               fontSize: 12.5,
@@ -386,7 +394,6 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
               background: 'transparent',
               color: 'var(--text-dim)',
               resize: 'none',
-              outline: 'none',
             }}
           />
         </section>
@@ -465,7 +472,7 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
               )}
 
               <div
-                className="ps-mono min-h-0 flex-1 overflow-auto font-mono"
+                className="ps-mono min-h-0 flex-1 overflow-auto"
                 style={{
                   padding: 16,
                   fontSize: 12.5,
@@ -525,7 +532,7 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
                 />
               </div>
               <div
-                className="ps-mono min-h-0 flex-1 overflow-auto font-mono"
+                className="ps-mono min-h-0 flex-1 overflow-auto"
                 style={{
                   padding: 16,
                   fontSize: 12.5,
@@ -604,7 +611,7 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
           ) : (
             <span className="text-[12px] text-text-faint">
               {disabled
-                ? 'Screening disabled — text passes through untouched.'
+                ? 'Screening disabled — values are still tokenized before sending.'
                 : 'No sensitive values detected yet.'}
             </span>
           )}

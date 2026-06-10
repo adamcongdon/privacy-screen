@@ -182,7 +182,6 @@ function FilterControl({
             type="button"
             role="radio"
             aria-checked={active}
-            aria-pressed={active}
             onClick={() => onChange(o.value)}
             className="flex items-center gap-1 rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors"
             style={active ? { background: 'var(--acc-tint)', color: 'var(--acc)' } : { color: 'var(--text-dim)' }}
