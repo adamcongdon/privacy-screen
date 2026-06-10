@@ -27,6 +27,7 @@ import { Hono } from 'hono';
 import {
   inspectXlsx,
   scrubXlsx,
+  normalizeCustomLabel,
   type CommitOverrides,
 } from '../../src/xlsx-scrubber';
 import { isPatternName } from '../../src/xlsx-types';
@@ -44,7 +45,7 @@ import { stageUpload, getUpload, dropUpload } from '../lib/xlsx-uploads';
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
 /** Set of allowed override `pattern` literals beyond PatternName. */
-const NON_PATTERN_OVERRIDES = new Set(['skip', 'regex']);
+const NON_PATTERN_OVERRIDES = new Set(['skip', 'regex', 'custom']);
 
 export const filesXlsxRoute = new Hono();
 
@@ -127,7 +128,20 @@ function validateOverridesShape(raw: unknown): string | null {
         return `overrides[${JSON.stringify(sheetName)}][${JSON.stringify(header)}].pattern: must be a string`;
       }
       if (!NON_PATTERN_OVERRIDES.has(pat) && !isPatternName(pat)) {
-        return `overrides[${JSON.stringify(sheetName)}][${JSON.stringify(header)}].pattern: invalid value '${pat}' (expected PatternName | 'skip' | 'regex')`;
+        return `overrides[${JSON.stringify(sheetName)}][${JSON.stringify(header)}].pattern: invalid value '${pat}' (expected PatternName | 'skip' | 'regex' | 'custom')`;
+      }
+      // Custom-label overrides (#39) must carry a valid label that normalizes
+      // into a legal token-type identifier. Reject malformed labels at the
+      // boundary so the scrubber never sees an unsafe token type.
+      if (pat === 'custom') {
+        const rawLabel = (override as Record<string, unknown>).label;
+        if (typeof rawLabel !== 'string' || rawLabel.trim().length === 0) {
+          return `overrides[${JSON.stringify(sheetName)}][${JSON.stringify(header)}].label: required when pattern is 'custom'`;
+        }
+        const norm = normalizeCustomLabel(rawLabel);
+        if (!norm) {
+          return `overrides[${JSON.stringify(sheetName)}][${JSON.stringify(header)}].label: must normalize to 2-24 chars, start with a letter, [A-Z0-9_] only`;
+        }
       }
     }
   }

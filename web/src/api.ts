@@ -125,8 +125,18 @@ export type XlsxInspectionEntry = {
   sheets: XlsxSheetInspection[];
 };
 
-/** Per-column override the commit UI sends back to the server. */
-export type XlsxColumnOverride = { pattern: XlsxPatternName | 'skip' | 'regex' };
+/**
+ * Per-column override the commit UI sends back to the server.
+ *
+ * - `pattern: XlsxPatternName` — force-mint with a built-in category.
+ * - `pattern: 'skip'` — leave the column untouched.
+ * - `pattern: 'regex'` — whole-cell scrubText fallback.
+ * - `pattern: 'custom'` (issue #39) — force-mint with a user-supplied label.
+ *   `label` is required and normalized server-side into UPPER_SNAKE_CASE.
+ */
+export type XlsxColumnOverride =
+  | { pattern: XlsxPatternName | 'skip' | 'regex' }
+  | { pattern: 'custom'; label: string };
 
 /** Per-sheet, per-header overrides. */
 export type XlsxCommitOverrides = Record<string, Record<string, XlsxColumnOverride>>;
