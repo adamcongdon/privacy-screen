@@ -313,7 +313,7 @@ describe('looksLikeIdentifier', () => {
   test('returns false for "www.google.com"', () => {
     expect(looksLikeIdentifier('www.google.com')).toBe(false);
   });
-  test('returns false for "host.veeam.com"', () => {
-    expect(looksLikeIdentifier('host.veeam.com')).toBe(false);
+  test('returns false for "host.acme.com"', () => {
+    expect(looksLikeIdentifier('host.acme.com')).toBe(false);
   });
 });

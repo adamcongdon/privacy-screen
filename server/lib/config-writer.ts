@@ -15,7 +15,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { Document, parseDocument, isMap, isScalar, YAMLMap } from 'yaml';
-import { loadConfig, type PrivacyConfig } from '../../src/config';
+import { loadConfig, type PrivacyConfig, type Mode } from '../../src/config';
 import { resolveConfigPath } from './config-resolver';
 
 /** Fields the GUI may patch. Mirrors a subset of `LlmValidateConfig`. */
@@ -113,6 +113,38 @@ export function patchUpdateConfig(patch: UpdateConfigPatch): PrivacyConfig {
 
   const out = String(doc);
   writeFileSync(path, out);
+
+  return loadConfig(path);
+}
+
+/**
+ * Write the screening `mode` scalar at the YAML root (comment-preserving).
+ *
+ * `mode` is the single canonical screening setting in PRIVACY_CONFIG.yaml — the
+ * same field the hook/CLI enforcement path reads (`src/config.ts`). Surfacing it
+ * through the settings API lets the web Settings screen control the same knob.
+ */
+export function patchScreeningMode(mode: Mode): PrivacyConfig {
+  const path = resolveConfigPath();
+  const existing = existsSync(path) ? readFileSync(path, 'utf-8') : '';
+
+  let doc: Document;
+  try {
+    doc = parseDocument(existing);
+    if (doc.errors.length > 0) {
+      doc = new Document(new YAMLMap());
+    }
+  } catch {
+    doc = new Document(new YAMLMap());
+  }
+
+  if (!isMap(doc.contents)) {
+    doc.contents = new YAMLMap();
+  }
+
+  doc.set('mode', mode);
+
+  writeFileSync(path, String(doc));
 
   return loadConfig(path);
 }

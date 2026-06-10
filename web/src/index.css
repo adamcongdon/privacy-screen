@@ -1,12 +1,73 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Global resets & base styles for privacy-screen.
- * Dark mode is the default; the <html> tag carries the `dark` class.
+/* Global resets & base styles for privacy-screen — "Flow" theme foundation.
+ * Themes are driven by a class on <html>: `theme-dark` (default) or `theme-light`.
+ * Component styles consume CSS custom properties so both themes share one layer.
  */
 
 @layer base {
+  /* ── Theme variables (authoritative — kit.jsx / README §Theming) ── */
+  :root,
+  .theme-dark {
+    --bg: #0d1117;
+    --surface: #151b23;
+    --surface-2: #1b232e;
+    --surface-3: #212b38;
+    --border: #283140;
+    --border-2: #374150;
+    --hairline: rgba(255, 255, 255, 0.06);
+    --text: #e9eef5;
+    --text-dim: #aeb9c6;
+    --text-faint: #7e8b9a;
+    --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 24px rgba(0, 0, 0, 0.4);
+    --ok: #3fb950;
+    --ok-tint: rgba(63, 185, 80, 0.14);
+    --warn: #e3a008;
+    --warn-tint: rgba(227, 160, 8, 0.14);
+    --danger: #f76d6d;
+    --danger-bg: #2a1517;
+    --danger-border: #69262a;
+    /* Flow accent (dark) */
+    --acc: #37d39a;
+    --acc-2: #54e0ad;
+    --acc-ink: #04201a;
+    --acc-tint: rgba(55, 211, 154, 0.15);
+    --acc-line: rgba(55, 211, 154, 0.42);
+  }
+
+  .theme-light {
+    --bg: #f4f6f9;
+    --surface: #ffffff;
+    --surface-2: #f1f4f8;
+    --surface-3: #e9edf3;
+    --border: #dde3ea;
+    --border-2: #c8d1db;
+    --hairline: rgba(15, 23, 32, 0.07);
+    --text: #161c24;
+    --text-dim: #4d5763;
+    --text-faint: #646e7a; /* AA: 5.18:1 on #fff, 4.79:1 on --bg #f4f6f9 (WCAG 1.4.3) */
+    --shadow: 0 1px 2px rgba(15, 23, 32, 0.06), 0 8px 22px rgba(15, 23, 32, 0.06);
+    --ok: #1a7f37;
+    --ok-tint: rgba(26, 127, 55, 0.1);
+    --warn: #9a6700;
+    --warn-tint: rgba(154, 103, 0, 0.1);
+    --danger: #c4393f;
+    --danger-bg: #fdeced;
+    --danger-border: #f3c2c4;
+    /* Flow accent (light) — darkened from the handoff's #0a8f5f to clear WCAG
+       AA: accent text on --acc-tint is 4.74:1 (was 3.63:1) and white ink on a
+       solid --acc fill is 5.37:1 (was 4.11:1). --acc-tint hue unchanged. */
+    --acc: #0a7a4f;
+    --acc-2: #0b7d54;
+    --acc-ink: #ffffff;
+    --acc-tint: rgba(10, 143, 95, 0.1);
+    --acc-line: rgba(10, 143, 95, 0.38);
+  }
+
   html,
   body,
   #root {
@@ -15,20 +76,14 @@
 
   body {
     margin: 0;
-    font-family:
-      ui-sans-serif,
-      system-ui,
-      -apple-system,
-      BlinkMacSystemFont,
-      'Segoe UI',
-      Roboto,
-      'Helvetica Neue',
-      sans-serif;
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
 
-  /* Custom scrollbar styling — dark, subtle, doesn't fight the UI. */
+  /* Custom scrollbar styling — theme-aware via tokens. */
   *::-webkit-scrollbar {
     width: 10px;
     height: 10px;
@@ -37,27 +92,126 @@
     background: transparent;
   }
   *::-webkit-scrollbar-thumb {
-    background: rgb(63 63 70 / 0.6);
+    background: var(--border-2);
     border-radius: 9999px;
   }
   *::-webkit-scrollbar-thumb:hover {
-    background: rgb(82 82 91 / 0.8);
+    background: var(--text-faint);
   }
 
-  /* Focus rings — visible in dark mode. */
-  :focus-visible {
-    outline: 2px solid rgb(99 102 241);
+  /* Global focus ring (WCAG 2.4.7) — visible 2px accent outline on every
+   * interactive element. Do not remove outlines elsewhere. */
+  *:focus-visible {
+    outline: 2px solid var(--acc);
     outline-offset: 2px;
-    border-radius: 4px;
+  }
+
+  /* Respect reduced-motion: neutralize animations/transitions for users who
+   * opt out (WCAG 2.3.3 / streaming caret + fades). */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
 
 @layer components {
-  /* Token pill — used by PreviewPane for inline highlighting. */
+  /* Legacy token pill — kept for callers still using getCategoryStyle class
+   * triples until they migrate to .ps-pill. Referenced by PreviewPane. */
   .token-pill {
     @apply inline-block rounded px-1 font-mono text-[0.85em] leading-tight;
     cursor: help;
   }
+
+  /* Mono surface for the Scrub & Send input, scrubbed-output body, and reply
+   * body (README typography). Intentionally minimal — carries only the mono
+   * family so it never fights the per-element font-size / line-height set inline
+   * on those elements (input 1.7, output 2). */
+  .ps-mono {
+    font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+  }
+}
+
+/* ── Flow design-system component classes ───────────────────────────────────
+ * Authored as plain CSS (NOT inside @layer components) so they are never
+ * purged regardless of when downstream engineers reference them. Placed after
+ * @tailwind utilities so utilities still win where intentionally combined.
+ */
+
+/* Token pill — category is named in the token text itself (WCAG 1.4.1); color
+ * is redundant reinforcement only. Tint derives from one --cat base hue per
+ * category via color-mix (the caller sets --cat inline). */
+.ps-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px 1px 6px;
+  border-radius: 6px;
+  font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+  font-size: 0.86em;
+  font-weight: 500;
+  white-space: nowrap;
+  border: 1px solid;
+  vertical-align: baseline;
+  background: color-mix(in srgb, var(--cat) 17%, transparent);
+  border-color: color-mix(in srgb, var(--cat) 42%, transparent);
+}
+.theme-dark .ps-pill {
+  color: color-mix(in srgb, var(--cat) 62%, #ffffff);
+}
+.theme-light .ps-pill {
+  color: color-mix(in srgb, var(--cat) 64%, #000000);
+}
+.ps-pill .ps-pilldot {
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--cat);
+  flex: none;
+}
+
+/* Panel surface helper. */
+.ps-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+/* Toggle switch (role="switch") — 38×22, radius 11. */
+.ps-toggle {
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--border-2);
+  position: relative;
+  flex: none;
+  transition: background 0.16s;
+  cursor: pointer;
+  border: 0;
+}
+.ps-toggle[aria-checked='true'] {
+  background: var(--acc);
+}
+.ps-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.16s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+.ps-toggle[aria-checked='true']::after {
+  transform: translateX(16px);
 }
 
 /* Radix Dialog overlay — fade in. */

@@ -1,12 +1,26 @@
 /**
- * Token category -> Tailwind class mapping.
+ * Token category color system — Flow redesign.
  *
- * Categories that come from the backend appear in lowercase ("ip", "customer",
- * "email", "host", "credential", etc.). Tokens themselves look like {IP_1},
- * {CUSTOMER_2}, {EMAIL_3}. We hash the category name to fall back to a
- * deterministic palette for unknown categories so the highlight color is
- * stable across renders.
+ * One base hue per category (README §Design Tokens, line ~247). Pill bg / border
+ * / text derive from that single hue via `color-mix(in srgb, …)` instead of
+ * per-category Tailwind triples — this also gives light-mode support for free.
+ *
+ * Categories from the backend arrive lowercase ("ip", "customer", "email", …);
+ * tokens look like {IP_1}, {CUSTOMER_2}. Unknown categories hash to a stable
+ * hue so highlight colors stay consistent across renders.
+ *
+ * Backward-compatible exports: `getCategoryStyle` (Tailwind className triple +
+ * ring) and `getCategoryInlineStyles` (raw CSS values) keep their existing
+ * signatures so current callers (PreviewPane, TokenMap, sanitizeHtmlWithTokens)
+ * compile and render unchanged.
+ *
+ * IMPORTANT (Tailwind JIT): the arbitrary-value classes below are written as
+ * FULL STATIC STRING LITERALS so Tailwind's content scanner discovers and emits
+ * each one. Do not refactor them into runtime string interpolation — that would
+ * hide the class names from the scanner and the pills would render unstyled.
  */
+
+import { CATS } from './categories';
 
 export type TokenStyle = {
   bg: string;
@@ -21,160 +35,116 @@ export type InlineTokenStyle = {
   text: string;
 };
 
-const PALETTE: Record<string, TokenStyle> = {
+/**
+ * Per-category Tailwind class triples (+ ring), expressed as literal arbitrary
+ * `color-mix` values so the JIT scanner emits them. bg = 17% hue, border = 42%,
+ * text = 55% blended toward --text (kept readable in both themes), ring = 42%.
+ */
+const CLASS_PALETTE: Record<string, TokenStyle> = {
   ip: {
-    bg: 'bg-blue-500/20',
-    border: 'border-blue-500/40',
-    text: 'text-blue-200',
-    ring: 'ring-blue-400/40',
+    bg: 'bg-[color-mix(in_srgb,#4c8dff_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#4c8dff_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#4c8dff_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#4c8dff_42%,transparent)]',
   },
   customer: {
-    bg: 'bg-purple-500/20',
-    border: 'border-purple-500/40',
-    text: 'text-purple-200',
-    ring: 'ring-purple-400/40',
+    bg: 'bg-[color-mix(in_srgb,#b07cff_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#b07cff_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#b07cff_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#b07cff_42%,transparent)]',
   },
   email: {
-    bg: 'bg-emerald-500/20',
-    border: 'border-emerald-500/40',
-    text: 'text-emerald-200',
-    ring: 'ring-emerald-400/40',
+    bg: 'bg-[color-mix(in_srgb,#26c281_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#26c281_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#26c281_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#26c281_42%,transparent)]',
   },
   host: {
-    bg: 'bg-cyan-500/20',
-    border: 'border-cyan-500/40',
-    text: 'text-cyan-200',
-    ring: 'ring-cyan-400/40',
+    bg: 'bg-[color-mix(in_srgb,#22c1d6_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#22c1d6_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#22c1d6_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#22c1d6_42%,transparent)]',
   },
-  hostname: {
-    bg: 'bg-cyan-500/20',
-    border: 'border-cyan-500/40',
-    text: 'text-cyan-200',
-    ring: 'ring-cyan-400/40',
+  phone: {
+    bg: 'bg-[color-mix(in_srgb,#f59e0b_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#f59e0b_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#f59e0b_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#f59e0b_42%,transparent)]',
   },
-  credential: {
-    bg: 'bg-red-500/25',
-    border: 'border-red-500/50',
-    text: 'text-red-200',
-    ring: 'ring-red-400/50',
+  addr: {
+    bg: 'bg-[color-mix(in_srgb,#fb923c_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#fb923c_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#fb923c_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#fb923c_42%,transparent)]',
+  },
+  url: {
+    bg: 'bg-[color-mix(in_srgb,#2dd4bf_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#2dd4bf_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#2dd4bf_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#2dd4bf_42%,transparent)]',
+  },
+  account: {
+    bg: 'bg-[color-mix(in_srgb,#fb7185_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#fb7185_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#fb7185_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#fb7185_42%,transparent)]',
   },
   user: {
-    bg: 'bg-amber-500/20',
-    border: 'border-amber-500/40',
-    text: 'text-amber-200',
-    ring: 'ring-amber-400/40',
+    bg: 'bg-[color-mix(in_srgb,#f0a5c0_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#f0a5c0_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#f0a5c0_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#f0a5c0_42%,transparent)]',
   },
   path: {
-    bg: 'bg-pink-500/20',
-    border: 'border-pink-500/40',
-    text: 'text-pink-200',
-    ring: 'ring-pink-400/40',
+    bg: 'bg-[color-mix(in_srgb,#94a3b8_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#94a3b8_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#94a3b8_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#94a3b8_42%,transparent)]',
+  },
+  credential: {
+    bg: 'bg-[color-mix(in_srgb,#f76d6d_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#f76d6d_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#f76d6d_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#f76d6d_42%,transparent)]',
   },
 };
 
-const FALLBACK: TokenStyle[] = [
+/** Fallback class triples for unknown categories — literal so JIT emits them. */
+const CLASS_FALLBACK: TokenStyle[] = [
   {
-    bg: 'bg-indigo-500/20',
-    border: 'border-indigo-500/40',
-    text: 'text-indigo-200',
-    ring: 'ring-indigo-400/40',
+    bg: 'bg-[color-mix(in_srgb,#6366f1_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#6366f1_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#6366f1_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#6366f1_42%,transparent)]',
   },
   {
-    bg: 'bg-teal-500/20',
-    border: 'border-teal-500/40',
-    text: 'text-teal-200',
-    ring: 'ring-teal-400/40',
+    bg: 'bg-[color-mix(in_srgb,#14b8a6_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#14b8a6_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#14b8a6_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#14b8a6_42%,transparent)]',
   },
   {
-    bg: 'bg-orange-500/20',
-    border: 'border-orange-500/40',
-    text: 'text-orange-200',
-    ring: 'ring-orange-400/40',
+    bg: 'bg-[color-mix(in_srgb,#f97316_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#f97316_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#f97316_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#f97316_42%,transparent)]',
   },
   {
-    bg: 'bg-fuchsia-500/20',
-    border: 'border-fuchsia-500/40',
-    text: 'text-fuchsia-200',
-    ring: 'ring-fuchsia-400/40',
+    bg: 'bg-[color-mix(in_srgb,#d946ef_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#d946ef_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#d946ef_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#d946ef_42%,transparent)]',
   },
   {
-    bg: 'bg-lime-500/20',
-    border: 'border-lime-500/40',
-    text: 'text-lime-200',
-    ring: 'ring-lime-400/40',
+    bg: 'bg-[color-mix(in_srgb,#84cc16_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#84cc16_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#84cc16_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#84cc16_42%,transparent)]',
   },
 ];
 
-const INLINE_PALETTE: Record<string, InlineTokenStyle> = {
-  ip: {
-    bg: 'rgba(59,130,246,0.15)',
-    border: 'rgba(59,130,246,0.45)',
-    text: 'rgb(30,64,175)',
-  },
-  customer: {
-    bg: 'rgba(168,85,247,0.15)',
-    border: 'rgba(168,85,247,0.45)',
-    text: 'rgb(107,33,168)',
-  },
-  email: {
-    bg: 'rgba(16,185,129,0.15)',
-    border: 'rgba(16,185,129,0.45)',
-    text: 'rgb(6,95,70)',
-  },
-  host: {
-    bg: 'rgba(6,182,212,0.15)',
-    border: 'rgba(6,182,212,0.45)',
-    text: 'rgb(14,116,144)',
-  },
-  hostname: {
-    bg: 'rgba(6,182,212,0.15)',
-    border: 'rgba(6,182,212,0.45)',
-    text: 'rgb(14,116,144)',
-  },
-  credential: {
-    bg: 'rgba(239,68,68,0.18)',
-    border: 'rgba(239,68,68,0.5)',
-    text: 'rgb(153,27,27)',
-  },
-  user: {
-    bg: 'rgba(245,158,11,0.18)',
-    border: 'rgba(245,158,11,0.45)',
-    text: 'rgb(146,64,14)',
-  },
-  path: {
-    bg: 'rgba(236,72,153,0.15)',
-    border: 'rgba(236,72,153,0.45)',
-    text: 'rgb(157,23,77)',
-  },
-};
-
-const INLINE_FALLBACK: InlineTokenStyle[] = [
-  {
-    bg: 'rgba(99,102,241,0.15)',
-    border: 'rgba(99,102,241,0.45)',
-    text: 'rgb(55,48,163)',
-  },
-  {
-    bg: 'rgba(20,184,166,0.15)',
-    border: 'rgba(20,184,166,0.45)',
-    text: 'rgb(17,94,89)',
-  },
-  {
-    bg: 'rgba(249,115,22,0.15)',
-    border: 'rgba(249,115,22,0.45)',
-    text: 'rgb(154,52,18)',
-  },
-  {
-    bg: 'rgba(217,70,239,0.15)',
-    border: 'rgba(217,70,239,0.45)',
-    text: 'rgb(134,25,143)',
-  },
-  {
-    bg: 'rgba(132,204,22,0.15)',
-    border: 'rgba(132,204,22,0.45)',
-    text: 'rgb(63,98,18)',
-  },
-];
+/** Base hues for the fallback triples above (same order). */
+const FALLBACK_HUES: string[] = ['#6366f1', '#14b8a6', '#f97316', '#d946ef', '#84cc16'];
 
 function normalizeCategory(category: string | null | undefined): string {
   return (category ?? '').toLowerCase().trim();
@@ -186,16 +156,47 @@ function hashString(s: string): number {
   return Math.abs(h);
 }
 
-export function getCategoryStyle(category: string | null | undefined): TokenStyle {
+/**
+ * Resolve the base `--cat` hue for a category. Known categories use the
+ * authoritative palette; unknown categories hash to a stable fallback hue.
+ */
+export function getCategoryHue(category: string | null | undefined): string {
   const key = normalizeCategory(category);
-  if (key && PALETTE[key]) return PALETTE[key];
-  if (!key) return FALLBACK[0]!;
-  return FALLBACK[hashString(key) % FALLBACK.length]!;
+  const meta = CATS[key];
+  if (meta) return meta.hue;
+  if (!key) return FALLBACK_HUES[0]!;
+  return FALLBACK_HUES[hashString(key) % FALLBACK_HUES.length]!;
 }
 
-export function getCategoryInlineStyles(category: string | null | undefined): InlineTokenStyle {
+/**
+ * Returns Tailwind className fragments for a token pill. Each field is a literal
+ * arbitrary-value class (color-mix derived from the category's base hue) that
+ * Tailwind's JIT scanner emits. The same call works in both themes.
+ */
+export function getCategoryStyle(category: string | null | undefined): TokenStyle {
   const key = normalizeCategory(category);
-  if (key && INLINE_PALETTE[key]) return INLINE_PALETTE[key];
-  if (!key) return INLINE_FALLBACK[0]!;
-  return INLINE_FALLBACK[hashString(key) % INLINE_FALLBACK.length]!;
+  if (key && CLASS_PALETTE[key]) return CLASS_PALETTE[key]!;
+  if (!key) return CLASS_FALLBACK[0]!;
+  return CLASS_FALLBACK[hashString(key) % CLASS_FALLBACK.length]!;
+}
+
+// color-mix helper for inline (raw-value) styling.
+function mix(hue: string, pct: number, other: string): string {
+  return `color-mix(in srgb, ${hue} ${pct}%, ${other})`;
+}
+
+/**
+ * Returns raw CSS color values (background / border / text) for inline styling,
+ * derived from the category's base hue via `color-mix`. Used where styles are
+ * applied through a `style` string rather than Tailwind classes.
+ */
+export function getCategoryInlineStyles(
+  category: string | null | undefined,
+): InlineTokenStyle {
+  const hue = getCategoryHue(category);
+  return {
+    bg: mix(hue, 17, 'transparent'),
+    border: mix(hue, 42, 'transparent'),
+    text: mix(hue, 55, 'var(--text)'),
+  };
 }

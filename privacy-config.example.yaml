@@ -11,10 +11,10 @@ version: "1.0"
 mode: observe
 
 # FQDNs to never tokenize (public vendor infrastructure).
-# Built-in: veeam.com, microsoft.com, amazonaws.com, azure.com, github.com,
+# Built-in: microsoft.com, amazonaws.com, azure.com, github.com,
 # nuget.org, anthropic.com, cloudflare.com, openai.com, googleapis.com.
 fqdn_allowlist_extra:
-  - .helios.veeam.com
+  - .internal.example.com
   - .chocolatey.org
 
 # Known customer names — always tokenized as {CUSTOMER}/{CUSTOMER_N}.
@@ -37,7 +37,7 @@ person_names: []
 # Comparison is case-insensitive.
 name_allowlist: []
 # Example:
-#   - "Adam Congdon"
+#   - "Your Name"
 #   - "Linus Torvalds"
 
 # Confidence threshold — detections below this go to the review queue.

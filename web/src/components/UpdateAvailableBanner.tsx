@@ -7,8 +7,8 @@
  *   - store.versionInfo.updateInfo.version is set
  *   - the user hasn't already dismissed THAT specific version
  *
- * Clicking the body opens the SettingsDrawer with a 'update' deep link so the
- * drawer can auto-scroll/highlight the update section. Clicking the dismiss
+ * Clicking the body navigates to the Settings route (Settings is a route now,
+ * not a drawer) so the user can install the update. Clicking the dismiss
  * (X) button records the current version into dismissedUpdateVersion (which
  * persists to localStorage) so the banner stays hidden until a newer version
  * appears.
@@ -24,8 +24,7 @@ import { useStore } from '../store';
 export default function UpdateAvailableBanner(): JSX.Element | null {
   const versionInfo = useStore((s) => s.versionInfo);
   const dismissedUpdateVersion = useStore((s) => s.dismissedUpdateVersion);
-  const setSettingsOpen = useStore((s) => s.setSettingsOpen);
-  const setSettingsDeepLink = useStore((s) => s.setSettingsDeepLink);
+  const setRoute = useStore((s) => s.setRoute);
   const dismissUpdate = useStore((s) => s.dismissUpdate);
 
   const updateInfo = versionInfo?.updateInfo;
@@ -35,8 +34,9 @@ export default function UpdateAvailableBanner(): JSX.Element | null {
   const { version, channel } = updateInfo;
 
   const openSettingsAtUpdate = (): void => {
-    setSettingsDeepLink('update');
-    setSettingsOpen(true);
+    // Settings is a route now (no SettingsDrawer mount) — navigate there so the
+    // CTA actually lands the user on the Updates card.
+    setRoute('settings');
   };
 
   return (

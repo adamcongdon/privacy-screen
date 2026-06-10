@@ -70,13 +70,13 @@ In `~/.claude/settings.json` add (or merge):
 {
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "bun /Users/adam.congdon/code/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
+      { "hooks": [{ "type": "command", "command": "bun /path/to/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
     ],
     "PreToolUse": [
-      { "hooks": [{ "type": "command", "command": "bun /Users/adam.congdon/code/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
+      { "hooks": [{ "type": "command", "command": "bun /path/to/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
     ],
     "PostToolUse": [
-      { "hooks": [{ "type": "command", "command": "bun /Users/adam.congdon/code/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
+      { "hooks": [{ "type": "command", "command": "bun /path/to/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
     ]
   }
 }

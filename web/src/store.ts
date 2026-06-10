@@ -92,9 +92,43 @@ export type FeedbackJobState = {
 
 export type PreviewMode = 'source' | 'rendered';
 
+/**
+ * Screening mode for the Scrub screen + Settings radio group.
+ *
+ * Persisted server-side in PRIVACY_CONFIG.yaml and surfaced through
+ * `/api/settings` (GET returns `mode`; POST accepts `mode`). This is the SAME
+ * canonical `mode` the hook/CLI enforcement path reads (src/config.ts), so the
+ * web Settings screen and the hook share one source of truth. Hydrated from
+ * `settings.mode` on load; `setMode` persists via `saveSettings({ mode })`.
+ *
+ * - observe:  detect + tokenize, but never block on a credential.
+ * - enforce:  block send while a credential is present (recommended default).
+ * - disabled: text passes through untouched (no tokens).
+ */
+export type ScreenMode = 'observe' | 'enforce' | 'disabled';
+
+/** Active theme — drives the root `theme-*` class and CSS custom properties. */
+export type Theme = 'dark' | 'light';
+
+/** Top-level route for the Flow shell. `history`/`chat` are reserved (rail keeps
+ * them disabled in Engineer-B) but remain valid members. */
+export type Route = 'scrub' | 'review' | 'vocab' | 'settings' | 'history' | 'chat';
+
 const LS_PREVIEW_MODE = 'ps.preview-mode';
 const LS_TOKENMAP_OPEN = 'ps.tokenmap-open';
 const LS_DISMISSED_UPDATE = 'ps.dismissed-update-version';
+const LS_THEME = 'ps-theme';
+/** First-run gate key. Unset → show Onboarding; '1' → onboarding complete. */
+const LS_ONBOARDED = 'ps-onboarded';
+
+const VALID_ROUTES: readonly Route[] = [
+  'scrub',
+  'review',
+  'vocab',
+  'settings',
+  'history',
+  'chat',
+];
 
 /**
  * Periodic version-poll cadence. 4 hours — quiet enough to be invisible, frequent
@@ -128,6 +162,74 @@ function readLsTokenMapOpen(): boolean {
   } catch {
     return false;
   }
+}
+
+function readLsTheme(): Theme {
+  try {
+    const v = globalThis.localStorage?.getItem(LS_THEME);
+    if (v === 'light' || v === 'dark') return v;
+    // No stored preference — fall back to the OS color scheme.
+    if (globalThis.matchMedia?.('(prefers-color-scheme: light)').matches) {
+      return 'light';
+    }
+    return 'dark';
+  } catch {
+    return 'dark';
+  }
+}
+
+/**
+ * Read the first-run gate. Returns true once the user has completed onboarding
+ * (localStorage `ps-onboarded` === '1'). Mirrors the other `readLs*` helpers —
+ * defensive against unavailable/quota-restricted localStorage.
+ */
+function readLsOnboarded(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(LS_ONBOARDED) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Boot-time route reader: parses `location.hash` (`#/vocab`) into a valid Route,
+ * defaulting to 'scrub'. Exported for tests to verify the round-trip with
+ * `setRoute` (which writes the hash) — production reads it once at store init.
+ */
+export function readHashRoute(): Route {
+  try {
+    const raw = (globalThis.location?.hash ?? '').replace(/^#\/?/, '').trim();
+    return (VALID_ROUTES as readonly string[]).includes(raw)
+      ? (raw as Route)
+      : 'scrub';
+  } catch {
+    return 'scrub';
+  }
+}
+
+/**
+ * Apply the theme to the document root by setting the `theme-<theme>` class.
+ * Safe to call at boot (App can invoke once on mount) and from `setTheme`.
+ */
+export function applyThemeClass(theme: Theme): void {
+  try {
+    if (globalThis.document?.documentElement) {
+      globalThis.document.documentElement.className = 'theme-' + theme;
+    }
+  } catch {
+    // ignore — non-DOM (test/SSR) environments
+  }
+}
+
+/**
+ * Boot-time theme sync: reads the persisted/system theme and applies the root
+ * class. Returns the resolved theme. App should call this once on mount so the
+ * `theme-*` class matches the store's hydrated `theme` value.
+ */
+export function applyTheme(): Theme {
+  const t = readLsTheme();
+  applyThemeClass(t);
+  return t;
 }
 
 function readLsDismissedUpdate(): string | null {
@@ -188,6 +290,21 @@ type State = {
   previewModeUserOverrode: boolean;
   /** Token Map slide-in drawer open/closed. Persisted to localStorage. */
   tokenMapOpen: boolean;
+  /** Active theme — 'dark' (default) or 'light'. Persisted to localStorage('ps-theme'). */
+  theme: Theme;
+  /**
+   * First-run gate. False until the user finishes Onboarding; persisted to
+   * localStorage('ps-onboarded'). App overlays <Onboarding> while this is false.
+   */
+  onboarded: boolean;
+  /**
+   * Screening mode for Scrub & Settings. Persisted server-side via
+   * `/api/settings` (see ScreenMode docs); hydrated from `settings.mode` on
+   * load. Defaults to 'enforce' until settings hydrate.
+   */
+  mode: ScreenMode;
+  /** Active top-level route for the Flow shell. Reflected in location.hash. */
+  route: Route;
   /** Send-feedback dialog open/closed. Not persisted — ephemeral per session. */
   feedbackOpen: boolean;
 
@@ -235,6 +352,18 @@ type State = {
   autoSetPreviewMode: (m: PreviewMode) => void;
   resetPreviewModeOverride: () => void;
   setTokenMapOpen: (o: boolean) => void;
+  /** Set the active theme — persists to localStorage and applies the root class. */
+  setTheme: (t: Theme) => void;
+  /** Mark first-run onboarding complete (persists `ps-onboarded`) or reset it. */
+  setOnboarded: (v: boolean) => void;
+  /**
+   * Set the screening mode and re-run the current scrub so the Scrub screen
+   * reflects the new mode immediately (Enforce blocks credentials; Disabled
+   * passes through). Client-side only — see ScreenMode docs.
+   */
+  setMode: (m: ScreenMode) => void;
+  /** Set the active route — updates location.hash to `#/<route>`. */
+  setRoute: (r: Route) => void;
   setFeedbackOpen: (o: boolean) => void;
   resetConversation: () => void;
 
@@ -416,6 +545,10 @@ export const useStore = create<State>((set, get) => {
   previewMode: readLsPreviewMode(),
   previewModeUserOverrode: false,
   tokenMapOpen: readLsTokenMapOpen(),
+  theme: readLsTheme(),
+  onboarded: readLsOnboarded(),
+  mode: 'enforce',
+  route: readHashRoute(),
   feedbackOpen: false,
 
   vocab: [],
@@ -459,6 +592,43 @@ export const useStore = create<State>((set, get) => {
   setTokenMapOpen: (o) => {
     writeLs(LS_TOKENMAP_OPEN, o ? '1' : '0');
     set({ tokenMapOpen: o });
+  },
+
+  setTheme: (t) => {
+    writeLs(LS_THEME, t);
+    applyThemeClass(t);
+    set({ theme: t });
+  },
+
+  setOnboarded: (v) => {
+    writeLs(LS_ONBOARDED, v ? '1' : '0');
+    set({ onboarded: v });
+  },
+
+  setMode: (m) => {
+    // Optimistic: flip the UI immediately, then persist to PRIVACY_CONFIG.yaml
+    // via /api/settings and re-run the current scrub so the Scrub screen
+    // reflects the new mode live. saveSettings() syncs `mode` back from the
+    // server response (and rolls the toast); a failed save surfaces an error
+    // toast but leaves the optimistic value so the user can retry.
+    set({ mode: m });
+    void get()
+      .saveSettings({ mode: m })
+      .catch(() => {
+        /* saveSettings already surfaced an error toast */
+      })
+      .finally(() => {
+        void get().refreshScrub();
+      });
+  },
+
+  setRoute: (r) => {
+    try {
+      if (globalThis.location) globalThis.location.hash = '#/' + r;
+    } catch {
+      // ignore in non-DOM environments
+    }
+    set({ route: r });
   },
 
   setFeedbackOpen: (o) => set({ feedbackOpen: o }),
@@ -736,7 +906,7 @@ export const useStore = create<State>((set, get) => {
   refreshSettings: async () => {
     try {
       const s = await api.settings();
-      set({ settings: s });
+      set({ settings: s, mode: s.mode });
     } catch (err) {
       get().pushToast('error', `settings fetch failed: ${err instanceof Error ? err.message : err}`);
     }
@@ -872,7 +1042,9 @@ export const useStore = create<State>((set, get) => {
   saveSettings: async (partial) => {
     try {
       const s = await api.saveSettings(partial);
-      set({ settings: s });
+      // Sync `mode` back from the server's canonical view so the store and
+      // PRIVACY_CONFIG.yaml never drift.
+      set({ settings: s, mode: s.mode });
       get().pushToast('success', 'settings saved');
     } catch (err) {
       get().pushToast('error', `settings save failed: ${err instanceof Error ? err.message : err}`);
