@@ -16,11 +16,14 @@
  * auto-builds). Default is 'stable'.
  *
  * Versioning convention:
- *   - Beta / pre-1.0 builds use 0.0.N (start: 0.0.1, increment patch each
- *     release). Bump via `bun run version:bump` (npm version patch).
- *   - Stable 1.x is reserved for the first non-beta release.
- *   - The script reads pkg.version verbatim — bump package.json first,
- *     then run this script so the manifest + tag stay in lockstep.
+ *   - In CI, the canonical next version is computed by
+ *     `scripts/compute-version.ts` from existing git tags, and the workflow
+ *     stamps that value into package.json *before* invoking this script.
+ *   - Locally, this script reads pkg.version verbatim. To preview the
+ *     CI-computed version: `bun scripts/compute-version.ts beta|stable`.
+ *   - package.json acts as a floor: if its declared base is higher than every
+ *     existing tag in the channel, the next release jumps to that base.
+ *     Otherwise the workflow auto-increments from the highest existing tag.
  *
  * This script does NOT push anything anywhere. It produces local artifacts;
  * publishing a release is a separate step handled by CI for dev/main.
