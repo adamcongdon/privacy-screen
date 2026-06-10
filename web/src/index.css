@@ -58,8 +58,10 @@
     --danger: #c4393f;
     --danger-bg: #fdeced;
     --danger-border: #f3c2c4;
-    /* Flow accent (light) */
-    --acc: #0a8f5f;
+    /* Flow accent (light) — darkened from the handoff's #0a8f5f to clear WCAG
+       AA: accent text on --acc-tint is 4.74:1 (was 3.63:1) and white ink on a
+       solid --acc fill is 5.37:1 (was 4.11:1). --acc-tint hue unchanged. */
+    --acc: #0a7a4f;
     --acc-2: #0b7d54;
     --acc-ink: #ffffff;
     --acc-tint: rgba(10, 143, 95, 0.1);
