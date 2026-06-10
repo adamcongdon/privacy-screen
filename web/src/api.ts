@@ -84,6 +84,78 @@ export type UploadedFile = {
   error?: string;
 };
 
+// ─── xlsx inspect/commit types — Segment 3C3 (#23) ───────────────────────────
+//
+// The /api/files endpoint returns a heterogeneous array of UploadedFile (text),
+// XlsxInspectionEntry (xlsx pending review), or ErrorEntry. The discriminator
+// is the optional `kind` field — only xlsx entries carry `kind:'xlsx-inspection'`.
+// Text entries omit `kind` entirely, so callers must check `'kind' in entry`
+// before narrowing.
+
+/** Closed list of xlsx column pattern names — mirrors src/xlsx-types.ts. */
+export type XlsxPatternName =
+  | 'Email' | 'Phone' | 'SSN' | 'IPv4' | 'IPv6'
+  | 'PersonName' | 'StreetAddress' | 'FQDN' | 'CreditCard'
+  | 'UncPath' | 'DomainUser' | 'MAC' | 'GUID';
+
+/** Where a column's resolved pattern came from. */
+export type XlsxColumnSource = 'rule' | 'heuristic' | 'unresolved';
+
+/** Per-column inspection result returned by /api/files (xlsx entry) and /inspect. */
+export type XlsxColumnInspection = {
+  header: string;
+  resolvedPattern: XlsxPatternName | null;
+  source: XlsxColumnSource;
+  sampleValue: string | null;
+};
+
+export type XlsxSheetInspection = {
+  name: string;
+  columns: XlsxColumnInspection[];
+  rowCount: number;
+};
+
+/** The "xlsx pending review" entry shape returned by /api/files. */
+export type XlsxInspectionEntry = {
+  name: string;
+  size: number;
+  mime: string;
+  kind: 'xlsx-inspection';
+  uploadId: string;
+  sheets: XlsxSheetInspection[];
+};
+
+/**
+ * Per-column override the commit UI sends back to the server.
+ *
+ * - `pattern: XlsxPatternName` — force-mint with a built-in category.
+ * - `pattern: 'skip'` — leave the column untouched.
+ * - `pattern: 'regex'` — whole-cell scrubText fallback.
+ * - `pattern: 'custom'` (issue #39) — force-mint with a user-supplied label.
+ *   `label` is required and normalized server-side into UPPER_SNAKE_CASE.
+ */
+export type XlsxColumnOverride =
+  | { pattern: XlsxPatternName | 'skip' | 'regex' }
+  | { pattern: 'custom'; label: string };
+
+/** Per-sheet, per-header overrides. */
+export type XlsxCommitOverrides = Record<string, Record<string, XlsxColumnOverride>>;
+
+/** Summary surfaced after a successful commit. */
+export type XlsxScrubSummary = {
+  sheets: number;
+  rows: number;
+  cellsScrubbed: number;
+  columnsResolved: Record<string, string>;
+};
+
+export type XlsxCommitResponse = {
+  ok: true;
+  fileName: string;
+  summary: XlsxScrubSummary;
+  base64: string;
+};
+
 export type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
 export type SseHandlers = {
@@ -252,11 +324,34 @@ export const api = {
     return json(res);
   },
 
-  async uploadFiles(files: File[]): Promise<{ files: UploadedFile[] }> {
+  async uploadFiles(
+    files: File[],
+  ): Promise<{ files: Array<UploadedFile | XlsxInspectionEntry> }> {
     const form = new FormData();
     for (const f of files) form.append('file', f);
     const res = await fetch('/api/files', { method: 'POST', body: form });
     return json(res);
+  },
+
+  /**
+   * Finalize a staged xlsx upload — POST /api/files/xlsx/commit.
+   *
+   * Returns the scrubbed workbook as base64 + a summary. On HTTP 4xx/5xx, the
+   * `json()` helper unwraps the server's `{ ok:false, error }` body and throws
+   * an `ApiError` whose `.message` is that string — callers display it directly.
+   */
+  async commitXlsx(
+    uploadId: string,
+    overrides?: XlsxCommitOverrides,
+  ): Promise<XlsxCommitResponse> {
+    const body: { uploadId: string; overrides?: XlsxCommitOverrides } = { uploadId };
+    if (overrides !== undefined) body.overrides = overrides;
+    const res = await fetch('/api/files/xlsx/commit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return json<XlsxCommitResponse>(res);
   },
 
   /**

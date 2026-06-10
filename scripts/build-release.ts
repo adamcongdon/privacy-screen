@@ -15,6 +15,16 @@
  * Use --channel beta to produce a beta-channel manifest (for dev-branch
  * auto-builds). Default is 'stable'.
  *
+ * Versioning convention:
+ *   - In CI, the canonical next version is computed by
+ *     `scripts/compute-version.ts` from existing git tags, and the workflow
+ *     stamps that value into package.json *before* invoking this script.
+ *   - Locally, this script reads pkg.version verbatim. To preview the
+ *     CI-computed version: `bun scripts/compute-version.ts beta|stable`.
+ *   - package.json acts as a floor: if its declared base is higher than every
+ *     existing tag in the channel, the next release jumps to that base.
+ *     Otherwise the workflow auto-increments from the highest existing tag.
+ *
  * This script does NOT push anything anywhere. It produces local artifacts;
  * publishing a release is a separate step handled by CI for dev/main.
  */
