@@ -49,7 +49,7 @@
     --hairline: rgba(15, 23, 32, 0.07);
     --text: #161c24;
     --text-dim: #4d5763;
-    --text-faint: #6e7986;
+    --text-faint: #646e7a; /* AA: 5.18:1 on #fff, 4.79:1 on --bg #f4f6f9 (WCAG 1.4.3) */
     --shadow: 0 1px 2px rgba(15, 23, 32, 0.06), 0 8px 22px rgba(15, 23, 32, 0.06);
     --ok: #1a7f37;
     --ok-tint: rgba(26, 127, 55, 0.1);
@@ -124,6 +124,14 @@
   .token-pill {
     @apply inline-block rounded px-1 font-mono text-[0.85em] leading-tight;
     cursor: help;
+  }
+
+  /* Mono surface for the Scrub & Send input, scrubbed-output body, and reply
+   * body (README typography). Intentionally minimal — carries only the mono
+   * family so it never fights the per-element font-size / line-height set inline
+   * on those elements (input 1.7, output 2). */
+  .ps-mono {
+    font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
   }
 }
 
