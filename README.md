@@ -300,3 +300,20 @@ See `privacy-config.example.yaml` for the commented examples and [`Plans/INSTALL
 - `PRIVACY_CONFIG.yaml` — your personal customer name list
 
 Never commit either. The `.example` template is safe to share.
+
+## License
+
+Licensed under the **Apache License, Version 2.0**. See [`LICENSE`](LICENSE) for the full text and [`NOTICE`](NOTICE) for attribution + third-party acknowledgments.
+
+```
+Copyright 2026 Adam Congdon
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+```
+
+`SPDX-License-Identifier: Apache-2.0`
+
