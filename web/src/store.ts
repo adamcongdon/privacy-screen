@@ -160,6 +160,14 @@ type State = {
   credentialSnippets: string[];
   isScrubbing: boolean;
   scrubError: string | null;
+  /**
+   * True while addFiles is in-flight to the server. Used to gate the
+   * FileDropZone against concurrent uploads — without this guard a second
+   * drop fires while the first POST /api/files is still resolving, the
+   * state updates interleave, and the user sees the second drop appear
+   * to do nothing (issue #37).
+   */
+  isUploading: boolean;
 
   // Conversation
   messages: SessionMessage[];
@@ -393,6 +401,7 @@ export const useStore = create<State>((set, get) => {
   hasCredentials: false,
   credentialSnippets: [],
   isScrubbing: false,
+  isUploading: false,
   scrubError: null,
 
   messages: [],
@@ -495,6 +504,17 @@ export const useStore = create<State>((set, get) => {
   addFiles: async (incoming) => {
     const list = Array.from(incoming as ArrayLike<File>);
     if (list.length === 0) return;
+    // Guard against concurrent uploads (issue #37). Without this, a fast
+    // second drop races the first POST /api/files: the server log shows
+    // only the first request, the second appears to hang, and the UI never
+    // updates because state writes from the two `set()` calls interleave.
+    // Surfacing a toast also makes the rejection visible — silence was the
+    // original failure mode.
+    if (get().isUploading) {
+      get().pushToast('info', 'still uploading the previous batch — try again in a moment');
+      return;
+    }
+    set({ isUploading: true });
     try {
       const res = await api.uploadFiles(list);
 
@@ -582,6 +602,8 @@ export const useStore = create<State>((set, get) => {
       }
     } catch (err) {
       get().pushToast('error', `upload failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      set({ isUploading: false });
     }
   },
 
