@@ -11,6 +11,14 @@
 import { existsSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { parse as parseYaml } from 'yaml';
+import {
+  isPatternName,
+  type ColumnPatternRule,
+  type XlsxConfig,
+} from './xlsx-types';
+
+// Re-export so existing consumers can `import type { XlsxConfig } from './config'`.
+export type { ColumnPatternRule, XlsxConfig, PatternName } from './xlsx-types';
 
 export type Mode = 'enforce' | 'observe' | 'disabled';
 
@@ -115,6 +123,13 @@ export interface PrivacyConfig {
   llm_validate: LlmValidateConfig;
   /** Hook-side opt-in knobs (auto-approve precheck, etc). */
   hook: HookConfig;
+  /**
+   * xlsx scrubber config (Issue #23). Drives column → pattern resolution
+   * for `.xlsx` uploads. Optional in the type so call sites that construct
+   * `PrivacyConfig` literals (tests, mocks) don't break; `loadConfig`
+   * always populates it with the default `{ columnRules: [], autoDetect: true }`.
+   */
+  xlsx?: XlsxConfig;
 }
 
 const DEFAULTS: PrivacyConfig = {
@@ -153,6 +168,10 @@ const DEFAULTS: PrivacyConfig = {
   },
   hook: {
     auto_approve_clean: false,
+  },
+  xlsx: {
+    columnRules: [],
+    autoDetect: true,
   },
 };
 
@@ -204,7 +223,61 @@ function mergeConfig(base: PrivacyConfig, override: unknown): PrivacyConfig {
     update_manifest_url: safeManifestUrl(o.update_manifest_url, base.update_manifest_url),
     llm_validate: mergeLlmValidate(base.llm_validate, o.llm_validate),
     hook: mergeHook(base.hook, o.hook),
+    xlsx: mergeXlsx(base.xlsx ?? { columnRules: [], autoDetect: true }, o.xlsx),
   };
+}
+
+/**
+ * Parse and validate the `xlsx:` YAML section. Rejects rules with an
+ * invalid `pattern` literal with a clear error — silent fallback would
+ * just leave the user puzzled why their column rule isn't firing.
+ *
+ * Shape contract (from privacy-config.example.yaml):
+ *   xlsx:
+ *     autoDetect: true
+ *     columnRules:
+ *       - header: "Customer Email"
+ *         pattern: Email
+ *       - headerRegex: "phone|mobile"
+ *         pattern: Phone
+ */
+function mergeXlsx(base: XlsxConfig, override: unknown): XlsxConfig {
+  if (!override || typeof override !== 'object') return base;
+  const o = override as Record<string, unknown>;
+
+  const autoDetect =
+    typeof o.autoDetect === 'boolean' ? o.autoDetect : base.autoDetect;
+
+  let columnRules: ColumnPatternRule[] = base.columnRules;
+  if (Array.isArray(o.columnRules)) {
+    columnRules = o.columnRules.map((raw, idx) => {
+      if (!raw || typeof raw !== 'object') {
+        throw new Error(
+          `[PrivacyScreen] xlsx.columnRules[${idx}]: rule must be an object`,
+        );
+      }
+      const r = raw as Record<string, unknown>;
+      if (!isPatternName(r.pattern)) {
+        throw new Error(
+          `[PrivacyScreen] xlsx.columnRules[${idx}].pattern: invalid PatternName '${String(r.pattern)}'. ` +
+            `Valid: Email, Phone, SSN, IPv4, IPv6, PersonName, StreetAddress, FQDN, CreditCard, UncPath, DomainUser, MAC, GUID.`,
+        );
+      }
+      const rule: ColumnPatternRule = { pattern: r.pattern };
+      if (typeof r.header === 'string' && r.header.length > 0) rule.header = r.header;
+      if (typeof r.headerRegex === 'string' && r.headerRegex.length > 0) {
+        rule.headerRegex = r.headerRegex;
+      }
+      if (!rule.header && !rule.headerRegex) {
+        throw new Error(
+          `[PrivacyScreen] xlsx.columnRules[${idx}]: must define 'header' or 'headerRegex'`,
+        );
+      }
+      return rule;
+    });
+  }
+
+  return { autoDetect, columnRules };
 }
 
 function mergeHook(base: HookConfig, override: unknown): HookConfig {
