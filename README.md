@@ -27,6 +27,25 @@ open http://127.0.0.1:31338
 
 `SAFETY_CHECKLIST.md` (the older one) covers the Claude Code hook flow. Hook is NOT yet registered in your `settings.json` — opt in only after the checklist passes.
 
+## Features
+
+User-visible capabilities, newest first. `🆕` marks the latest release; the badge auto-decays once a feature is two releases behind. Per-release detail lives in [`CHANGELOG.md`](./CHANGELOG.md).
+
+<!-- features:start -->
+<!--
+  Entries are managed by .github/workflows/readme-sync.yml on every published release.
+  Manual edits are fine, but keep the format below so the automation can parse it:
+
+  - 🆕 **vX.Y.Z** — one-line user-visible blurb
+  - **vX.Y.Z** — one-line user-visible blurb
+-->
+
+_No features tracked yet — this list populates from the next published release._
+
+<!-- features:end -->
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for the full release history and [GitHub Releases](https://github.com/adamcongdon/privacy-screen/releases) for downloadable binaries.
+
 ## Auto-update
 
 privacy-screen ships GitHub releases on two channels:
