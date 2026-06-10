@@ -57,26 +57,29 @@ jobs:
       - name: Compute version + channel + tag info
         id: vars
         run: |
-          BASE_VERSION=$(jq -r .version package.json)
           BRANCH="${{ github.ref_name }}"
           SHORT_SHA=$(git rev-parse --short HEAD)
           RUN_NUM="${{ github.run_number }}"
 
           if [ "$BRANCH" = "beta" ]; then
             CHANNEL="beta"
-            # Qualify the version baked into the binary + manifest for this beta build.
-            # Using run_number gives a monotonically increasing id for compareVersions.
-            QUAL_VERSION="${BASE_VERSION}-beta.${RUN_NUM}"
-            TAG="v${QUAL_VERSION}"
             MANIFEST_NAME="release-manifest-beta.json"
             PRERELEASE_FLAG="--prerelease"
-            RELEASE_TITLE="Beta ${BASE_VERSION} (run ${RUN_NUM}, ${SHORT_SHA})"
           else
             CHANNEL="stable"
-            QUAL_VERSION="${BASE_VERSION}"
-            TAG="v${QUAL_VERSION}"
             MANIFEST_NAME="release-manifest.json"
             PRERELEASE_FLAG=""
+          fi
+
+          # Source of truth: git tags. package.json is treated as a floor only.
+          # See scripts/compute-version.ts for the increment rules.
+          TAG=$(bun scripts/compute-version.ts "$CHANNEL")
+          QUAL_VERSION="${TAG#v}"
+          BASE_VERSION="${QUAL_VERSION%-beta.*}"
+
+          if [ "$CHANNEL" = "beta" ]; then
+            RELEASE_TITLE="Beta ${QUAL_VERSION} (${SHORT_SHA})"
+          else
             RELEASE_TITLE="v${QUAL_VERSION}"
           fi
 
@@ -92,11 +95,12 @@ jobs:
 
           echo "channel=$CHANNEL version=$QUAL_VERSION tag=$TAG manifest=$MANIFEST_NAME"
 
-      - name: Prepare beta-qualified package.json version (ephemeral, for this build only)
-        if: steps.vars.outputs.channel == 'beta'
+      - name: Stamp package.json with the computed version (ephemeral, for this build only)
+        # build-release.ts reads pkg.version verbatim to bake into the binary +
+        # manifest. We never commit this change; create-release restores it.
         run: |
           QUAL="${{ steps.vars.outputs.qual_version }}"
-          echo "Temporarily setting package.json version to ${QUAL} for beta binary + manifest"
+          echo "Temporarily setting package.json version to ${QUAL} for binary + manifest"
           jq --arg v "$QUAL" '.version = $v' package.json > package.json.tmp
           mv package.json.tmp package.json
 
@@ -334,24 +338,30 @@ jobs:
       - name: Compute version + channel + tag info
         id: vars
         run: |
-          BASE_VERSION=$(jq -r .version package.json)
           BRANCH="${{ github.ref_name }}"
           SHORT_SHA=$(git rev-parse --short HEAD)
           RUN_NUM="${{ github.run_number }}"
 
           if [ "$BRANCH" = "beta" ]; then
             CHANNEL="beta"
-            QUAL_VERSION="${BASE_VERSION}-beta.${RUN_NUM}"
-            TAG="v${QUAL_VERSION}"
             MANIFEST_NAME="release-manifest-beta.json"
             PRERELEASE_FLAG="--prerelease"
-            RELEASE_TITLE="Beta ${BASE_VERSION} (run ${RUN_NUM}, ${SHORT_SHA})"
           else
             CHANNEL="stable"
-            QUAL_VERSION="${BASE_VERSION}"
-            TAG="v${QUAL_VERSION}"
             MANIFEST_NAME="release-manifest.json"
             PRERELEASE_FLAG=""
+          fi
+
+          # Source of truth: git tags. Must match the build job's computation
+          # since build and create-release run on the same commit (same tags
+          # visible). See scripts/compute-version.ts for the rules.
+          TAG=$(bun scripts/compute-version.ts "$CHANNEL")
+          QUAL_VERSION="${TAG#v}"
+          BASE_VERSION="${QUAL_VERSION%-beta.*}"
+
+          if [ "$CHANNEL" = "beta" ]; then
+            RELEASE_TITLE="Beta ${QUAL_VERSION} (${SHORT_SHA})"
+          else
             RELEASE_TITLE="v${QUAL_VERSION}"
           fi
 
@@ -367,8 +377,9 @@ jobs:
 
           echo "channel=$CHANNEL version=$QUAL_VERSION tag=$TAG manifest=$MANIFEST_NAME"
 
-      - name: Prepare beta-qualified package.json (ephemeral, for manifest generation only)
-        if: steps.vars.outputs.channel == 'beta'
+      - name: Stamp package.json with the computed version (ephemeral, for manifest generation)
+        # build-release.ts --manifest-only reads pkg.version verbatim to write
+        # into the manifest. We never commit this change; the next step restores it.
         run: |
           QUAL="${{ steps.vars.outputs.qual_version }}"
           echo "Temporarily setting package.json version to ${QUAL} for manifest"
@@ -442,8 +453,10 @@ jobs:
 
           echo "Release $TAG created/updated with assets."
 
-      - name: Restore clean package.json (do not commit the beta-qualified version)
-        if: steps.vars.outputs.channel == 'beta'
+      - name: Restore clean package.json (do not commit the computed version)
+        # We stamp package.json with the computed version for build-release.ts,
+        # but the working tree value (declared base) is the source of truth for
+        # the "floor" semantics, so it must never be committed.
         run: |
           git checkout -- package.json || true
 
