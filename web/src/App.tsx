@@ -1,21 +1,17 @@
 import { useEffect, useState } from 'react';
-import {
-  CircleDot,
-  AlertCircle,
-  CheckCircle2,
-  MessageSquareWarning,
-} from 'lucide-react';
 import { Rail } from './components/flow/Rail';
 import { Shell } from './components/flow/Shell';
-import { ScrubSend, ScrubHeaderRight, type ScreenMode } from './components/flow/ScrubSend';
+import { ScrubSend, ScrubHeaderRight } from './components/flow/ScrubSend';
 import { ReviewPage, ReviewHeaderRight } from './components/flow/ReviewPage';
+import { VocabularyPage, VocabHeaderRight } from './components/flow/VocabularyPage';
+import { SettingsPage } from './components/flow/SettingsPage';
 import { ContextMenu } from './components/ContextMenu';
 import { CustomCategoryDialog } from './components/CustomCategoryDialog';
 import { FeedbackDialog } from './components/FeedbackDialog';
 import { XlsxColumnReview } from './components/XlsxColumnReview';
 import UpdateAvailableBanner from './components/UpdateAvailableBanner';
 import { useContextMenuShortcuts } from './lib/useContextMenu';
-import { useStore, applyTheme, type ToastEntry, type Route } from './store';
+import { useStore, applyTheme, type ToastEntry, type Route, type ScreenMode } from './store';
 import { getPayloadKind } from './lib/payloadKind';
 import { cn } from './lib/cn';
 import { useFeedbackJob } from './hooks/useFeedbackJob';
@@ -43,11 +39,16 @@ export default function App(): JSX.Element {
   const startVersionPoller = useStore((s) => s.startVersionPoller);
   const stopVersionPoller = useStore((s) => s.stopVersionPoller);
 
-  // Screening mode for the Scrub screen. Session-local: the web settings API does
-  // not expose a screening mode (see ScrubSend.tsx header). Held here so it
-  // survives route changes; Enforce is the recommended default. When the settings
-  // API later surfaces a real mode, lift this into the store.
-  const [mode, setMode] = useState<ScreenMode>('enforce');
+  // Screening mode now lives in the Zustand store (store.mode / store.setMode) so
+  // the Scrub screen and the Settings radio group share ONE source of truth.
+  // Client-side only — there is no /api/settings mode field (see store ScreenMode
+  // docs). setMode re-runs refreshScrub so the Scrub view updates live.
+  const mode = useStore((s) => s.mode);
+  const setMode = useStore((s) => s.setMode);
+
+  // Vocabulary search query — lifted here so the Shell `headerRight` search input
+  // can feed the routed `<VocabularyPage>` body (they are siblings inside Shell).
+  const [vocabQuery, setVocabQuery] = useState('');
 
   // Enable feedback job polling hook (no return value).
   useFeedbackJob();
@@ -121,7 +122,13 @@ export default function App(): JSX.Element {
         {/* Global update strip — slim, sits above the routed screen. Self-hides
             when no update is available or the current version was dismissed. */}
         <UpdateAvailableBanner />
-        <RoutedScreen route={route} mode={mode} setMode={setMode} />
+        <RoutedScreen
+          route={route}
+          mode={mode}
+          setMode={setMode}
+          vocabQuery={vocabQuery}
+          setVocabQuery={setVocabQuery}
+        />
       </div>
 
       {/* Global overlays */}
@@ -153,43 +160,22 @@ export default function App(): JSX.Element {
 }
 
 /**
- * Shared header-right cluster — Claude status, server health, and send-feedback.
- * Still used by the routes whose real screens land in Engineer-C2 (Vocabulary,
- * Settings). The Scrub and Review routes now supply their own per-screen header
- * controls instead.
- */
-function GlobalHeaderControls(): JSX.Element {
-  const setFeedbackOpen = useStore((s) => s.setFeedbackOpen);
-  return (
-    <>
-      <KeyStatus />
-      <HealthDot />
-      <button
-        type="button"
-        onClick={() => setFeedbackOpen(true)}
-        className="flex items-center gap-1.5 rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-text-dim hover:bg-surface-3 hover:text-text"
-        title="Send feedback — files a GitHub issue"
-        aria-label="Send feedback"
-      >
-        <MessageSquareWarning className="h-3.5 w-3.5" /> send feedback
-      </button>
-    </>
-  );
-}
-
-/**
- * Screen router. Scrub & Review render their real bodies (Engineer-C1) with
- * per-screen controls moved into the Shell `headerRight`. Vocabulary & Settings
- * keep placeholder bodies + the shared global controls until Engineer-C2.
+ * Screen router. Every route renders its real body with per-screen controls in
+ * the Shell `headerRight`: Scrub (mode segmented control), Review (judge chip),
+ * Vocabulary (search + Export). Settings needs no header controls.
  */
 function RoutedScreen({
   route,
   mode,
   setMode,
+  vocabQuery,
+  setVocabQuery,
 }: {
   route: Route;
   mode: ScreenMode;
   setMode: (m: ScreenMode) => void;
+  vocabQuery: string;
+  setVocabQuery: (q: string) => void;
 }): JSX.Element {
   switch (route) {
     case 'review':
@@ -208,9 +194,9 @@ function RoutedScreen({
         <Shell
           title="Vocabulary"
           subtitle="Every value you've tokenized — stored locally in SQLite, never synced."
-          headerRight={<GlobalHeaderControls />}
+          headerRight={<VocabHeaderRight query={vocabQuery} setQuery={setVocabQuery} />}
         >
-          <ScreenPlaceholder name="Vocabulary" />
+          <VocabularyPage query={vocabQuery} />
         </Shell>
       );
     case 'settings':
@@ -218,9 +204,8 @@ function RoutedScreen({
         <Shell
           title="Settings"
           subtitle="Modes, LLM judge, updates, customer names, and data."
-          headerRight={<GlobalHeaderControls />}
         >
-          <ScreenPlaceholder name="Settings" />
+          <SettingsPage />
         </Shell>
       );
     case 'scrub':
@@ -236,58 +221,6 @@ function RoutedScreen({
         </Shell>
       );
   }
-}
-
-/** Temporary body for routes whose screens land in Engineer-C2. */
-function ScreenPlaceholder({ name }: { name: string }): JSX.Element {
-  return (
-    <div className="flex h-full items-center justify-center">
-      <div className="ps-panel max-w-md p-6 text-center">
-        <p className="text-sm font-semibold text-text">{name}</p>
-        <p className="mt-1.5 text-xs text-text-dim">Coming in Engineer-C2.</p>
-      </div>
-    </div>
-  );
-}
-
-function KeyStatus(): JSX.Element {
-  const settings = useStore((s) => s.settings);
-  if (!settings) {
-    return (
-      <span className="text-[11px] uppercase tracking-wider text-text-faint">loading…</span>
-    );
-  }
-  const cc = settings.claude_code;
-  return (
-    <span
-      className={cn(
-        'flex items-center gap-1 text-[11px] uppercase tracking-wider',
-        cc.found ? 'text-ok' : 'text-danger',
-      )}
-      title={cc.found ? `Claude Code ${cc.version} on PATH` : 'Claude Code not found'}
-    >
-      {cc.found ? (
-        <CheckCircle2 className="h-3 w-3" />
-      ) : (
-        <AlertCircle className="h-3 w-3" />
-      )}
-      claude: {cc.found ? cc.version ?? 'ok' : 'missing'}
-    </span>
-  );
-}
-
-function HealthDot(): JSX.Element {
-  const health = useStore((s) => s.health);
-  const ok = health?.ok === true;
-  return (
-    <span
-      className="flex items-center gap-1 text-[11px] uppercase tracking-wider text-text-faint"
-      title={ok ? 'server reachable' : 'server unreachable'}
-    >
-      <CircleDot className={cn('h-3 w-3', ok ? 'text-ok' : 'text-danger')} />
-      {ok ? 'online' : 'offline'}
-    </span>
-  );
 }
 
 function Toast({

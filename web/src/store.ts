@@ -92,6 +92,23 @@ export type FeedbackJobState = {
 
 export type PreviewMode = 'source' | 'rendered';
 
+/**
+ * Screening mode for the Scrub screen + Settings radio group.
+ *
+ * IMPORTANT (provenance): there is NO persisted backend endpoint for this. The
+ * server's `Mode` (src/config.ts) is not surfaced through `/api/settings` —
+ * `SettingsView`/`SettingsPatch` carry only model / system_prompt /
+ * update_channel / update_manifest_url / claude_code. Per the "verify names,
+ * never fabricate an API call" rule, mode lives CLIENT-SIDE ONLY here so the
+ * Scrub screen and the Settings radio group share a single source of truth.
+ * When the settings API later exposes a real mode, wire `setMode` to it.
+ *
+ * - observe:  detect + tokenize, but never block on a credential.
+ * - enforce:  block send while a credential is present (recommended default).
+ * - disabled: text passes through untouched (no tokens).
+ */
+export type ScreenMode = 'observe' | 'enforce' | 'disabled';
+
 /** Active theme — drives the root `theme-*` class and CSS custom properties. */
 export type Theme = 'dark' | 'light';
 
@@ -257,6 +274,11 @@ type State = {
   tokenMapOpen: boolean;
   /** Active theme — 'dark' (default) or 'light'. Persisted to localStorage('ps-theme'). */
   theme: Theme;
+  /**
+   * Screening mode for Scrub & Settings. Client-side only — no backend endpoint
+   * (see ScreenMode docs). Not persisted across reloads; defaults to 'enforce'.
+   */
+  mode: ScreenMode;
   /** Active top-level route for the Flow shell. Reflected in location.hash. */
   route: Route;
   /** Send-feedback dialog open/closed. Not persisted — ephemeral per session. */
@@ -308,6 +330,12 @@ type State = {
   setTokenMapOpen: (o: boolean) => void;
   /** Set the active theme — persists to localStorage and applies the root class. */
   setTheme: (t: Theme) => void;
+  /**
+   * Set the screening mode and re-run the current scrub so the Scrub screen
+   * reflects the new mode immediately (Enforce blocks credentials; Disabled
+   * passes through). Client-side only — see ScreenMode docs.
+   */
+  setMode: (m: ScreenMode) => void;
   /** Set the active route — updates location.hash to `#/<route>`. */
   setRoute: (r: Route) => void;
   setFeedbackOpen: (o: boolean) => void;
@@ -492,6 +520,7 @@ export const useStore = create<State>((set, get) => {
   previewModeUserOverrode: false,
   tokenMapOpen: readLsTokenMapOpen(),
   theme: readLsTheme(),
+  mode: 'enforce',
   route: readHashRoute(),
   feedbackOpen: false,
 
@@ -542,6 +571,13 @@ export const useStore = create<State>((set, get) => {
     writeLs(LS_THEME, t);
     applyThemeClass(t);
     set({ theme: t });
+  },
+
+  setMode: (m) => {
+    set({ mode: m });
+    // Mode affects the scrub view (Enforce blocks credentials; Disabled passes
+    // through). Re-run the current scrub so the Scrub screen updates live.
+    void get().refreshScrub();
   },
 
   setRoute: (r) => {

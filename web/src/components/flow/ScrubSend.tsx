@@ -16,12 +16,13 @@
  *
  * Screening mode (Observe / Enforce / Disabled): the web SettingsView/SettingsPatch
  * API does NOT expose a screening mode (the server `Mode` in src/config.ts is not
- * surfaced through /api/settings). Per the "verify names, don't guess" rule we do
- * NOT invent a store field. The segmented control is session-local UI state here;
- * it gates the credential-block UX exactly as the spec requires (Enforce blocks
- * send on a credential; Observe/Disabled do not). When the settings API later
- * exposes a real mode, C2 lifts `mode`/`setMode` into the store and this control
- * binds to it unchanged.
+ * surfaced through /api/settings). Per the "verify names, never fabricate an API
+ * call" rule we keep it CLIENT-SIDE. As of Engineer-C2 it is lifted into the
+ * Zustand store (store.mode / store.setMode) so this screen and the Settings
+ * radio group share ONE source of truth; setMode re-runs refreshScrub. The
+ * segmented control here writes store.setMode. It gates the credential-block UX
+ * (Enforce blocks send on a credential; Observe/Disabled do not). When the
+ * settings API later exposes a real mode, wire setMode to it.
  */
 import {
   useCallback,
@@ -53,12 +54,9 @@ import { getCategoryInlineStyles, getCategoryHue } from '../../lib/colors';
 import { categoryLabel } from '../../lib/categories';
 import { deanonymize, type TokenLike } from '../../lib/deanon';
 import type { Token } from '../../api';
+import type { ScreenMode } from '../../store';
 
 const DEBOUNCE_MS = 200; // matches Composer.tsx
-
-/** Screening mode — mirrors the server `Mode` shape (src/config.ts). Session-local
- * until the settings API exposes it; see file header. */
-type ScreenMode = 'observe' | 'enforce' | 'disabled';
 
 // ── run splitting (ported verbatim from PreviewPane.tsx) ─────────────────────
 type Run =
