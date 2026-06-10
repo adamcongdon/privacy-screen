@@ -206,8 +206,8 @@ export default function App(): JSX.Element {
       {/* Feedback job pill (fixed top-right) */}
       <FeedbackJobPill />
 
-      {/* Toast stack */}
-      <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-80 flex-col gap-2">
+      {/* Toast stack — z-[60] keeps toasts visible above modal dialogs (Radix Dialog content sits at z-50). */}
+      <div className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2">
         {toasts.map((t) => (
           <Toast key={t.id} toast={t} onDismiss={() => dismissToast(t.id)} />
         ))}
