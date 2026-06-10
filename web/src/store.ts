@@ -27,6 +27,9 @@ import {
   type ChatMessage,
   type InducedPatternDto,
   type JudgeStatus,
+  type XlsxInspectionEntry,
+  type XlsxSheetInspection,
+  type XlsxCommitOverrides,
 } from './api';
 
 export type FileChip = {
@@ -52,6 +55,39 @@ export type ToastEntry = {
   id: number;
   kind: 'info' | 'success' | 'error';
   message: string;
+};
+
+/**
+ * Pending xlsx review state — #23 Segment 3C3.
+ *
+ * Set by `addFiles` when the server returns an `XlsxInspectionEntry`. The
+ * `XlsxColumnReview` modal renders iff this is non-null. Cleared on commit
+ * success or explicit cancel.
+ *
+ * **Concurrency policy**: only one review may be active at a time. If a
+ * user drops multiple xlsx files, the first becomes the active review and
+ * the rest are toasted as "ignored — review the current one first". This
+ * keeps the UX linear and avoids juggling staged uploads in the store; a
+ * dropped xlsx that wasn't shown is also dropped server-side once the
+ * staging TTL expires (~5 min).
+ */
+export type PendingXlsx = {
+  uploadId: string;
+  fileName: string;
+  size: number;
+  sheets: XlsxSheetInspection[];
+};
+
+export type PendingXlsxPayload = PendingXlsx;
+
+// Async feedback job types — polled by the UI to surface filing progress.
+export type JobStatus = 'queued' | 'drafting' | 'filing' | 'done' | 'error';
+export type FeedbackJobState = {
+  jobId: string;
+  status: JobStatus;
+  issueNumber?: number;
+  issueUrl?: string;
+  error?: string;
 };
 
 export type PreviewMode = 'source' | 'rendered';
@@ -124,6 +160,14 @@ type State = {
   credentialSnippets: string[];
   isScrubbing: boolean;
   scrubError: string | null;
+  /**
+   * True while addFiles is in-flight to the server. Used to gate the
+   * FileDropZone against concurrent uploads — without this guard a second
+   * drop fires while the first POST /api/files is still resolving, the
+   * state updates interleave, and the user sees the second drop appear
+   * to do nothing (issue #37).
+   */
+  isUploading: boolean;
 
   // Conversation
   messages: SessionMessage[];
@@ -174,6 +218,12 @@ type State = {
 
   // Toasts
   toasts: ToastEntry[];
+
+  // Active async feedback job (polled state from the backend)
+  activeFeedbackJob: FeedbackJobState | null;
+
+  /** Pending xlsx column review — null when no xlsx awaiting commit (#23). */
+  pendingXlsx: PendingXlsx | null;
 
   // ── actions ──────────────────────────────────────────────────────────────
   setComposerText: (t: string) => void;
@@ -237,6 +287,23 @@ type State = {
 
   pushToast: (kind: ToastEntry['kind'], message: string) => void;
   dismissToast: (id: number) => void;
+
+  // Async feedback job actions
+  startFeedbackJob: (jobId: string) => void;
+  setFeedbackJobState: (state: FeedbackJobState) => void;
+  clearFeedbackJob: () => void;
+
+  // Xlsx review actions (#23)
+  startXlsxReview: (payload: PendingXlsxPayload) => void;
+  clearXlsxReview: () => void;
+  /**
+   * POST /api/files/xlsx/commit using the active pendingXlsx.uploadId + the
+   * caller-supplied overrides. On 200, triggers a browser download of the
+   * scrubbed bytes via a synthetic anchor, toasts success, and clears the
+   * review. On error: toasts and leaves pendingXlsx intact so the user can
+   * adjust selections and retry.
+   */
+  commitXlsxReview: (overrides: XlsxCommitOverrides) => Promise<void>;
 };
 
 // Module-level so the AbortController survives state recreations and store
@@ -334,6 +401,7 @@ export const useStore = create<State>((set, get) => {
   hasCredentials: false,
   credentialSnippets: [],
   isScrubbing: false,
+  isUploading: false,
   scrubError: null,
 
   messages: [],
@@ -364,6 +432,12 @@ export const useStore = create<State>((set, get) => {
   settingsDeepLink: null,
 
   toasts: [],
+
+    // Active async feedback job, polled by useFeedbackJob
+    activeFeedbackJob: null,
+
+    // No xlsx awaiting column review at boot (#23).
+    pendingXlsx: null,
 
   setComposerText: (t) => set({ composerText: t }),
   setShowRawTokens: (v) => set({ showRawTokens: v }),
@@ -409,6 +483,10 @@ export const useStore = create<State>((set, get) => {
 
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 
+  startFeedbackJob: (jobId) => set({ activeFeedbackJob: { jobId, status: 'queued' } }),
+  setFeedbackJobState: (state) => set({ activeFeedbackJob: state }),
+  clearFeedbackJob: () => set({ activeFeedbackJob: null }),
+
   buildPayload: (useOriginal = false) => {
     const { composerText, files } = get();
     const parts: string[] = [];
@@ -426,44 +504,106 @@ export const useStore = create<State>((set, get) => {
   addFiles: async (incoming) => {
     const list = Array.from(incoming as ArrayLike<File>);
     if (list.length === 0) return;
+    // Guard against concurrent uploads (issue #37). Without this, a fast
+    // second drop races the first POST /api/files: the server log shows
+    // only the first request, the second appears to hang, and the UI never
+    // updates because state writes from the two `set()` calls interleave.
+    // Surfacing a toast also makes the rejection visible — silence was the
+    // original failure mode.
+    if (get().isUploading) {
+      get().pushToast('info', 'still uploading the previous batch — try again in a moment');
+      return;
+    }
+    set({ isUploading: true });
     try {
       const res = await api.uploadFiles(list);
+
+      // Partition: xlsx-inspection entries route to the review modal; everything
+      // else (text + error rows) flows down the existing FileChip path.
+      const xlsxEntries: XlsxInspectionEntry[] = [];
+      const textEntries: UploadedFile[] = [];
+      for (const entry of res.files) {
+        if ('kind' in entry && entry.kind === 'xlsx-inspection') {
+          xlsxEntries.push(entry);
+        } else {
+          // Discriminator absent → text-like UploadedFile (success or error row).
+          textEntries.push(entry as UploadedFile);
+        }
+      }
+
+      // ── Text path (unchanged behavior) ────────────────────────────────────
       const chips: FileChip[] = [];
       const idBase = Date.now();
       let i = 0;
       const newTokens: Token[] = [];
-      for (const u of res.files) {
+      for (const u of textEntries) {
         const id = `f${idBase}-${i++}`;
         chips.push(fileChipFromUploaded(u, id));
         if (u.tokens) newTokens.push(...u.tokens);
       }
-      set((s) => ({
-        files: [...s.files, ...chips],
-        tokenUnion: mergeTokenUnion(s.tokenUnion, newTokens),
-      }));
-      // Refresh scrub (skipJudge=true) so preview updates without double-firing
-      // the judge — we fire it below using the upload response data directly.
-      void get().refreshScrub({ skipJudge: true });
-      // Fire judge for each clean file using the server's upload response data.
-      // Skip errored and credential chips; `?? []` handles absent token arrays.
-      const judgeChips = chips.filter(
-        (c) => !c.error && !c.hasCredentials && c.scrubbed && c.scrubbed.length >= MIN_JUDGE_PAYLOAD,
-      );
-      for (const chip of judgeChips) {
-        api.judgePost(chip.scrubbed!, chip.tokens ?? []);
+      if (chips.length > 0) {
+        set((s) => ({
+          files: [...s.files, ...chips],
+          tokenUnion: mergeTokenUnion(s.tokenUnion, newTokens),
+        }));
+        // Refresh scrub (skipJudge=true) so preview updates without double-firing
+        // the judge — we fire it below using the upload response data directly.
+        void get().refreshScrub({ skipJudge: true });
+        // Fire judge for each clean file using the server's upload response data.
+        const judgeChips = chips.filter(
+          (c) => !c.error && !c.hasCredentials && c.scrubbed && c.scrubbed.length >= MIN_JUDGE_PAYLOAD,
+        );
+        for (const chip of judgeChips) {
+          api.judgePost(chip.scrubbed!, chip.tokens ?? []);
+        }
+        if (judgeChips.length > 0) {
+          set({ isJudging: true });
+          startJudgePoller();
+        }
+        for (const chip of chips) {
+          if (chip.error) get().pushToast('error', `${chip.name}: ${chip.error}`);
+          else if (chip.hasCredentials)
+            get().pushToast('error', `${chip.name}: credential detected — review before sending`);
+          else get().pushToast('success', `${chip.name} scrubbed (${chip.size}B)`);
+        }
       }
-      if (judgeChips.length > 0) {
-        set({ isJudging: true });
-        startJudgePoller();
-      }
-      for (const chip of chips) {
-        if (chip.error) get().pushToast('error', `${chip.name}: ${chip.error}`);
-        else if (chip.hasCredentials)
-          get().pushToast('error', `${chip.name}: credential detected — review before sending`);
-        else get().pushToast('success', `${chip.name} scrubbed (${chip.size}B)`);
+
+      // ── Xlsx path (#23 Segment 3C3) ───────────────────────────────────────
+      // Surface the first xlsx as the active review. If the user already has a
+      // pending review (e.g. they dropped xlsx files in back-to-back batches),
+      // skip even the first of this batch — they need to resolve the in-flight
+      // one first. Extras in either case get a toast so silence is impossible.
+      if (xlsxEntries.length > 0) {
+        const already = get().pendingXlsx !== null;
+        if (already) {
+          for (const x of xlsxEntries) {
+            get().pushToast(
+              'info',
+              `${x.name}: xlsx queued — finish the current review first`,
+            );
+          }
+        } else {
+          const [first, ...rest] = xlsxEntries;
+          if (first) {
+            get().startXlsxReview({
+              uploadId: first.uploadId,
+              fileName: first.name,
+              size: first.size,
+              sheets: first.sheets,
+            });
+          }
+          for (const x of rest) {
+            get().pushToast(
+              'info',
+              `${x.name}: additional xlsx ignored — review the current one first`,
+            );
+          }
+        }
       }
     } catch (err) {
       get().pushToast('error', `upload failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      set({ isUploading: false });
     }
   },
 
@@ -881,4 +1021,70 @@ export const useStore = create<State>((set, get) => {
     }
     set({ isStreaming: false });
   },
+
+  // ── Xlsx review (#23 Segment 3C3) ─────────────────────────────────────────
+
+  startXlsxReview: (payload) => set({ pendingXlsx: payload }),
+  clearXlsxReview: () => set({ pendingXlsx: null }),
+
+  commitXlsxReview: async (overrides) => {
+    const pending = get().pendingXlsx;
+    if (!pending) {
+      // Defensive — UI should not call this without a pending review, but if
+      // it does we surface it rather than silently dropping.
+      get().pushToast('error', 'no xlsx pending review');
+      return;
+    }
+    try {
+      const r = await api.commitXlsx(pending.uploadId, overrides);
+      triggerXlsxDownload(r.base64, r.fileName);
+      get().pushToast(
+        'success',
+        `scrubbed ${pending.fileName} — ${r.summary.cellsScrubbed} cells`,
+      );
+      get().clearXlsxReview();
+    } catch (err) {
+      // Leave pendingXlsx intact so the user can adjust selections and retry.
+      get().pushToast(
+        'error',
+        `xlsx commit failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    }
+  },
 }); });
+
+/**
+ * Browser-side download helper for the xlsx commit response.
+ *
+ * Decodes the base64 payload into a Uint8Array, wraps it in an OOXML-typed
+ * Blob, and uses a synthetic `<a download>` click to surface the file in the
+ * user's default download location. Revokes the object URL after the click
+ * so we don't leak per-commit memory if the user processes many workbooks
+ * in a single session.
+ *
+ * Kept module-private (not exported on the store) because it has no React
+ * surface — pure DOM side effect.
+ */
+function triggerXlsxDownload(base64: string, fileName: string): void {
+  // Defensive: skip in non-browser contexts (tests, SSR). The store actions
+  // that call this only run in the browser, but a unit test that exercises
+  // `commitXlsxReview` against a mocked api should not blow up on document.
+  if (typeof document === 'undefined') return;
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  // Some browsers require the anchor to be in the DOM for `.click()` to fire
+  // a download in restrictive contexts (Safari, some Chromium variants).
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}

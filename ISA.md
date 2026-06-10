@@ -3,11 +3,11 @@ project: privacy-screen
 task: "Issue #16: periodic auto-update poll + global update-available banner"
 slug: issue-16-auto-update
 effort: E3
-phase: in_progress
-progress: 0/15
+phase: complete
+progress: 15/15
 mode: standard
 started: 2026-06-09T16:00:00Z
-updated: 2026-06-09T16:00:00Z
+updated: 2026-06-09T19:00:00Z
 algorithm_version: 6.3.0
 ---
 
@@ -125,22 +125,35 @@ Wire Engineer-A's auto-update primitives into the running app shell: render the 
 
 ## Verification
 
-*(Populated by Engineer-B after `bun lint` / `bun test` / `bun run web:build` complete. Then QA + UI + Pentester gates extend this section before PR opens.)*
+All 15 ISC criteria verified across four commits on `ac-build`. Pipeline phases ran: Architect → Engineer-A → Engineer-B → 3× code-review (correctness/quality/efficiency) → simplify polish → QATester + UIReviewer + Silas (pentester) → validation hardening pass → green.
 
-- [ ] ISC-1..ISC-4 — verify by re-reading `web/src/store.ts` lines 68–78, 219–222, 684–714, and the passing `tests/update-poll.test.ts`.
-- [ ] ISC-5 — `git show <this-commit>:web/src/App.tsx` shows `useEffect(... [updateChannel, startVersionPoller, stopVersionPoller])`.
-- [ ] ISC-6 — same diff shows `<UpdateAvailableBanner />` immediately after `</header>`.
-- [ ] ISC-7..ISC-11 — covered by passing test suite (no new tests authored by Engineer-B; Engineer-A's tests carry the contract).
-- [ ] ISC-12 — channel-off invariant is enforced by `startVersionPoller`'s early-return + the App.tsx effect only calling start when channel is `stable`/`beta`. Hidden-tab early-return covers the second half.
-- [ ] ISC-13 — README contains `## Auto-update` H2 between `## Quick start — Hook` and `## What it covers`.
-- [ ] ISC-14 — this section, the frontmatter, and `## Issue #16 — Auto-Update` above all attest.
-- [ ] ISC-15 — `bun lint` exit 0; `bun test` 385+ pass / 6 skip / 0 fail (Engineer-A baseline preserved); `bun run web:build` exit 0; `git diff --stat package.json bun.lock` empty.
+- [x] ISC-1..ISC-4 — `web/src/store.ts` lines 68 (`VERSION_POLL_INTERVAL_MS`), 219–222 (store-type exports), 684–714 (start/stop/dismiss/visibility/channel guards); `tests/update-poll.test.ts` 14 tests green.
+- [x] ISC-5 — `web/src/App.tsx:92-97` `useEffect(..., [updateChannel, startVersionPoller, stopVersionPoller])`; starts on stable/beta, cleanup stops unconditionally.
+- [x] ISC-6 — `web/src/App.tsx:159` renders `<UpdateAvailableBanner />` immediately after `</header>` at line 154.
+- [x] ISC-7 — `UpdateAvailableBanner.tsx:32-33` early-return when `!versionInfo?.updateAvailable || !updateInfo?.version` or `dismissedUpdateVersion === updateInfo.version`.
+- [x] ISC-8 — LS key is `ps.dismissed-update-version` (simplify polish renamed from colon-style for convention consistency); written via `dismissUpdate` action.
+- [x] ISC-9 — Banner body sets `settingsDeepLink='update'` then opens drawer; `SettingsDrawer.tsx:68-76` scrolls `#update-section` (line 241) into view via `requestAnimationFrame` + `scrollIntoView`, then clears the deep link.
+- [x] ISC-10, ISC-11 — full test suite green (see Output values below).
+- [x] ISC-12 — channel-off invariant verified at three independent layers: server `routes/version.ts:36-45` short-circuit, client `store.ts:689-690` channel-guard, test `update-poll.test.ts:102` asserts zero fetch over 8 ticks. Hardening: HTTPS-only enforcement in `safeManifestUrl()` + `redirect: 'error'` in `update-check.ts` so even an opted-in user can't be tricked into a plaintext or cross-origin beacon.
+- [x] ISC-13 — `README.md:30` `## Auto-update` section present (between `## Quick start — Hook` and `## What it covers`).
+- [x] ISC-14 — frontmatter `slug: issue-16-auto-update`, this section, and `## Issue #16 — Auto-Update` above all present; prior run archived under `## Prior Runs`.
+- [x] ISC-15 — `bun lint` exit 0; `bun test` 390 pass / 6 skip / 0 fail across 23 files; `bun run web:build` exit 0; `git diff origin/dev..ac-build -- package.json bun.lock` empty.
 
-**Output values to fill at close:**
-- `bun lint` exit: TBD
-- `bun test` final: TBD (target: 385+ pass, 6 skip, 0 fail)
-- `bun run web:build` exit: TBD
-- PR URL: TBD (orchestrator opens after QA + UI + Pentester gates).
+**Closing values:**
+- `bun lint` exit: 0
+- `bun test` final: 390 pass / 6 skip / 0 fail (782 expect() calls, 3.29s, 23 files)
+- `bun run web:build` exit: 0 (`dist/assets/index-*.js` 318.16 KB / 98.86 KB gzip)
+- PR URL: https://github.com/adamcongdon/privacy-screen/pull/18
+
+**Commits on `ac-build`:**
+- `9bd9acb` — feat(#16): version poller + UpdateAvailableBanner (Engineer-A)
+- `a009f61` — feat(#16): wire poller + banner into App; docs + ISA (Engineer-B)
+- `38ba0e2` — refactor(#16): simplify polish — LS key convention + banner narrowing
+- `41f4ef0` — fix(#16): UI a11y + manifest egress hardening from validation phase
+
+**Validation findings resolved in `41f4ef0`:**
+- UIReviewer HIGH — banner contrast 3.76:1 → ~5.1:1 (emerald-600 → emerald-700); body button focus-ring restored.
+- Pentester MED — `redirect: 'error'` on the manifest GET; `safeManifestUrl()` refuses non-https + malformed URLs.
 
 ## Prior Runs
 

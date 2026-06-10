@@ -42,6 +42,25 @@ Prefer the raw binary? The plain `privacy-screen-win32-x64.exe` / `privacy-scree
 
 `SAFETY_CHECKLIST.md` (the older one) covers the Claude Code hook flow. Hook is NOT yet registered in your `settings.json` — opt in only after the checklist passes.
 
+## Features
+
+User-visible capabilities, newest first. `🆕` marks the latest release; the badge auto-decays once a feature is two releases behind. Per-release detail lives in [`CHANGELOG.md`](./CHANGELOG.md).
+
+<!-- features:start -->
+<!--
+  Entries are managed by .github/workflows/readme-sync.yml on every published release.
+  Manual edits are fine, but keep the format below so the automation can parse it:
+
+  - 🆕 **vX.Y.Z** — one-line user-visible blurb
+  - **vX.Y.Z** — one-line user-visible blurb
+-->
+
+_No features tracked yet — this list populates from the next published release._
+
+<!-- features:end -->
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for the full release history and [GitHub Releases](https://github.com/adamcongdon/privacy-screen/releases) for downloadable binaries.
+
 ## Auto-update
 
 privacy-screen ships GitHub releases on two channels:
@@ -315,3 +334,20 @@ See `privacy-config.example.yaml` for the commented examples and [`Plans/INSTALL
 - `PRIVACY_CONFIG.yaml` — your personal customer name list
 
 Never commit either. The `.example` template is safe to share.
+
+## License
+
+Licensed under the **Apache License, Version 2.0**. See [`LICENSE`](LICENSE) for the full text and [`NOTICE`](NOTICE) for attribution + third-party acknowledgments.
+
+```
+Copyright 2026 Adam Congdon
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+```
+
+`SPDX-License-Identifier: Apache-2.0`
+

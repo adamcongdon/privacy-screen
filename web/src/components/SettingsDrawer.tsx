@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import {
   Settings as SettingsIcon,
-  X,
   Terminal,
   Check,
   AlertTriangle,
@@ -12,6 +11,7 @@ import {
 import { useStore } from '../store';
 import { api } from '../api';
 import { cn } from '../lib/cn';
+import { DialogHeader, ScrollableDialogBody, DialogFooter } from './ui/DialogScroll';
 
 // Common aliases accepted by `claude --model`.
 const MODEL_CHOICES = [
@@ -154,27 +154,19 @@ export function SettingsDrawer(): JSX.Element {
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm animate-fade-in" />
-        <Dialog.Content className="fixed right-0 top-0 z-50 flex h-full w-full max-w-md flex-col gap-4 border-l border-zinc-800 bg-zinc-950 p-5 shadow-2xl animate-slide-in-right">
-          <div className="flex items-center justify-between">
-            <Dialog.Title className="text-sm font-semibold uppercase tracking-wider text-zinc-200">
-              Settings
-            </Dialog.Title>
-            <Dialog.Close asChild>
-              <button
-                type="button"
-                className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
-                aria-label="close"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </Dialog.Close>
-          </div>
-          <Dialog.Description className="text-xs text-zinc-500">
-            Inference runs through the local <code className="font-mono">claude</code> CLI —
-            no API key needed. Authentication piggybacks on your <code className="font-mono">claude login</code> session.
-          </Dialog.Description>
+        <Dialog.Content className="fixed right-0 top-0 z-50 flex h-full w-full max-w-md flex-col border-l border-zinc-800 bg-zinc-950 shadow-2xl animate-slide-in-right">
+          <DialogHeader
+            title="Settings"
+            description={
+              <>
+                Inference runs through the local <code className="font-mono">claude</code> CLI —
+                no API key needed. Authentication piggybacks on your <code className="font-mono">claude login</code> session.
+              </>
+            }
+          />
 
-          {/* Claude Code status */}
+          <ScrollableDialogBody>
+            {/* Claude Code status */}
           <div
             className={cn(
               'flex items-start gap-2 rounded-md border px-3 py-2 text-xs',
@@ -446,7 +438,9 @@ export function SettingsDrawer(): JSX.Element {
             </p>
           </section>
 
-          <div className="mt-auto flex items-center justify-end gap-2 border-t border-zinc-800 pt-3">
+          </ScrollableDialogBody>
+
+          <DialogFooter>
             <Dialog.Close asChild>
               <button
                 type="button"
@@ -468,7 +462,7 @@ export function SettingsDrawer(): JSX.Element {
             >
               {saving ? 'saving…' : 'Save'}
             </button>
-          </div>
+          </DialogFooter>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
