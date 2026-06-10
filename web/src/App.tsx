@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   CircleDot,
   AlertCircle,
@@ -7,6 +7,8 @@ import {
 } from 'lucide-react';
 import { Rail } from './components/flow/Rail';
 import { Shell } from './components/flow/Shell';
+import { ScrubSend, ScrubHeaderRight, type ScreenMode } from './components/flow/ScrubSend';
+import { ReviewPage, ReviewHeaderRight } from './components/flow/ReviewPage';
 import { ContextMenu } from './components/ContextMenu';
 import { CustomCategoryDialog } from './components/CustomCategoryDialog';
 import { FeedbackDialog } from './components/FeedbackDialog';
@@ -40,6 +42,12 @@ export default function App(): JSX.Element {
   const updateChannel = useStore((s) => s.settings?.update_channel);
   const startVersionPoller = useStore((s) => s.startVersionPoller);
   const stopVersionPoller = useStore((s) => s.stopVersionPoller);
+
+  // Screening mode for the Scrub screen. Session-local: the web settings API does
+  // not expose a screening mode (see ScrubSend.tsx header). Held here so it
+  // survives route changes; Enforce is the recommended default. When the settings
+  // API later surfaces a real mode, lift this into the store.
+  const [mode, setMode] = useState<ScreenMode>('enforce');
 
   // Enable feedback job polling hook (no return value).
   useFeedbackJob();
@@ -113,7 +121,7 @@ export default function App(): JSX.Element {
         {/* Global update strip — slim, sits above the routed screen. Self-hides
             when no update is available or the current version was dismissed. */}
         <UpdateAvailableBanner />
-        <RoutedScreen route={route} />
+        <RoutedScreen route={route} mode={mode} setMode={setMode} />
       </div>
 
       {/* Global overlays */}
@@ -146,8 +154,9 @@ export default function App(): JSX.Element {
 
 /**
  * Shared header-right cluster — Claude status, server health, and send-feedback.
- * Lived in the old single top bar; now passed into each screen's `Shell` so the
- * controls persist across routes. (Engineer-C may relocate per-screen controls.)
+ * Still used by the routes whose real screens land in Engineer-C2 (Vocabulary,
+ * Settings). The Scrub and Review routes now supply their own per-screen header
+ * controls instead.
  */
 function GlobalHeaderControls(): JSX.Element {
   const setFeedbackOpen = useStore((s) => s.setFeedbackOpen);
@@ -169,23 +178,29 @@ function GlobalHeaderControls(): JSX.Element {
 }
 
 /**
- * Screen router. Each route renders a `Shell`-wrapped placeholder for now —
- * Engineer-C fills in the real Scrub / Review / Vocabulary / Settings bodies.
- * Titles, subtitles, and the trust band are wired here per the handoff spec.
+ * Screen router. Scrub & Review render their real bodies (Engineer-C1) with
+ * per-screen controls moved into the Shell `headerRight`. Vocabulary & Settings
+ * keep placeholder bodies + the shared global controls until Engineer-C2.
  */
-function RoutedScreen({ route }: { route: Route }): JSX.Element {
-  const headerRight = <GlobalHeaderControls />;
-
+function RoutedScreen({
+  route,
+  mode,
+  setMode,
+}: {
+  route: Route;
+  mode: ScreenMode;
+  setMode: (m: ScreenMode) => void;
+}): JSX.Element {
   switch (route) {
     case 'review':
       return (
         <Shell
           title="Review queue"
-          subtitle="Triage low-confidence spans before they're tokenized."
-          headerRight={headerRight}
+          subtitle="Confirm, allow, or ignore spans the detectors weren't sure about."
+          headerRight={<ReviewHeaderRight />}
           trust
         >
-          <ScreenPlaceholder name="Review queue" />
+          <ReviewPage />
         </Shell>
       );
     case 'vocab':
@@ -193,7 +208,7 @@ function RoutedScreen({ route }: { route: Route }): JSX.Element {
         <Shell
           title="Vocabulary"
           subtitle="Every value you've tokenized — stored locally in SQLite, never synced."
-          headerRight={headerRight}
+          headerRight={<GlobalHeaderControls />}
         >
           <ScreenPlaceholder name="Vocabulary" />
         </Shell>
@@ -203,7 +218,7 @@ function RoutedScreen({ route }: { route: Route }): JSX.Element {
         <Shell
           title="Settings"
           subtitle="Modes, LLM judge, updates, customer names, and data."
-          headerRight={headerRight}
+          headerRight={<GlobalHeaderControls />}
         >
           <ScreenPlaceholder name="Settings" />
         </Shell>
@@ -214,22 +229,22 @@ function RoutedScreen({ route }: { route: Route }): JSX.Element {
         <Shell
           title="Scrub & Send"
           subtitle="Paste sensitive text — it's tokenized before anything is sent."
-          headerRight={headerRight}
+          headerRight={<ScrubHeaderRight mode={mode} setMode={setMode} />}
           trust
         >
-          <ScreenPlaceholder name="Scrub & Send" />
+          <ScrubSend mode={mode} />
         </Shell>
       );
   }
 }
 
-/** Temporary body for routes whose screens land in Engineer-C. */
+/** Temporary body for routes whose screens land in Engineer-C2. */
 function ScreenPlaceholder({ name }: { name: string }): JSX.Element {
   return (
     <div className="flex h-full items-center justify-center">
       <div className="ps-panel max-w-md p-6 text-center">
         <p className="text-sm font-semibold text-text">{name}</p>
-        <p className="mt-1.5 text-xs text-text-dim">Coming in Engineer-C.</p>
+        <p className="mt-1.5 text-xs text-text-dim">Coming in Engineer-C2.</p>
       </div>
     </div>
   );
