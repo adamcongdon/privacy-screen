@@ -32,6 +32,7 @@ import { serveStatic } from 'hono/bun';
 import { cors } from 'hono/cors';
 import { existsSync, statSync } from 'fs';
 import { join } from 'path';
+import pkg from '../package.json' with { type: 'json' };
 
 import { scrubRoute } from './routes/scrub';
 import { sendRoute } from './routes/send';
@@ -112,7 +113,7 @@ app.use(
   }),
 );
 
-app.get('/api/health', (c) => c.json({ ok: true, version: '1.0.0-app-m1' }));
+app.get('/api/health', (c) => c.json({ ok: true, version: pkg.version }));
 
 app.route('/api/scrub', scrubRoute);
 app.route('/api/send', sendRoute);
