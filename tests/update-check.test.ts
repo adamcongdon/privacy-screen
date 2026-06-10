@@ -215,6 +215,50 @@ describe('checkForUpdate', () => {
     expect(result).toBeNull();
   });
 
+  // Issue #34: beta-channel subscribers running a clean release of the same
+  // base must still see the latest beta (e.g. current 0.0.1 → manifest
+  // 0.0.1-beta.10 should be offered, because the user opted into beta).
+  test('beta channel — clean release sees matching-base beta as upgrade', async () => {
+    const betaManifest = manifest({ version: '0.0.1-beta.10', channel: 'beta' });
+    const result = await checkForUpdate('0.0.1', {
+      channel: 'beta',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(betaManifest),
+    });
+    expect(result).not.toBeNull();
+    expect(result?.version).toBe('0.0.1-beta.10');
+    expect(result?.channel).toBe('beta');
+  });
+
+  test('stable channel — clean release does NOT see matching-base beta (carve-out is beta-only)', async () => {
+    // Symmetric guard: the beta-channel carve-out must not leak into stable.
+    // A stable user on 1.0.0 must never be told to "upgrade" to 1.0.0-beta.X.
+    const betaManifest = manifest({ version: '1.0.0-beta.5', channel: 'beta' });
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(betaManifest),
+    });
+    // Either channel-mismatch or carve-out-not-applied — both must yield null.
+    expect(result).toBeNull();
+  });
+
+  test('beta channel — older clean release does NOT regress to lower-base beta', async () => {
+    // Current 1.1.0 (clean), manifest 1.0.0-beta.10. compareVersions returns -1
+    // because of major/minor difference; the carve-out requires SAME base, so
+    // this must NOT be offered as an "upgrade."
+    const betaManifest = manifest({ version: '1.0.0-beta.10', channel: 'beta' });
+    const result = await checkForUpdate('1.1.0', {
+      channel: 'beta',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(betaManifest),
+    });
+    expect(result).toBeNull();
+  });
+
   test('returns null on non-2xx response', async () => {
     const result = await checkForUpdate('1.0.0', {
       channel: 'stable',

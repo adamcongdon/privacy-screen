@@ -340,6 +340,76 @@ describe('scrubXlsx — per-upload overrides', () => {
     expect(readCell(s1, 2, 1)).toBe('alpha@invented-domain.test');
     expect(result.summary.columnsResolved['Sheet1::Email']).toBe('skip');
   });
+
+  // Issue #39 — custom column labels.
+  test('custom-label override force-mints with the user-supplied token type', async () => {
+    const buf = await buildDemoWorkbook();
+    const map = new ScrubMap();
+    const overrides: CommitOverrides = {
+      Sheet1: { Notes: { pattern: 'custom', label: 'JobName' } },
+    };
+    const result = await scrubXlsx(
+      buf, map, null,
+      { xlsx: defaultXlsxCfg, baseConfig: baseCfg },
+      overrides,
+    );
+    const wb = await loadWorkbook(result.scrubbedBuffer);
+    const s1 = wb.getWorksheet('Sheet1');
+    expect(s1).toBeDefined();
+    if (!s1) return;
+
+    // Every Notes cell becomes a {JOBNAME}/{JOBNAME_N} token.
+    expect(readCell(s1, 2, 3)).toMatch(/^\{JOBNAME(_\d+)?\}$/);
+    expect(readCell(s1, 3, 3)).toMatch(/^\{JOBNAME(_\d+)?\}$/);
+    expect(readCell(s1, 4, 3)).toMatch(/^\{JOBNAME(_\d+)?\}$/);
+
+    // Different cell contents must mint distinct tokens.
+    const n2 = readCell(s1, 2, 3);
+    const n3 = readCell(s1, 3, 3);
+    expect(n2).not.toBe(n3);
+
+    // Summary records the custom-prefixed label.
+    expect(result.summary.columnsResolved['Sheet1::Notes']).toBe('custom:JOBNAME');
+  });
+
+  test('repeated cell value under custom label reuses the same token', async () => {
+    const buf = await buildDemoWorkbook();
+    const map = new ScrubMap();
+    // The demo workbook has two identical adjacent cells in Notes? Use a
+    // direct map assertion instead — mint the same value twice and expect
+    // identical token. (Verifies ScrubMap reuse path is engaged.)
+    const overrides: CommitOverrides = {
+      Sheet1: { Notes: { pattern: 'custom', label: 'ServerName' } },
+    };
+    await scrubXlsx(
+      buf, map, null,
+      { xlsx: defaultXlsxCfg, baseConfig: baseCfg },
+      overrides,
+    );
+    // After scrub, mint the same raw value again — must return the same token
+    // because ScrubMap memoizes.
+    const before = map.mint('SERVERNAME', 'reach alpha@invented-domain.test before EOD').token;
+    const after = map.mint('SERVERNAME', 'reach alpha@invented-domain.test before EOD').token;
+    expect(after).toBe(before);
+    expect(before).toMatch(/^\{SERVERNAME(_\d+)?\}$/);
+  });
+
+  test('custom-label override with malformed label falls back to regex (defensive)', async () => {
+    const buf = await buildDemoWorkbook();
+    const map = new ScrubMap();
+    // The server route already rejects malformed labels at the boundary —
+    // this guards the scrubber's own defensive fallback in case a malformed
+    // override slips through programmatic callers.
+    const overrides: CommitOverrides = {
+      Sheet1: { Notes: { pattern: 'custom', label: '!!' } },
+    };
+    const result = await scrubXlsx(
+      buf, map, null,
+      { xlsx: defaultXlsxCfg, baseConfig: baseCfg },
+      overrides,
+    );
+    expect(result.summary.columnsResolved['Sheet1::Notes']).toBe('regex');
+  });
 });
 
 // ── scrubXlsx — sparse / empty cells ────────────────────────────────────────

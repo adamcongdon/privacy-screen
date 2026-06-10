@@ -46,11 +46,42 @@ const PATTERN_NAMES: readonly XlsxPatternName[] = [
   'UncPath', 'DomainUser', 'MAC', 'GUID',
 ];
 
-/** Override option value used in the column `<select>`. */
-type OverrideValue = XlsxPatternName | 'skip' | 'regex';
+/**
+ * Override option value used in the column `<select>`.
+ * Plain string union of pattern picks + 'custom' for user-defined labels (#39).
+ */
+type OverrideKind = XlsxPatternName | 'skip' | 'regex' | 'custom';
+
+/**
+ * One column's selection — pattern pick + (when kind === 'custom') the
+ * user-supplied label they'll force-mint with. Carrying both fields in the
+ * map keeps the editing UX trivial: the inline text input writes back via
+ * the same setSelections call as the `<select>`.
+ */
+type Selection = { kind: OverrideKind; label: string };
 
 /** Selections keyed `${sheetName}::${header}` so duplicates across sheets stay distinct. */
-type SelectionMap = Record<string, OverrideValue>;
+type SelectionMap = Record<string, Selection>;
+
+/**
+ * Same shape used by the server (`normalizeCustomLabel`): uppercase
+ * alphanumerics + underscores, length 2-24, must start with a letter. We
+ * preview the normalization in the input's hint so users see what their raw
+ * input becomes before they commit.
+ */
+const CUSTOM_LABEL_PREVIEW_MAX = 24;
+function previewCustomLabel(raw: string): string {
+  return raw
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, CUSTOM_LABEL_PREVIEW_MAX);
+}
+function isCustomLabelValid(raw: string): boolean {
+  const norm = previewCustomLabel(raw);
+  return norm.length >= 2 && /^[A-Z]/.test(norm);
+}
 
 function selectionKey(sheet: string, header: string): string {
   return `${sheet}::${header}`;
@@ -65,9 +96,9 @@ function selectionKey(sheet: string, header: string): string {
  * - `rule`/`heuristic` with a null resolvedPattern (shouldn't happen given the
  *   server's invariants but we handle defensively) → 'regex'.
  */
-function defaultSelection(col: XlsxColumnInspection): OverrideValue {
-  if (col.resolvedPattern !== null) return col.resolvedPattern;
-  return 'regex';
+function defaultSelection(col: XlsxColumnInspection): Selection {
+  if (col.resolvedPattern !== null) return { kind: col.resolvedPattern, label: '' };
+  return { kind: 'regex', label: '' };
 }
 
 function buildInitialSelections(sheets: XlsxSheetInspection[]): SelectionMap {
@@ -84,6 +115,10 @@ function buildInitialSelections(sheets: XlsxSheetInspection[]): SelectionMap {
  * Convert the flat selection map into the nested CommitOverrides shape the
  * server expects. Empty header strings are skipped because the server's
  * override validator treats them as a footgun (header keys must be addressable).
+ *
+ * For `kind: 'custom'` selections we normalize the label client-side too —
+ * keeps the wire payload consistent with what the server stores and lets the
+ * Scrub button's enabled-check use the same shape the server will accept.
  */
 function selectionsToOverrides(
   sheets: XlsxSheetInspection[],
@@ -91,12 +126,18 @@ function selectionsToOverrides(
 ): XlsxCommitOverrides {
   const out: XlsxCommitOverrides = {};
   for (const sheet of sheets) {
-    const perSheet: Record<string, { pattern: OverrideValue }> = {};
+    const perSheet: Record<string, XlsxCommitOverrides[string][string]> = {};
     for (const col of sheet.columns) {
       if (col.header === '') continue;
       const sel = selections[selectionKey(sheet.name, col.header)];
       if (sel === undefined) continue;
-      perSheet[col.header] = { pattern: sel };
+      if (sel.kind === 'custom') {
+        const label = previewCustomLabel(sel.label);
+        if (!label) continue; // skip invalid custom rows — server would reject anyway
+        perSheet[col.header] = { pattern: 'custom', label };
+      } else {
+        perSheet[col.header] = { pattern: sel.kind };
+      }
     }
     if (Object.keys(perSheet).length > 0) {
       out[sheet.name] = perSheet;
@@ -137,9 +178,12 @@ function ColumnRow({
 }: {
   sheetName: string;
   column: XlsxColumnInspection;
-  value: OverrideValue;
-  onChange: (next: OverrideValue) => void;
+  value: Selection;
+  onChange: (next: Selection) => void;
 }): JSX.Element {
+  const showCustom = value.kind === 'custom';
+  const labelPreview = showCustom ? previewCustomLabel(value.label) : '';
+  const customValid = showCustom ? isCustomLabelValid(value.label) : true;
   return (
     <tr className="border-t border-zinc-800/60">
       <td className="px-3 py-2 align-top">
@@ -156,19 +200,57 @@ function ColumnRow({
         </span>
       </td>
       <td className="px-3 py-2 align-top">
-        <select
-          value={value}
-          onChange={(e) => onChange(e.target.value as OverrideValue)}
-          aria-label={`Pattern for column ${column.header || '(empty)'} in sheet ${sheetName}`}
-          className="w-full rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1 font-mono text-[11px] text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
-          disabled={column.header === ''}
-        >
-          {PATTERN_NAMES.map((p) => (
-            <option key={p} value={p}>{p}</option>
-          ))}
-          <option value="regex">Regex fallback — scan each cell</option>
-          <option value="skip">Skip — leave column untouched</option>
-        </select>
+        <div className="flex flex-col gap-1">
+          <select
+            value={value.kind}
+            onChange={(e) =>
+              onChange({
+                kind: e.target.value as OverrideKind,
+                label: value.label,
+              })
+            }
+            aria-label={`Pattern for column ${column.header || '(empty)'} in sheet ${sheetName}`}
+            className="w-full rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1 font-mono text-[11px] text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+            disabled={column.header === ''}
+          >
+            {PATTERN_NAMES.map((p) => (
+              <option key={p} value={p}>{p}</option>
+            ))}
+            <option value="regex">Regex fallback — scan each cell</option>
+            <option value="skip">Skip — leave column untouched</option>
+            <option value="custom">Custom label…</option>
+          </select>
+          {showCustom && (
+            <div className="flex flex-col gap-0.5">
+              <input
+                type="text"
+                value={value.label}
+                onChange={(e) => onChange({ kind: 'custom', label: e.target.value })}
+                placeholder="e.g. ServerName, JobName"
+                maxLength={32}
+                aria-label={`Custom label for ${column.header || '(empty)'}`}
+                className={cn(
+                  'w-full rounded-md border bg-zinc-900/60 px-2 py-1 font-mono text-[11px] text-zinc-100 focus:outline-none focus:ring-2',
+                  customValid
+                    ? 'border-zinc-800 focus:ring-indigo-500/40'
+                    : 'border-rose-800 focus:ring-rose-500/40',
+                )}
+              />
+              <span
+                className={cn(
+                  'text-[10px] font-mono',
+                  customValid ? 'text-zinc-500' : 'text-rose-400',
+                )}
+              >
+                {value.label.length === 0
+                  ? 'token type required'
+                  : customValid
+                    ? `→ {${labelPreview}}`
+                    : 'must start with a letter, 2-24 chars'}
+              </span>
+            </div>
+          )}
+        </div>
       </td>
       <td className="px-3 py-2 align-top">
         <SourceBadge source={column.source} />
@@ -216,7 +298,7 @@ function XlsxColumnReviewInner({
   const [committing, setCommitting] = useState(false);
 
   // Per-column header (sheet-scoped). Stable per (sheet, header) pair.
-  const onChangeSelection = (sheet: string, header: string, next: OverrideValue): void => {
+  const onChangeSelection = (sheet: string, header: string, next: Selection): void => {
     setSelections((prev) => ({ ...prev, [selectionKey(sheet, header)]: next }));
   };
 
@@ -225,8 +307,18 @@ function XlsxColumnReviewInner({
     [pending.sheets],
   );
 
+  // Issue #39: block the Scrub button if any custom-labeled column has an
+  // invalid label. Submitting would 400 server-side — better to gray out the
+  // action and let the inline hint walk the user to a fix.
+  const customInvalid = useMemo(() => {
+    for (const sel of Object.values(selections)) {
+      if (sel.kind === 'custom' && !isCustomLabelValid(sel.label)) return true;
+    }
+    return false;
+  }, [selections]);
+
   const onSubmit = async (): Promise<void> => {
-    if (committing) return;
+    if (committing || customInvalid) return;
     setCommitting(true);
     try {
       const overrides = selectionsToOverrides(pending.sheets, selections);
@@ -303,7 +395,7 @@ function XlsxColumnReviewInner({
                               sheetName={sheet.name}
                               column={col}
                               value={selections[selectionKey(sheet.name, col.header)] ?? defaultSelection(col)}
-                              onChange={(next) => onChangeSelection(sheet.name, col.header, next)}
+                              onChange={(next: Selection) => onChangeSelection(sheet.name, col.header, next)}
                             />
                           ))}
                         </tbody>
@@ -330,10 +422,11 @@ function XlsxColumnReviewInner({
             <button
               type="button"
               onClick={() => void onSubmit()}
-              disabled={committing}
+              disabled={committing || customInvalid}
+              title={customInvalid ? 'Fix the invalid custom label first' : undefined}
               className={cn(
                 'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold',
-                committing
+                committing || customInvalid
                   ? 'cursor-not-allowed bg-zinc-800 text-zinc-500'
                   : 'bg-indigo-600 text-white hover:bg-indigo-500',
               )}

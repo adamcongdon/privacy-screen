@@ -169,8 +169,20 @@ export class VocabStore {
       .run(realValue, token, category, confidence, now, now, project);
   }
 
-  /** Add a span to the review queue (uncertain/heuristic detections). */
-  addReviewItem(item: ReviewItem): void {
+  /**
+   * Add a span to the review queue (uncertain/heuristic detections).
+   *
+   * Allowlist gate (issue #41): spans that already match an allowlist entry
+   * are silently dropped instead of being enqueued. Without this, a user
+   * who allowlists a pattern keeps seeing the same span reappear on every
+   * subsequent run, because the judge re-detects it and writes a fresh
+   * pending row each time. Filtering at the canonical persistence layer
+   * means every caller (judge, manual enqueue, future writers) gets the
+   * guarantee for free. Returns true if the item was inserted, false if
+   * it was suppressed by the allowlist.
+   */
+  addReviewItem(item: ReviewItem): boolean {
+    if (this.isAllowlisted(item.span)) return false;
     this.db
       .query(
         `INSERT INTO review_queue (span, surrounding, suggested_cat, confidence, source_event, detected_at)
@@ -184,6 +196,7 @@ export class VocabStore {
         item.source_event,
         Date.now(),
       );
+    return true;
   }
 
   /** Log a redaction event for telemetry. */
@@ -240,14 +253,23 @@ export class VocabStore {
     return (r as { changes: number }).changes > 0;
   }
 
-  /** All pending review items. */
+  /**
+   * All pending review items.
+   *
+   * Allowlist filter (issue #41): rows that were queued BEFORE an
+   * allowlist entry covered their span must also disappear from the
+   * queue — otherwise the user has to manually click through stale
+   * matches that they've already declared safe. We filter at read time
+   * so the fix takes effect immediately on the next GET /api/review.
+   */
   pendingReview(): Array<ReviewItem & { id: number }> {
-    return this.db
+    const rows = this.db
       .query<ReviewItem & { id: number }, []>(
         `SELECT id, span, surrounding, suggested_cat, confidence, source_event
          FROM review_queue WHERE status = 'pending' ORDER BY detected_at DESC`,
       )
       .all();
+    return rows.filter((row) => !this.isAllowlisted(row.span));
   }
 
   /** Transition a review item to a new status. */

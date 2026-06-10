@@ -89,6 +89,58 @@ describe('VocabStore', () => {
     expect(store.pendingReview().length).toBe(0);
   });
 
+  // Issue #41 — allowlist persistence across the queue ↔ judge boundary.
+  test('addReviewItem suppresses spans already on the allowlist', () => {
+    store.addAllowlist('updates.veeam.com');
+    const inserted = store.addReviewItem({
+      span: 'updates.veeam.com',
+      surrounding: 'GET updates.veeam.com/manifest',
+      suggested_cat: 'fqdn',
+      confidence: 0.7,
+      source_event: 'judge:userPromptSubmit',
+    });
+    expect(inserted).toBe(false);
+    expect(store.pendingReview().length).toBe(0);
+  });
+
+  test('addReviewItem respects regex allowlist entries', () => {
+    store.addAllowlist('\\.veeam\\.com$', true);
+    const inserted = store.addReviewItem({
+      span: 'mirror.veeam.com',
+      surrounding: 'hit mirror.veeam.com',
+      confidence: 0.8,
+      source_event: 'judge:userPromptSubmit',
+    });
+    expect(inserted).toBe(false);
+    expect(store.pendingReview().length).toBe(0);
+  });
+
+  test('pendingReview filters out items whose span was allowlisted after enqueue', () => {
+    // Reproduces the user-reported flow: queue gets seeded first, then the
+    // user allowlists the same span. Without the read-time filter, the row
+    // keeps appearing on every refresh until the user clicks it.
+    store.addReviewItem({
+      span: 'controller.local',
+      surrounding: 'connect controller.local 443',
+      confidence: 0.6,
+      source_event: 'judge:userPromptSubmit',
+    });
+    expect(store.pendingReview().length).toBe(1);
+    store.addAllowlist('controller.local');
+    expect(store.pendingReview().length).toBe(0);
+  });
+
+  test('addReviewItem returns true and persists when no allowlist match', () => {
+    const inserted = store.addReviewItem({
+      span: 'NewCustomer Ltd',
+      surrounding: 'meeting with NewCustomer Ltd',
+      confidence: 0.65,
+      source_event: 'judge:userPromptSubmit',
+    });
+    expect(inserted).toBe(true);
+    expect(store.pendingReview().length).toBe(1);
+  });
+
   // ── findByToken (Bug 2 — ISC-4) ──────────────────────────────────────────
 
   test('findByToken returns the matching row by token string', () => {
