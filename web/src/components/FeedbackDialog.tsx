@@ -7,10 +7,8 @@
  *      that will accompany the user's summary. We render that JSON read-only
  *      so the user can audit it before submitting.
  *   3. User types a free-text "What went wrong?" summary.
- *   4. On Send we POST /api/feedback {summary} → the backend scrubs again
- *      (defense in depth) and spawns `claude -p` to file the GitHub issue.
- *   5. Success toast + close. Failure toast + leave dialog open so the user
- *      can retry without re-typing.
+ *   4. User clicks Send → POST /api/feedback returns 202 + jobId → dialog closes, FeedbackJobPill takes over.
+ *   5. Pill polls /api/feedback/:jobId every 500ms; surfaces Filed as #N (success) or error toast on terminal state.
  *
  * Privacy invariant (ISC-30 / ISC-32): the diagnostics surface displayed in
  * the <pre> block is the SAME shape the backend will send. The user sees
@@ -43,6 +41,7 @@ type PreviewState =
 
 export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX.Element {
   const pushToast = useStore((s) => s.pushToast);
+  const startFeedbackJob = useStore((s) => s.startFeedbackJob);
 
   const [summary, setSummary] = useState('');
   const [preview, setPreview] = useState<PreviewState>({ kind: 'idle' });
@@ -117,29 +116,30 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ summary: trimmed.slice(0, MAX_SUMMARY_LEN) }),
       });
-      let parsed: unknown = null;
       const raw = await res.text();
+      let parsed: unknown = null;
       if (raw) {
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          // server promises JSON; if it gave us garbage we surface that below
-        }
+        try { parsed = JSON.parse(raw); } catch { /* ignore */ }
       }
-      const body = (parsed ?? {}) as { ok?: boolean; error?: string; output?: string };
-      if (!res.ok || body.ok === false) {
-        const msg = body.error || `feedback failed: HTTP ${res.status}`;
-        pushToast('error', msg);
+      const body = (parsed ?? {}) as { ok?: boolean; error?: string; jobId?: string };
+
+      // Expect 202 + { ok: true, jobId }
+      if (res.status === 202 && body.ok === true) {
+        if (typeof body.jobId === 'string' && body.jobId.length > 0) {
+          startFeedbackJob(body.jobId);
+          setSummary('');
+          onOpenChange(false);
+        } else {
+          pushToast('error', 'feedback submitted but no jobId returned');
+        }
         return;
       }
-      pushToast('success', 'feedback submitted — thank you');
-      setSummary('');
-      onOpenChange(false);
+
+      // Non-202 or explicit server error
+      const msg = body.error || `feedback failed: HTTP ${res.status}`;
+      pushToast('error', msg);
     } catch (err) {
-      pushToast(
-        'error',
-        `feedback failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      pushToast('error', `feedback failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setSending(false);
     }
