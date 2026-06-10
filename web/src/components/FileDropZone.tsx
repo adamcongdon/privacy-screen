@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
-import { Paperclip, Upload, X, AlertTriangle, CheckCircle2, FileWarning } from 'lucide-react';
+import { Paperclip, Upload, X, AlertTriangle, CheckCircle2, FileWarning, Loader2 } from 'lucide-react';
 import { useStore, type FileChip } from '../store';
 import { cn } from '../lib/cn';
 
@@ -20,12 +20,19 @@ export function FileDropZone(): JSX.Element {
   const files = useStore((s) => s.files);
   const addFiles = useStore((s) => s.addFiles);
   const removeFile = useStore((s) => s.removeFile);
+  const isUploading = useStore((s) => s.isUploading);
   const [isDragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
+  // While an upload is in-flight, freeze the dropzone interactions so a fast
+  // second click/drop can't kick off a racing POST (issue #37). The store
+  // guard would still reject it, but freezing the UI makes the state legible.
+  const busy = isUploading;
+
   const onPickClick = useCallback(() => {
+    if (busy) return;
     inputRef.current?.click();
-  }, []);
+  }, [busy]);
 
   const onInputChange = useCallback(
     (e: ChangeEvent<HTMLInputElement>) => {
@@ -37,11 +44,15 @@ export function FileDropZone(): JSX.Element {
     [addFiles],
   );
 
-  const onDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOver(true);
-  }, []);
+  const onDragOver = useCallback(
+    (e: DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (busy) return;
+      setDragOver(true);
+    },
+    [busy],
+  );
 
   const onDragLeave = useCallback((e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -54,12 +65,13 @@ export function FileDropZone(): JSX.Element {
       e.preventDefault();
       e.stopPropagation();
       setDragOver(false);
+      if (busy) return;
       const dt = e.dataTransfer;
       if (!dt) return;
       const list = dt.files;
       if (list && list.length > 0) void addFiles(list);
     },
-    [addFiles],
+    [addFiles, busy],
   );
 
   return (
@@ -78,15 +90,31 @@ export function FileDropZone(): JSX.Element {
             onPickClick();
           }
         }}
+        aria-busy={busy}
+        aria-disabled={busy}
         className={cn(
-          'flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed py-3 text-sm transition-colors',
-          isDragOver
-            ? 'border-indigo-400 bg-indigo-500/10 text-indigo-200'
-            : 'border-zinc-700 bg-zinc-900/40 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300',
+          'flex items-center justify-center gap-2 rounded-md border border-dashed py-3 text-sm transition-colors',
+          busy
+            ? 'cursor-not-allowed border-zinc-800 bg-zinc-900/30 text-zinc-500'
+            : isDragOver
+              ? 'cursor-pointer border-indigo-400 bg-indigo-500/10 text-indigo-200'
+              : 'cursor-pointer border-zinc-700 bg-zinc-900/40 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300',
         )}
       >
-        {isDragOver ? <Upload className="h-4 w-4" /> : <Paperclip className="h-4 w-4" />}
-        <span>{isDragOver ? 'drop to upload' : 'drop files here or click to browse'}</span>
+        {busy ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : isDragOver ? (
+          <Upload className="h-4 w-4" />
+        ) : (
+          <Paperclip className="h-4 w-4" />
+        )}
+        <span>
+          {busy
+            ? 'uploading… one batch at a time'
+            : isDragOver
+              ? 'drop to upload'
+              : 'drop files here or click to browse'}
+        </span>
       </div>
       <input
         ref={inputRef}

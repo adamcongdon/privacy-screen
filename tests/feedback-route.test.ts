@@ -120,6 +120,9 @@ function installGhStub(stdoutContent: string, exitCode = 0): void {
 
   // We write a small bash script:
   //   * For `--version`: print and exit 0 (so checkGhBinary passes).
+  //   * For `auth status`: print success and exit 0 (so checkGhAuth passes).
+  //     Tests that exercise the auth-failure path set
+  //     __PRIVACY_SCREEN_TEST_GH_AUTH_FAIL=1 before calling the stub.
   //   * Otherwise: JSON-encode argv (escaping via python3 if available, then
   //     awk fallback) to the capture file, drain stdin into the body file,
   //     print the canned stdout, exit with requested code.
@@ -128,6 +131,14 @@ function installGhStub(stdoutContent: string, exitCode = 0): void {
     'set -u',
     'if [ "${1:-}" = "--version" ]; then',
     '  echo "gh version 2.50.0 (stub)"',
+    '  exit 0',
+    'fi',
+    'if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then',
+    '  if [ "${__PRIVACY_SCREEN_TEST_GH_AUTH_FAIL:-0}" = "1" ]; then',
+    '    echo "X You are not logged into any GitHub hosts. To log in, run: gh auth login" 1>&2',
+    '    exit 1',
+    '  fi',
+    '  echo "github.com — Logged in as stub-user"',
     '  exit 0',
     'fi',
     '',
@@ -226,6 +237,26 @@ describe('POST /api/feedback — 503 gating', () => {
     const j = (await res.json()) as { ok: boolean; error: string };
     expect(j.ok).toBe(false);
     expect(j.error).toContain('gh');
+  });
+
+  // Issue #42 — gh installed but unauthenticated must return 503 synchronously
+  // with an actionable message, not let the spawn fail much later with a
+  // generic HTTP 401 from GitHub.
+  test('returns 503 with `gh auth login` hint when gh is unauthenticated', async () => {
+    installGhStub('https://github.com/adamcongdon/privacy-screen/issues/1');
+    process.env.__PRIVACY_SCREEN_TEST_GH_AUTH_FAIL = '1';
+    try {
+      const app = makeApp();
+      const res = await app.fetch(
+        makePostRequest({ summary: 'unauth scenario' }),
+      );
+      expect(res.status).toBe(503);
+      const j = (await res.json()) as { ok: boolean; error: string };
+      expect(j.ok).toBe(false);
+      expect(j.error).toContain('gh auth login');
+    } finally {
+      delete process.env.__PRIVACY_SCREEN_TEST_GH_AUTH_FAIL;
+    }
   });
 });
 

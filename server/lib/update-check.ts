@@ -230,9 +230,24 @@ export async function checkForUpdate(
   if (manifest.channel !== opts.channel) return null;
 
   // Strictly newer only. Equal or older → null. We never recommend a
-  // downgrade.
+  // downgrade. One carve-out: a beta-channel client running a clean
+  // release should be offered the matching-base beta (e.g. current 0.0.1
+  // → manifest 0.0.1-beta.10), because subscribing to the beta channel
+  // means "track beta builds even if I happen to be on a stable tag."
   const cmp = compareVersions(manifest.version, currentVersion);
-  if (cmp !== 1) return null;
+  let isUpgrade = cmp === 1;
+  if (!isUpgrade && opts.channel === 'beta') {
+    const pm = parseSemver(manifest.version);
+    const pc = parseSemver(currentVersion);
+    if (
+      pm && pc &&
+      pm.major === pc.major && pm.minor === pc.minor && pm.patch === pc.patch &&
+      pm.beta !== null && pc.beta === null
+    ) {
+      isUpgrade = true;
+    }
+  }
+  if (!isUpgrade) return null;
 
   const asset = manifest.platforms[platformKey];
   if (!asset) return null;

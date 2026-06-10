@@ -202,11 +202,11 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
                 ref={textareaRef}
                 value={summary}
                 onChange={(e) => setSummary(e.target.value)}
-                rows={5}
+                rows={8}
                 maxLength={MAX_SUMMARY_LEN}
                 spellCheck
                 placeholder="Describe the bug or paste the steps that triggered it. Anything sensitive will be scrubbed before it leaves your machine."
-                className="w-full resize-y rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+                className="block w-full min-h-[10rem] max-h-[24rem] resize-y overflow-auto rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 font-mono text-xs leading-relaxed text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
               />
               <span className="self-end text-[10px] text-zinc-500">
                 {summary.length} / {MAX_SUMMARY_LEN}
