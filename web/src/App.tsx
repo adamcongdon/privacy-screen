@@ -9,6 +9,7 @@ import { SettingsDrawer } from './components/SettingsDrawer';
 import { ContextMenu } from './components/ContextMenu';
 import { CustomCategoryDialog } from './components/CustomCategoryDialog';
 import { FeedbackDialog } from './components/FeedbackDialog';
+import { XlsxColumnReview } from './components/XlsxColumnReview';
 import UpdateAvailableBanner from './components/UpdateAvailableBanner';
 import { useContextMenuShortcuts } from './lib/useContextMenu';
 import { useStore, type ToastEntry } from './store';
@@ -200,6 +201,7 @@ export default function App(): JSX.Element {
       <ContextMenu />
       <CustomCategoryDialog />
       <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />
+      <XlsxColumnReview />
 
       {/* Feedback job pill (fixed top-right) */}
       <FeedbackJobPill />
