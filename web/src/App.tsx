@@ -9,11 +9,14 @@ import { SettingsDrawer } from './components/SettingsDrawer';
 import { ContextMenu } from './components/ContextMenu';
 import { CustomCategoryDialog } from './components/CustomCategoryDialog';
 import { FeedbackDialog } from './components/FeedbackDialog';
+import { XlsxColumnReview } from './components/XlsxColumnReview';
 import UpdateAvailableBanner from './components/UpdateAvailableBanner';
 import { useContextMenuShortcuts } from './lib/useContextMenu';
 import { useStore, type ToastEntry } from './store';
 import { getPayloadKind } from './lib/payloadKind';
 import { cn } from './lib/cn';
+import { useFeedbackJob } from './hooks/useFeedbackJob';
+import { FeedbackJobPill } from './components/FeedbackJobPill';
 
 /**
  * Sync-scroll plumbing — refs and handlers shared by the Composer textarea
@@ -65,6 +68,9 @@ export default function App(): JSX.Element {
   const updateChannel = useStore((s) => s.settings?.update_channel);
   const startVersionPoller = useStore((s) => s.startVersionPoller);
   const stopVersionPoller = useStore((s) => s.stopVersionPoller);
+
+  // Enable feedback job polling hook (no return value).
+  useFeedbackJob();
 
   // Global keyboard shortcuts for the mint-selection workflow.
   useContextMenuShortcuts();
@@ -195,6 +201,10 @@ export default function App(): JSX.Element {
       <ContextMenu />
       <CustomCategoryDialog />
       <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />
+      <XlsxColumnReview />
+
+      {/* Feedback job pill (fixed top-right) */}
+      <FeedbackJobPill />
 
       {/* Toast stack */}
       <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-80 flex-col gap-2">
