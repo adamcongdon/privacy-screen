@@ -85,8 +85,35 @@ export interface XlsxInspectResult {
 
 /** Per-column override emitted from the commit UI. */
 export interface ColumnOverride {
-  /** PatternName | 'skip' | 'regex' (= whole-cell scrubText fallback). */
-  pattern: PatternName | 'skip' | 'regex';
+  /**
+   * PatternName | 'skip' | 'regex' | 'custom'.
+   * 'regex' = whole-cell scrubText fallback.
+   * 'custom' (issue #39) = treat every non-empty cell as a custom-labeled
+   * PII span, force-minting with the user-supplied label as the token type
+   * (e.g. label 'ServerName' → '{SERVERNAME}', '{SERVERNAME_1}', …).
+   * `label` is required when `pattern === 'custom'`.
+   */
+  pattern: PatternName | 'skip' | 'regex' | 'custom';
+  /** Custom label for the column; required when pattern === 'custom'. */
+  label?: string;
+}
+
+/**
+ * Normalize a user-supplied custom label into a token-type identifier:
+ * uppercase, alphanumerics + underscores, length 2–24, must start with a
+ * letter. Returns null if the input cannot be normalized into a legal
+ * identifier — caller treats null as "reject this override."
+ */
+export function normalizeCustomLabel(raw: string): string | null {
+  if (typeof raw !== 'string') return null;
+  const cleaned = raw
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (cleaned.length < 2 || cleaned.length > 24) return null;
+  if (!/^[A-Z]/.test(cleaned)) return null;
+  return cleaned;
 }
 
 /** Per-sheet, per-header overrides. Missing entries fall back to auto-resolution. */
@@ -369,7 +396,8 @@ export async function inspectXlsx(
 type ColumnAction =
   | { kind: 'skip' }
   | { kind: 'regex' }
-  | { kind: 'pattern'; pattern: PatternName };
+  | { kind: 'pattern'; pattern: PatternName }
+  | { kind: 'custom'; tokenType: string };
 
 /**
  * Apply force-mint to a single cell, returning the new string value. If
@@ -477,6 +505,19 @@ export async function scrubXlsx(
         } else if (ov.pattern === 'regex') {
           action = { kind: 'regex' };
           label = 'regex';
+        } else if (ov.pattern === 'custom') {
+          // Custom-label override (#39). The label has already been
+          // normalized by the server's commit validator; if for any
+          // reason it isn't, normalize defensively and fall back to
+          // 'regex' on rejection so we never write a bogus token type.
+          const tokenType = normalizeCustomLabel(ov.label ?? '');
+          if (tokenType) {
+            action = { kind: 'custom', tokenType };
+            label = `custom:${tokenType}`;
+          } else {
+            action = { kind: 'regex' };
+            label = 'regex';
+          }
         } else {
           action = { kind: 'pattern', pattern: ov.pattern };
           label = ov.pattern;
@@ -524,6 +565,24 @@ export async function scrubXlsx(
           const next = applyForceMint(text, action.pattern, map, vocab);
           if (next !== text) {
             cell.value = next;
+            summary.cellsScrubbed += 1;
+          }
+          continue;
+        }
+
+        if (action.kind === 'custom') {
+          // Custom-label force-mint (#39). Whole-cell tokenize against the
+          // user-supplied token type. No regex layer — the user explicitly
+          // declared the column to be a custom PII type, so every non-empty
+          // cell counts.
+          const text = cellTextValue(cell);
+          if (!text) continue;
+          const r = map.mint(action.tokenType, text);
+          if (r.isNew && vocab) {
+            vocab.persistMint(text, r.token, action.tokenType.toLowerCase(), 1.0);
+          }
+          if (r.token !== text) {
+            cell.value = r.token;
             summary.cellsScrubbed += 1;
           }
           continue;

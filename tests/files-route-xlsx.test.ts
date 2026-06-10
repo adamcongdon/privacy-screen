@@ -327,6 +327,63 @@ describe('POST /api/files/xlsx/commit — with overrides', () => {
     expect(j.ok).toBe(true);
     expect(j.summary.columnsResolved['Sheet1::Notes']).toBe('skip');
   });
+
+  // Issue #39 — custom-label override accepted end-to-end.
+  test("custom override on Sheet1::Notes is normalized and applied", async () => {
+    const app = makeApp();
+    const uploadId = await uploadAndGetUploadId(app);
+
+    const res = await app.fetch(
+      makeJsonRequest('http://127.0.0.1/api/files/xlsx/commit', {
+        uploadId,
+        overrides: {
+          Sheet1: { Notes: { pattern: 'custom', label: 'ServerName' } },
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as {
+      ok: boolean;
+      summary: { columnsResolved: Record<string, string> };
+    };
+    expect(j.ok).toBe(true);
+    expect(j.summary.columnsResolved['Sheet1::Notes']).toBe('custom:SERVERNAME');
+  });
+
+  test("custom override rejects missing label with 400", async () => {
+    const app = makeApp();
+    const uploadId = await uploadAndGetUploadId(app);
+
+    const res = await app.fetch(
+      makeJsonRequest('http://127.0.0.1/api/files/xlsx/commit', {
+        uploadId,
+        overrides: {
+          Sheet1: { Notes: { pattern: 'custom' } },
+        },
+      }),
+    );
+    expect(res.status).toBe(400);
+    const j = (await res.json()) as { ok: boolean; error: string };
+    expect(j.ok).toBe(false);
+    expect(j.error.toLowerCase()).toContain('label');
+  });
+
+  test("custom override rejects malformed label with 400", async () => {
+    const app = makeApp();
+    const uploadId = await uploadAndGetUploadId(app);
+
+    const res = await app.fetch(
+      makeJsonRequest('http://127.0.0.1/api/files/xlsx/commit', {
+        uploadId,
+        overrides: {
+          // label can't start with a digit; normalize would produce '1NAME'
+          // which fails the must-start-with-letter rule.
+          Sheet1: { Notes: { pattern: 'custom', label: '1' } },
+        },
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
 });
 
 // ── Error / validation paths ────────────────────────────────────────────────
