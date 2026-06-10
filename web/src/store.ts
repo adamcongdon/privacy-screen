@@ -92,9 +92,26 @@ export type FeedbackJobState = {
 
 export type PreviewMode = 'source' | 'rendered';
 
+/** Active theme — drives the root `theme-*` class and CSS custom properties. */
+export type Theme = 'dark' | 'light';
+
+/** Top-level route for the Flow shell. `history`/`chat` are reserved (rail keeps
+ * them disabled in Engineer-B) but remain valid members. */
+export type Route = 'scrub' | 'review' | 'vocab' | 'settings' | 'history' | 'chat';
+
 const LS_PREVIEW_MODE = 'ps.preview-mode';
 const LS_TOKENMAP_OPEN = 'ps.tokenmap-open';
 const LS_DISMISSED_UPDATE = 'ps.dismissed-update-version';
+const LS_THEME = 'ps-theme';
+
+const VALID_ROUTES: readonly Route[] = [
+  'scrub',
+  'review',
+  'vocab',
+  'settings',
+  'history',
+  'chat',
+];
 
 /**
  * Periodic version-poll cadence. 4 hours — quiet enough to be invisible, frequent
@@ -128,6 +145,56 @@ function readLsTokenMapOpen(): boolean {
   } catch {
     return false;
   }
+}
+
+function readLsTheme(): Theme {
+  try {
+    const v = globalThis.localStorage?.getItem(LS_THEME);
+    if (v === 'light' || v === 'dark') return v;
+    // No stored preference — fall back to the OS color scheme.
+    if (globalThis.matchMedia?.('(prefers-color-scheme: light)').matches) {
+      return 'light';
+    }
+    return 'dark';
+  } catch {
+    return 'dark';
+  }
+}
+
+function readHashRoute(): Route {
+  try {
+    const raw = (globalThis.location?.hash ?? '').replace(/^#\/?/, '').trim();
+    return (VALID_ROUTES as readonly string[]).includes(raw)
+      ? (raw as Route)
+      : 'scrub';
+  } catch {
+    return 'scrub';
+  }
+}
+
+/**
+ * Apply the theme to the document root by setting the `theme-<theme>` class.
+ * Safe to call at boot (App can invoke once on mount) and from `setTheme`.
+ */
+export function applyThemeClass(theme: Theme): void {
+  try {
+    if (globalThis.document?.documentElement) {
+      globalThis.document.documentElement.className = 'theme-' + theme;
+    }
+  } catch {
+    // ignore — non-DOM (test/SSR) environments
+  }
+}
+
+/**
+ * Boot-time theme sync: reads the persisted/system theme and applies the root
+ * class. Returns the resolved theme. App should call this once on mount so the
+ * `theme-*` class matches the store's hydrated `theme` value.
+ */
+export function applyTheme(): Theme {
+  const t = readLsTheme();
+  applyThemeClass(t);
+  return t;
 }
 
 function readLsDismissedUpdate(): string | null {
@@ -188,6 +255,10 @@ type State = {
   previewModeUserOverrode: boolean;
   /** Token Map slide-in drawer open/closed. Persisted to localStorage. */
   tokenMapOpen: boolean;
+  /** Active theme — 'dark' (default) or 'light'. Persisted to localStorage('ps-theme'). */
+  theme: Theme;
+  /** Active top-level route for the Flow shell. Reflected in location.hash. */
+  route: Route;
   /** Send-feedback dialog open/closed. Not persisted — ephemeral per session. */
   feedbackOpen: boolean;
 
@@ -235,6 +306,10 @@ type State = {
   autoSetPreviewMode: (m: PreviewMode) => void;
   resetPreviewModeOverride: () => void;
   setTokenMapOpen: (o: boolean) => void;
+  /** Set the active theme — persists to localStorage and applies the root class. */
+  setTheme: (t: Theme) => void;
+  /** Set the active route — updates location.hash to `#/<route>`. */
+  setRoute: (r: Route) => void;
   setFeedbackOpen: (o: boolean) => void;
   resetConversation: () => void;
 
@@ -416,6 +491,8 @@ export const useStore = create<State>((set, get) => {
   previewMode: readLsPreviewMode(),
   previewModeUserOverrode: false,
   tokenMapOpen: readLsTokenMapOpen(),
+  theme: readLsTheme(),
+  route: readHashRoute(),
   feedbackOpen: false,
 
   vocab: [],
@@ -459,6 +536,21 @@ export const useStore = create<State>((set, get) => {
   setTokenMapOpen: (o) => {
     writeLs(LS_TOKENMAP_OPEN, o ? '1' : '0');
     set({ tokenMapOpen: o });
+  },
+
+  setTheme: (t) => {
+    writeLs(LS_THEME, t);
+    applyThemeClass(t);
+    set({ theme: t });
+  },
+
+  setRoute: (r) => {
+    try {
+      if (globalThis.location) globalThis.location.hash = '#/' + r;
+    } catch {
+      // ignore in non-DOM environments
+    }
+    set({ route: r });
   },
 
   setFeedbackOpen: (o) => set({ feedbackOpen: o }),
