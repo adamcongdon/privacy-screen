@@ -1,6 +1,6 @@
 /**
  * PII pattern definitions for PrivacyScreen.
- * Port of se-lz/src/SECC.Infrastructure/Services/PiiPatterns.cs
+ * Ported from an internal C# reference implementation.
  * Extended to cover OpenAI Privacy Filter taxonomy (8 categories).
  */
 
@@ -192,7 +192,7 @@ export const NAME_DENYLIST: ReadonlySet<string> = new Set<string>([
   'best', 'thanks', 'regards', 'cheers', 'hi', 'hello',
   'sincerely', 'dear', 'good', 'morning', 'afternoon', 'hey',
   // Company stems
-  'example', 'microsoft', 'amazon', 'google', 'anthropic', 'openai',
+  'microsoft', 'amazon', 'google', 'anthropic', 'openai',
   'github', 'stripe', 'cloudflare', 'azure',
 ]);
 
@@ -290,7 +290,6 @@ export function looksLikeDate(s: string): boolean {
 // FQDNs ending with these suffixes are considered vendor infrastructure
 // and are NOT tokenized. Compared case-insensitively, suffix-match.
 export const FQDN_ALLOWLIST: readonly string[] = [
-  '.example.com',
   '.microsoft.com',
   '.amazonaws.com',
   '.azure.com',

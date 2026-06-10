@@ -1,6 +1,6 @@
 /**
  * Bidirectional token map for reversible PII anonymization.
- * Port of se-lz/src/SECC.Core/Models/ScrubMap.cs
+ * Ported from an internal C# reference implementation.
  *
  * Token format: {TYPE} for first instance, {TYPE_1} for second, {TYPE_2} for third…
  * Curly-brace format avoids markdown bold/italic corruption.
