@@ -98,6 +98,28 @@ feedbackRoute.post('/', async (c) => {
     );
   }
 
+  // ── 1b. Gate on gh authentication (issue #42) ────────────────────────────
+  //
+  // checkGhBinary only verifies the binary exists — it does NOT verify the
+  // user has logged in. Without this guard, the user submits feedback, the
+  // dialog closes, and the background spawn fails much later with a generic
+  // HTTP 401 from GitHub's GraphQL API. That error then surfaces in the
+  // feedback pill with no actionable hint. Gate up front so the user gets a
+  // synchronous, actionable message in the dialog.
+  const auth = checkGhAuth(ghBin);
+  if (!auth.ok) {
+    return c.json(
+      {
+        ok: false,
+        error:
+          'gh is installed but not authenticated — run `gh auth login` in a ' +
+          'terminal, then try again.' +
+          (auth.detail ? ` (gh said: ${auth.detail})` : ''),
+      },
+      503,
+    );
+  }
+
   const cfg = loadConfig();
   const diagnostics = collectDiagnostics(cfg);
 
@@ -326,12 +348,50 @@ export function resolveGhBin(): string {
  */
 export function checkGhBinary(bin: string): { found: boolean; version: string | null } {
   try {
-    const r = spawnSync(bin, ['--version'], { encoding: 'utf-8', timeout: 1500 });
+    // Pass `env: process.env` explicitly — under bun, spawnSync does NOT
+    // inherit the parent environment by default. Without this, the child
+    // shell sees a stripped env, which masks PATH-dependent test seams.
+    const r = spawnSync(bin, ['--version'], {
+      encoding: 'utf-8',
+      timeout: 1500,
+      env: process.env,
+    });
     if (r && r.status === 0) return { found: true, version: (r.stdout ?? '').trim() };
     return { found: false, version: null };
   } catch (err) {
     process.stderr.write('[privacy-screen] feedback.binary.check.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
     return { found: false, version: null };
+  }
+}
+
+/**
+ * Authentication check for the resolved gh binary (issue #42).
+ *
+ * `gh auth status` exits 0 when the CLI has a valid stored credential or
+ * picks up GITHUB_TOKEN from the environment. Any non-zero exit (no auth
+ * configured, expired token, rate limited) means the subsequent
+ * `gh issue create` will fail with the same HTTP 401 the user saw. We
+ * surface that synchronously instead.
+ *
+ * `detail` is a one-line stderr/stdout excerpt suitable for the dialog —
+ * truncated to keep the response payload small.
+ */
+export function checkGhAuth(bin: string): { ok: boolean; detail: string | null } {
+  try {
+    // Pass `env: process.env` explicitly so gh sees the user's GITHUB_TOKEN
+    // (and any test seams). Bun's spawnSync does not inherit by default.
+    const r = spawnSync(bin, ['auth', 'status'], {
+      encoding: 'utf-8',
+      timeout: 3000,
+      env: process.env,
+    });
+    if (r && r.status === 0) return { ok: true, detail: null };
+    const combined = `${r?.stderr ?? ''}${r?.stdout ?? ''}`.trim();
+    const firstLine = combined.split(/\r?\n/).find((line) => line.trim().length > 0) ?? '';
+    return { ok: false, detail: firstLine.slice(0, 200) || null };
+  } catch (err) {
+    process.stderr.write('[privacy-screen] feedback.auth.check.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
+    return { ok: false, detail: null };
   }
 }
 
