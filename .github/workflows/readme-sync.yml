@@ -1,0 +1,169 @@
+name: README + CHANGELOG sync
+
+# Fires after release.yml has created a GitHub Release. Asks Claude to:
+#   1. Diff the new tag against the previous tag in the same channel
+#   2. Update CHANGELOG.md ([Unreleased] -> [vX.Y.Z]) using Keep-a-Changelog categories
+#   3. Update the README Features section (newest-first, 🆕 badge with 2-release decay)
+#   4. Open a PR titled `docs: sync README + CHANGELOG for <tag>` — never pushes to main
+#
+# Pairs with .github/workflows/readme-drift-check.yml (warn-only PR-time check).
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write       # create the docs branch
+  pull-requests: write  # open the sync PR
+  id-token: write       # claude-code-action
+
+jobs:
+  sync-docs:
+    runs-on: ubuntu-latest
+    # Skip drafts; drafts get a `published` event when finalized.
+    if: github.event.release.draft == false
+    timeout-minutes: 15
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          # Full history so Claude can diff against previous tags
+          fetch-depth: 0
+          # Default branch (main). The Features section + CHANGELOG live here regardless of channel.
+          ref: main
+
+      - name: Resolve previous tag in the same channel
+        id: prev
+        env:
+          THIS_TAG: ${{ github.event.release.tag_name }}
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          set -euo pipefail
+          # Pre-release tags look like v1.2.3-beta.N; stable look like v1.2.3.
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            PATTERN='v[0-9]*-beta.*'
+            CHANNEL="beta"
+          else
+            PATTERN='v[0-9]*'
+            CHANNEL="stable"
+          fi
+
+          # All tags newer-to-older that match the channel, then drop the current one,
+          # then take the first remaining = previous in this channel.
+          PREV=$(git tag --list "$PATTERN" --sort=-v:refname \
+            | grep -v "^${THIS_TAG}$" \
+            | { [ "$CHANNEL" = "stable" ] && grep -v -- '-beta\.' || cat; } \
+            | head -n1 || true)
+
+          echo "channel=$CHANNEL"     >> "$GITHUB_OUTPUT"
+          echo "this_tag=$THIS_TAG"   >> "$GITHUB_OUTPUT"
+          echo "prev_tag=$PREV"       >> "$GITHUB_OUTPUT"
+
+          if [ -z "$PREV" ]; then
+            echo "No previous $CHANNEL tag found — Claude will treat this as the inaugural entry."
+          else
+            echo "Previous $CHANNEL tag: $PREV"
+          fi
+
+      - name: Configure branch + skip if already open
+        id: branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          THIS_TAG: ${{ steps.prev.outputs.this_tag }}
+        run: |
+          set -euo pipefail
+          BRANCH="docs/sync-${THIS_TAG}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          # If a PR is already open from this branch, exit cleanly so re-runs are idempotent.
+          EXISTING=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || true)
+          if [ -n "$EXISTING" ]; then
+            echo "PR #$EXISTING already open from $BRANCH; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Claude to update docs
+        if: steps.branch.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # git for diff/tag, gh for PR, jq for any JSON poking, edit/read for the files.
+          claude_args: '--allowed-tools Bash(git *) Bash(gh *) Bash(jq *) Bash(cat *) Bash(grep *) Bash(sed *) Edit Read Glob Grep'
+          prompt: |
+            You are syncing user-facing documentation for the `adamcongdon/privacy-screen` repo
+            after a new release was published.
+
+            CONTEXT
+            -------
+            - This release tag:     `${{ steps.prev.outputs.this_tag }}`
+            - Release channel:      `${{ steps.prev.outputs.channel }}` (stable | beta)
+            - Previous channel tag: `${{ steps.prev.outputs.prev_tag }}` (empty if this is the first one)
+            - Release name:         ${{ github.event.release.name }}
+            - Release URL:          ${{ github.event.release.html_url }}
+            - GitHub-generated release notes are at the release URL above.
+
+            FILES YOU OWN
+            -------------
+            - `CHANGELOG.md` — Keep-a-Changelog format; edit between the
+              `<!-- changelog:start -->` and `<!-- changelog:end -->` markers.
+            - `README.md` — the `## Features` section; edit between the
+              `<!-- features:start -->` and `<!-- features:end -->` markers.
+
+            DO NOT touch anything outside those marker blocks.
+
+            STEP-BY-STEP
+            ------------
+            1. Run `git fetch --tags --force` and confirm both tags exist locally.
+            2. Get the changeset:
+                 - If `prev_tag` is non-empty:
+                     `git log --no-merges --pretty=format:'%h %s' ${{ steps.prev.outputs.prev_tag }}..${{ steps.prev.outputs.this_tag }}`
+                     `git diff --stat ${{ steps.prev.outputs.prev_tag }}..${{ steps.prev.outputs.this_tag }}`
+                 - Else: `git log --no-merges --pretty=format:'%h %s' ${{ steps.prev.outputs.this_tag }} -50`
+
+            3. Classify each user-visible change into Keep-a-Changelog buckets:
+               `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
+               Skip pure internal refactors, dependency bumps without behavior change,
+               test/CI changes, and doc-only commits. If nothing user-visible exists,
+               leave both files untouched and exit.
+
+            4. Update `CHANGELOG.md`:
+                 - Insert a new section `## [${{ steps.prev.outputs.this_tag }}] - YYYY-MM-DD`
+                   directly under the `## [Unreleased]` heading. Use today's UTC date.
+                 - Move any matching entries from `[Unreleased]` into the new section, or
+                   author fresh entries from the commit log if `[Unreleased]` was empty.
+                 - Keep `[Unreleased]` present with the standard empty sub-headings.
+                 - Append a comparison link at the bottom of the file:
+                   `[${{ steps.prev.outputs.this_tag }}]: https://github.com/adamcongdon/privacy-screen/compare/<prev>...${{ steps.prev.outputs.this_tag }}`
+                   and update the `[Unreleased]` link to compare from the new tag to HEAD.
+
+            5. Update README `## Features` (between the markers):
+                 - Add a new entry at the TOP:
+                   `- 🆕 **${{ steps.prev.outputs.this_tag }}** — <one-line user-visible blurb, ≤120 chars>`
+                 - Walk previously-tagged entries: if their tag is ≥2 releases older than this
+                   one (in the same channel), strip the `🆕 ` prefix.
+                 - Preserve order (newest first).
+                 - If the marker block currently contains the seed placeholder
+                   `_No features tracked yet — this list populates from the next published release._`,
+                   delete that placeholder line as part of this update.
+
+            6. Open a PR:
+                 git config user.name  "github-actions[bot]"
+                 git config user.email "github-actions[bot]@users.noreply.github.com"
+                 git checkout -b "${{ steps.branch.outputs.branch }}"
+                 git add CHANGELOG.md README.md
+                 git commit -m "docs: sync README + CHANGELOG for ${{ steps.prev.outputs.this_tag }}"
+                 git push origin "${{ steps.branch.outputs.branch }}"
+                 gh pr create \
+                   --base main \
+                   --head "${{ steps.branch.outputs.branch }}" \
+                   --title "docs: sync README + CHANGELOG for ${{ steps.prev.outputs.this_tag }}" \
+                   --body  "Automated docs sync for release ${{ steps.prev.outputs.this_tag }} (${{ github.event.release.html_url }}). Review the wording before merging."
+
+            HARD CONSTRAINTS
+            ----------------
+            - NEVER push directly to `main` or `beta`. PR only.
+            - NEVER edit outside the marker blocks in either file.
+            - NEVER invent features that aren't in the commit log.
+            - If there is nothing user-visible to add, exit without creating a PR
+              and print "no user-visible changes; skipped" to stdout.
