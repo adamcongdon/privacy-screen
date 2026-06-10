@@ -132,26 +132,52 @@ test('getCategoryHue is deterministic for unknown categories', () => {
 });
 
 // ── Mode re-runs scrub ──────────────────────────────────────────────────────
-test('setMode re-runs the scrub (api.scrub via /api/scrub)', async () => {
-  const spy = makeFetchSpy(() => ({
-    scrubbed: 'hello {EMAIL_1}',
-    tokens: [],
-    unsureSpans: [],
-    hasCredentials: false,
-    credentialSnippets: [],
-  }));
+test('setMode persists via /api/settings and re-runs the scrub', async () => {
+  // URL-aware responder: settings echoes the saved mode (the real server reads
+  // it back from PRIVACY_CONFIG.yaml); scrub returns a preview shape.
+  const spy = makeFetchSpy((url) => {
+    if (url.includes('/api/settings')) {
+      return {
+        model: 'm',
+        system_prompt: '',
+        mode: 'observe',
+        update_channel: 'off',
+        update_manifest_url: '',
+        claude_code: { found: false, version: null },
+      };
+    }
+    return {
+      scrubbed: 'hello {EMAIL_1}',
+      tokens: [],
+      unsureSpans: [],
+      hasCredentials: false,
+      credentialSnippets: [],
+    };
+  });
   globalThis.fetch = spy.fn;
 
   // Non-empty payload so refreshScrub doesn't short-circuit on empty.
   useStore.setState({ composerText: 'email me at a@b.com', files: [] });
 
   useStore.getState().setMode('observe');
+  // Optimistic flip is synchronous.
   expect(useStore.getState().mode).toBe('observe');
 
   await sleep(20);
 
+  // Persisted via a POST to /api/settings carrying the new mode...
+  const settingsCalls = spy.calls.filter(
+    (c) => c.url.includes('/api/settings') && (c.init?.method ?? 'GET').toUpperCase() === 'POST',
+  );
+  expect(settingsCalls.length).toBeGreaterThanOrEqual(1);
+  expect(String(settingsCalls[0]?.init?.body ?? '')).toContain('observe');
+
+  // ...and the scrub re-ran so the Scrub screen reflects the new mode.
   const scrubCalls = spy.calls.filter((c) => c.url.includes('/api/scrub'));
   expect(scrubCalls.length).toBeGreaterThanOrEqual(1);
+
+  // Server-canonical mode survives the round-trip.
+  expect(useStore.getState().mode).toBe('observe');
 });
 
 // ── Onboarding gate ─────────────────────────────────────────────────────────

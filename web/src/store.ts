@@ -95,13 +95,11 @@ export type PreviewMode = 'source' | 'rendered';
 /**
  * Screening mode for the Scrub screen + Settings radio group.
  *
- * IMPORTANT (provenance): there is NO persisted backend endpoint for this. The
- * server's `Mode` (src/config.ts) is not surfaced through `/api/settings` —
- * `SettingsView`/`SettingsPatch` carry only model / system_prompt /
- * update_channel / update_manifest_url / claude_code. Per the "verify names,
- * never fabricate an API call" rule, mode lives CLIENT-SIDE ONLY here so the
- * Scrub screen and the Settings radio group share a single source of truth.
- * When the settings API later exposes a real mode, wire `setMode` to it.
+ * Persisted server-side in PRIVACY_CONFIG.yaml and surfaced through
+ * `/api/settings` (GET returns `mode`; POST accepts `mode`). This is the SAME
+ * canonical `mode` the hook/CLI enforcement path reads (src/config.ts), so the
+ * web Settings screen and the hook share one source of truth. Hydrated from
+ * `settings.mode` on load; `setMode` persists via `saveSettings({ mode })`.
  *
  * - observe:  detect + tokenize, but never block on a credential.
  * - enforce:  block send while a credential is present (recommended default).
@@ -300,8 +298,9 @@ type State = {
    */
   onboarded: boolean;
   /**
-   * Screening mode for Scrub & Settings. Client-side only — no backend endpoint
-   * (see ScreenMode docs). Not persisted across reloads; defaults to 'enforce'.
+   * Screening mode for Scrub & Settings. Persisted server-side via
+   * `/api/settings` (see ScreenMode docs); hydrated from `settings.mode` on
+   * load. Defaults to 'enforce' until settings hydrate.
    */
   mode: ScreenMode;
   /** Active top-level route for the Flow shell. Reflected in location.hash. */
@@ -607,10 +606,20 @@ export const useStore = create<State>((set, get) => {
   },
 
   setMode: (m) => {
+    // Optimistic: flip the UI immediately, then persist to PRIVACY_CONFIG.yaml
+    // via /api/settings and re-run the current scrub so the Scrub screen
+    // reflects the new mode live. saveSettings() syncs `mode` back from the
+    // server response (and rolls the toast); a failed save surfaces an error
+    // toast but leaves the optimistic value so the user can retry.
     set({ mode: m });
-    // Mode affects the scrub view (Enforce blocks credentials; Disabled passes
-    // through). Re-run the current scrub so the Scrub screen updates live.
-    void get().refreshScrub();
+    void get()
+      .saveSettings({ mode: m })
+      .catch(() => {
+        /* saveSettings already surfaced an error toast */
+      })
+      .finally(() => {
+        void get().refreshScrub();
+      });
   },
 
   setRoute: (r) => {
@@ -897,7 +906,7 @@ export const useStore = create<State>((set, get) => {
   refreshSettings: async () => {
     try {
       const s = await api.settings();
-      set({ settings: s });
+      set({ settings: s, mode: s.mode });
     } catch (err) {
       get().pushToast('error', `settings fetch failed: ${err instanceof Error ? err.message : err}`);
     }
@@ -1033,7 +1042,9 @@ export const useStore = create<State>((set, get) => {
   saveSettings: async (partial) => {
     try {
       const s = await api.saveSettings(partial);
-      set({ settings: s });
+      // Sync `mode` back from the server's canonical view so the store and
+      // PRIVACY_CONFIG.yaml never drift.
+      set({ settings: s, mode: s.mode });
       get().pushToast('success', 'settings saved');
     } catch (err) {
       get().pushToast('error', `settings save failed: ${err instanceof Error ? err.message : err}`);

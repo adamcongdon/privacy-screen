@@ -53,6 +53,8 @@ export type ReviewItem = {
 export type SettingsView = {
   model: string;
   system_prompt: string;
+  /** Screening mode, persisted in PRIVACY_CONFIG.yaml (canonical hook/CLI knob). */
+  mode: 'observe' | 'enforce' | 'disabled';
   /** Opt-in update channel persisted in PRIVACY_CONFIG.yaml */
   update_channel: 'off' | 'stable' | 'beta';
   /** Manifest URL used when channel is not 'off' */
@@ -67,6 +69,7 @@ export type SettingsView = {
 export type SettingsPatch = Partial<{
   model: string;
   system_prompt: string;
+  mode: 'observe' | 'enforce' | 'disabled';
   update_channel: 'off' | 'stable' | 'beta';
   update_manifest_url: string;
 }>;
