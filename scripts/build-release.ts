@@ -90,6 +90,11 @@ async function main(): Promise<void> {
     //    a release with no UI is useless.
     await runStep('web build', ['bun', 'run', 'web:build']);
 
+    // 1b. Generate the embed manifest so the compiled binaries bake web/dist
+    //     into themselves. Without this a downloaded standalone binary has no
+    //     UI on disk and shows "web bundle is not built".
+    await runStep('embed web', ['bun', 'scripts/generate-web-embed.ts']);
+
     // 2. Compile each platform target.
     for (const t of TARGETS) {
       const outfile = join(DIST_DIR, t.outName);
@@ -110,6 +115,10 @@ async function main(): Promise<void> {
         ],
       );
     }
+    // 2b. Reset the embed manifest to its committed (empty) form so the working
+    //     tree stays clean after a build. The compile above already captured the
+    //     populated version; the source no longer needs it.
+    await runStep('reset embed manifest', ['bun', 'scripts/generate-web-embed.ts', '--empty']);
   } else {
     process.stdout.write('manifest-only: skipping web build and platform compiles\n');
   }
@@ -138,7 +147,51 @@ async function main(): Promise<void> {
   const manifestPath = join(DIST_DIR, 'release-manifest.json');
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
   process.stdout.write(`wrote ${manifestPath}\n`);
+
+  // 4. Desktop installers (best-effort, platform-gated). These are first-install
+  //    artifacts and intentionally NOT part of the update manifest above — the
+  //    in-app updater swaps the raw binary, it doesn't re-run an installer.
+  if (!manifestOnly) {
+    await maybeBuildWindowsInstaller(pkg.version);
+  }
+
   process.stdout.write('--- done ---\n');
+}
+
+/**
+ * Build the Windows double-click installer with Inno Setup when its compiler
+ * (ISCC.exe) is available. On non-Windows hosts (e.g. the Linux release runner)
+ * or when Inno Setup isn't installed, this logs and skips — CI builds the
+ * Windows installer in a dedicated windows-latest job instead.
+ */
+async function maybeBuildWindowsInstaller(version: string): Promise<void> {
+  if (process.platform !== 'win32') {
+    process.stdout.write('[win-installer] skipped (not a Windows host)\n');
+    return;
+  }
+  const iscc = findIscc();
+  if (!iscc) {
+    process.stdout.write('[win-installer] skipped (ISCC.exe not found; install Inno Setup 6)\n');
+    return;
+  }
+  const iss = join(PROJECT_ROOT, 'installers', 'windows', 'privacy-screen.iss');
+  await runStep('win installer', [iscc, `/DMyAppVersion=${version}`, iss]);
+  process.stdout.write(
+    `[win-installer] wrote ${join(DIST_DIR, 'privacy-screen-setup-win32-x64.exe')}\n`,
+  );
+}
+
+/** Locate ISCC.exe in the usual Inno Setup 6 install locations or on PATH. */
+function findIscc(): string | null {
+  const candidates = [
+    join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Inno Setup 6', 'ISCC.exe'),
+    join(process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)', 'Inno Setup 6', 'ISCC.exe'),
+    join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Inno Setup 6', 'ISCC.exe'),
+  ];
+  for (const c of candidates) {
+    if (c && existsSync(c)) return c;
+  }
+  return null;
 }
 
 function parseChannel(): 'stable' | 'beta' {

@@ -23,6 +23,21 @@ open http://127.0.0.1:31338
 
 **No API key needed** — inference runs through your local `claude` CLI, using the same OAuth session you already have. The server refuses to start if `claude` isn't on PATH. Walk `SAFETY_CHECKLIST_APP.md` before sending real data.
 
+## Install — desktop (double-click)
+
+Prefer not to clone the repo? Grab a packaged installer from the [latest release](https://github.com/adamcongdon/privacy-screen/releases):
+
+| Platform | Asset | What it does |
+|---|---|---|
+| **Windows** | `privacy-screen-setup-win32-x64.exe` | Double-click installer (no admin). Adds Start Menu / Desktop shortcuts that start the server and open the UI. |
+| **macOS** | `privacy-screen-<version>-darwin-arm64.dmg` / `-x64.dmg` | Open the `.dmg`, drag **privacy-screen** to Applications, launch it — the UI opens automatically. |
+
+The downloaded binaries are **self-contained**: the web UI is embedded inside the executable, so there are no extra files to place and no `bun run web:build` step. The shortcuts launch with `--open`, which boots the loopback server and opens `http://127.0.0.1:31338` in your browser. You still need the `claude` CLI installed and logged in — the installer/app warns if it isn't found.
+
+Prefer the raw binary? The plain `privacy-screen-win32-x64.exe` / `privacy-screen-darwin-*` assets also work standalone; pass `--open` (or set `PRIVACY_SCREEN_OPEN=1`) to auto-open the browser.
+
+> Building installers locally: `bun scripts/build-release.ts` produces the binaries and, on Windows with [Inno Setup 6](https://jrsoftware.org/isdl.php) installed, the `setup.exe`. macOS `.dmg`s are built by `installers/macos/package-macos.sh` (run on a Mac). See `installers/` and `.github/workflows/release.yml`.
+
 ## Quick start — Hook
 
 `SAFETY_CHECKLIST.md` (the older one) covers the Claude Code hook flow. Hook is NOT yet registered in your `settings.json` — opt in only after the checklist passes.

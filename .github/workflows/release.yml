@@ -189,6 +189,102 @@ jobs:
           ls -l dist/ || true
 
   # ---------------------------------------------------------------------------
+  # Windows double-click installer (Inno Setup). Runs on a Windows runner so we
+  # can use ISCC. Packages the (already-signed-when-enabled) win32 binary from
+  # the build job into dist/privacy-screen-setup-win32-x64.exe. Best-effort:
+  # create-release attaches the installer only if this job succeeds.
+  # ---------------------------------------------------------------------------
+  package-windows:
+    name: package-windows
+    needs: build
+    runs-on: windows-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/main')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download built binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: build-binaries
+          path: dist/
+
+      - name: Compute version
+        id: vars
+        shell: bash
+        run: |
+          BASE_VERSION=$(jq -r .version package.json)
+          if [ "${{ github.ref_name }}" = "beta" ]; then
+            echo "version=${BASE_VERSION}-beta.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: bash
+        run: |
+          ISCC="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          "$ISCC" "/DMyAppVersion=${{ steps.vars.outputs.version }}" installers/windows/privacy-screen.iss
+          ls -l dist/
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-windows
+          path: dist/privacy-screen-setup-win32-x64.exe
+
+  # ---------------------------------------------------------------------------
+  # macOS .app + .dmg installers (arm64 + x64). Runs on a macOS runner for
+  # hdiutil. Packages the darwin binaries from the build job. Best-effort.
+  # NOTE: this packages the build-job darwins; when RUN_CODE_SIGNING is enabled
+  # the standalone signed+notarized raw binaries are still released separately.
+  # ---------------------------------------------------------------------------
+  package-macos:
+    name: package-macos
+    needs: build
+    runs-on: macos-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/main')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download built binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: build-binaries
+          path: dist/
+
+      - name: Compute version
+        id: vars
+        run: |
+          BASE_VERSION=$(jq -r .version package.json)
+          if [ "${{ github.ref_name }}" = "beta" ]; then
+            echo "version=${BASE_VERSION}-beta.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build .app + .dmg (arm64 + x64)
+        run: |
+          chmod +x dist/privacy-screen-darwin-arm64 dist/privacy-screen-darwin-x64 || true
+          bash installers/macos/package-macos.sh \
+            --binary dist/privacy-screen-darwin-arm64 \
+            --version "${{ steps.vars.outputs.version }}" --arch arm64 --outdir dist
+          bash installers/macos/package-macos.sh \
+            --binary dist/privacy-screen-darwin-x64 \
+            --version "${{ steps.vars.outputs.version }}" --arch x64 --outdir dist
+          ls -l dist/*.dmg
+
+      - name: Upload dmg artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-macos
+          path: dist/*.dmg
+
+  # ---------------------------------------------------------------------------
   # macOS code signing + notarization (only when RUN_CODE_SIGNING=true).
   # Produces final-darwin-* artifacts containing the Developer ID signed +
   # Apple-notarized + stapled binaries. These overlay the build-binaries darwins
@@ -307,7 +403,7 @@ jobs:
   # ---------------------------------------------------------------------------
   create-release:
     name: create-release (${{ github.ref_name }})
-    needs: [test, build, sign-macos]
+    needs: [test, build, sign-macos, package-windows, package-macos]
     runs-on: ubuntu-latest
     # Only on direct pushes to the protected branches (post-merge). PRs never release.
     # The "always()" + result check lets this proceed when sign-macos was skipped
@@ -388,6 +484,20 @@ jobs:
           name: final-darwin-binaries
           path: dist/
 
+      - name: Download Windows installer (best-effort)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: installer-windows
+          path: dist/
+
+      - name: Download macOS installers (best-effort)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: installer-macos
+          path: dist/
+
       - name: Verify we have the three platform binaries in dist/
         run: |
           for name in privacy-screen-darwin-arm64 privacy-screen-darwin-x64 privacy-screen-win32-x64.exe; do
@@ -441,6 +551,24 @@ jobs:
             )
 
           echo "Release $TAG created/updated with assets."
+
+      - name: Attach desktop installers to the release (best-effort)
+        # Installers are first-install convenience artifacts. If their packaging
+        # jobs failed or were skipped, the core release (raw binaries + manifest)
+        # is unaffected — we just don't attach installers this run.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          shopt -s nullglob
+          ASSETS=( dist/privacy-screen-setup-win32-x64.exe dist/*.dmg )
+          if [ ${#ASSETS[@]} -eq 0 ]; then
+            echo "No installer artifacts present; skipping installer attach."
+            exit 0
+          fi
+          echo "Attaching installers: ${ASSETS[*]}"
+          gh release upload "$TAG" "${ASSETS[@]}" --clobber
 
       - name: Restore clean package.json (do not commit the beta-qualified version)
         if: steps.vars.outputs.channel == 'beta'
