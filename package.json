@@ -1,6 +1,6 @@
 {
   "name": "privacy-screen",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "Local-first PII anonymization layer for AI providers",
   "type": "module",
   "scripts": {
@@ -11,7 +11,8 @@
     "server": "bun --watch server/server.ts",
     "web:dev": "cd web && bunx vite",
     "web:build": "cd web && bunx vite build",
-    "start": "bun run web:build && bun run server"
+    "start": "bun run web:build && bun run server",
+    "version:bump": "npm version patch --no-git-tag-version"
   },
   "devDependencies": {
     "@types/bun": "latest",
