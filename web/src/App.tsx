@@ -5,6 +5,8 @@ import { ScrubSend, ScrubHeaderRight } from './components/flow/ScrubSend';
 import { ReviewPage, ReviewHeaderRight } from './components/flow/ReviewPage';
 import { VocabularyPage, VocabHeaderRight } from './components/flow/VocabularyPage';
 import { SettingsPage } from './components/flow/SettingsPage';
+import { Onboarding } from './components/flow/Onboarding';
+import { ClaudeNotFound, ServerOffline } from './components/flow/StateViews';
 import { ContextMenu } from './components/ContextMenu';
 import { CustomCategoryDialog } from './components/CustomCategoryDialog';
 import { FeedbackDialog } from './components/FeedbackDialog';
@@ -25,6 +27,8 @@ export default function App(): JSX.Element {
   const refreshVersion = useStore((s) => s.refreshVersion);
   const refreshUpdateStatus = useStore((s) => s.refreshUpdateStatus);
   const settings = useStore((s) => s.settings);
+  const health = useStore((s) => s.health);
+  const onboarded = useStore((s) => s.onboarded);
   const toasts = useStore((s) => s.toasts);
   const dismissToast = useStore((s) => s.dismissToast);
   const composerText = useStore((s) => s.composerText);
@@ -122,13 +126,23 @@ export default function App(): JSX.Element {
         {/* Global update strip — slim, sits above the routed screen. Self-hides
             when no update is available or the current version was dismissed. */}
         <UpdateAvailableBanner />
-        <RoutedScreen
-          route={route}
-          mode={mode}
-          setMode={setMode}
-          vocabQuery={vocabQuery}
-          setVocabQuery={setVocabQuery}
-        />
+        {/* Server-offline banner — non-blocking; scrubbing still works on-device.
+            Rendered above the routed screen when the health probe failed. */}
+        {health && !health.ok && <ServerOffline />}
+        {/* Claude-not-found takes over the workspace: the server can't send to
+            Claude until the CLI is present, so a corner toast under-sold it.
+            Replaces the old bottom-left note. */}
+        {settings && !settings.claude_code.found ? (
+          <ClaudeNotFound />
+        ) : (
+          <RoutedScreen
+            route={route}
+            mode={mode}
+            setMode={setMode}
+            vocabQuery={vocabQuery}
+            setVocabQuery={setVocabQuery}
+          />
+        )}
       </div>
 
       {/* Global overlays */}
@@ -147,14 +161,9 @@ export default function App(): JSX.Element {
         ))}
       </div>
 
-      {/* Status note when claude code is missing */}
-      {settings && !settings.claude_code.found && (
-        <div className="fixed bottom-4 left-4 max-w-sm rounded-md border border-danger bg-surface px-3 py-2 text-xs text-danger shadow-lg backdrop-blur">
-          Claude Code not found on PATH. Install from
-          <code className="mx-1 rounded bg-surface-2 px-1 font-mono">docs.claude.com/en/docs/claude-code</code>,
-          run <code className="mx-1 rounded bg-surface-2 px-1 font-mono">claude login</code>, then restart.
-        </div>
-      )}
+      {/* First-run gate — overlays the whole app until the user finishes
+          onboarding (localStorage `ps-onboarded`). Continue dismisses it. */}
+      {!onboarded && <Onboarding />}
     </div>
   );
 }

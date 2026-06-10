@@ -120,6 +120,8 @@ const LS_PREVIEW_MODE = 'ps.preview-mode';
 const LS_TOKENMAP_OPEN = 'ps.tokenmap-open';
 const LS_DISMISSED_UPDATE = 'ps.dismissed-update-version';
 const LS_THEME = 'ps-theme';
+/** First-run gate key. Unset → show Onboarding; '1' → onboarding complete. */
+const LS_ONBOARDED = 'ps-onboarded';
 
 const VALID_ROUTES: readonly Route[] = [
   'scrub',
@@ -178,7 +180,25 @@ function readLsTheme(): Theme {
   }
 }
 
-function readHashRoute(): Route {
+/**
+ * Read the first-run gate. Returns true once the user has completed onboarding
+ * (localStorage `ps-onboarded` === '1'). Mirrors the other `readLs*` helpers —
+ * defensive against unavailable/quota-restricted localStorage.
+ */
+function readLsOnboarded(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(LS_ONBOARDED) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Boot-time route reader: parses `location.hash` (`#/vocab`) into a valid Route,
+ * defaulting to 'scrub'. Exported for tests to verify the round-trip with
+ * `setRoute` (which writes the hash) — production reads it once at store init.
+ */
+export function readHashRoute(): Route {
   try {
     const raw = (globalThis.location?.hash ?? '').replace(/^#\/?/, '').trim();
     return (VALID_ROUTES as readonly string[]).includes(raw)
@@ -275,6 +295,11 @@ type State = {
   /** Active theme — 'dark' (default) or 'light'. Persisted to localStorage('ps-theme'). */
   theme: Theme;
   /**
+   * First-run gate. False until the user finishes Onboarding; persisted to
+   * localStorage('ps-onboarded'). App overlays <Onboarding> while this is false.
+   */
+  onboarded: boolean;
+  /**
    * Screening mode for Scrub & Settings. Client-side only — no backend endpoint
    * (see ScreenMode docs). Not persisted across reloads; defaults to 'enforce'.
    */
@@ -330,6 +355,8 @@ type State = {
   setTokenMapOpen: (o: boolean) => void;
   /** Set the active theme — persists to localStorage and applies the root class. */
   setTheme: (t: Theme) => void;
+  /** Mark first-run onboarding complete (persists `ps-onboarded`) or reset it. */
+  setOnboarded: (v: boolean) => void;
   /**
    * Set the screening mode and re-run the current scrub so the Scrub screen
    * reflects the new mode immediately (Enforce blocks credentials; Disabled
@@ -520,6 +547,7 @@ export const useStore = create<State>((set, get) => {
   previewModeUserOverrode: false,
   tokenMapOpen: readLsTokenMapOpen(),
   theme: readLsTheme(),
+  onboarded: readLsOnboarded(),
   mode: 'enforce',
   route: readHashRoute(),
   feedbackOpen: false,
@@ -571,6 +599,11 @@ export const useStore = create<State>((set, get) => {
     writeLs(LS_THEME, t);
     applyThemeClass(t);
     set({ theme: t });
+  },
+
+  setOnboarded: (v) => {
+    writeLs(LS_ONBOARDED, v ? '1' : '0');
+    set({ onboarded: v });
   },
 
   setMode: (m) => {
