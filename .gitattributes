@@ -1,0 +1,5 @@
+# Shell scripts must use LF — CRLF breaks the shebang on macOS/Linux (and CI).
+*.sh text eol=lf
+
+# Inno Setup scripts are consumed by ISCC on Windows; keep CRLF.
+*.iss text eol=crlf
