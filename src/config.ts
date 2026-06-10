@@ -75,7 +75,7 @@ export interface LlmValidateConfig {
 }
 
 export interface PrivacyConfig {
-  /** Extra FQDN suffixes never to tokenize (e.g. ".helios.example.com"). */
+  /** Extra FQDN suffixes never to tokenize (e.g. ".internal.example.com"). */
   fqdn_allowlist_extra: string[];
   /** Customer names — always tokenized as {CUST_N}. Case-insensitive match. */
   customer_names: string[];

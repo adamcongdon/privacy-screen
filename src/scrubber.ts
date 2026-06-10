@@ -1,6 +1,6 @@
 /**
  * PII scrubber — core anonymization engine.
- * Port of se-lz/src/SECC.Infrastructure/Services/PiiScrubber.cs
+ * Ported from an internal C# reference implementation.
  *
  * Orchestrates pattern detection, vocabulary minting, and text substitution.
  * Produces a ScrubResult that the PrivacyScreen hook uses to decide

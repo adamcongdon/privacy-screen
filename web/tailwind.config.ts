@@ -6,20 +6,27 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        mono: [
-          'ui-monospace',
-          'SFMono-Regular',
-          'Menlo',
-          'Monaco',
-          'Consolas',
-          'Liberation Mono',
-          'Courier New',
-          'monospace',
-        ],
+        sans: ['IBM Plex Sans', 'system-ui', 'sans-serif'],
+        mono: ['IBM Plex Mono', 'ui-monospace', 'Menlo', 'monospace'],
       },
       colors: {
-        // Token category palette — used by getCategoryClasses() in src/lib/colors.ts
-        // Each entry has matching bg/border/text for highlight pills.
+        // Var-backed Flow theme tokens (README §Theming step 2). Drive these
+        // off CSS custom properties so dark/light share one component layer.
+        bg: 'var(--bg)',
+        surface: 'var(--surface)',
+        'surface-2': 'var(--surface-2)',
+        'surface-3': 'var(--surface-3)',
+        border: 'var(--border)',
+        'border-2': 'var(--border-2)',
+        text: 'var(--text)',
+        'text-dim': 'var(--text-dim)',
+        'text-faint': 'var(--text-faint)',
+        acc: 'var(--acc)',
+        'acc-2': 'var(--acc-2)',
+        'acc-ink': 'var(--acc-ink)',
+        ok: 'var(--ok)',
+        warn: 'var(--warn)',
+        danger: 'var(--danger)',
       },
       keyframes: {
         'fade-in': {

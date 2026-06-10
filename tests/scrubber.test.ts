@@ -1,5 +1,5 @@
 /**
- * Scrubber tests — port of se-lz PiiScrubberTests.cs
+ * Scrubber tests — ported from an internal C# test suite.
  * Tests the scrubText() function against canonical cases from the C# test suite.
  */
 import { describe, test, expect } from 'bun:test';
@@ -50,10 +50,10 @@ describe('scrubText — FQDN', () => {
     expect(r.scrubbed).not.toContain('backup01.acme.internal');
   });
 
-  test('skips allowlisted example FQDN', () => {
+  test('skips allowlisted Azure FQDN', () => {
     const map = new ScrubMap();
-    scrub('Check updates.example.com', map);
-    expect(map.tokenFor('updates.example.com')).toBeUndefined();
+    scrub('Check mgmt.azure.com', map);
+    expect(map.tokenFor('mgmt.azure.com')).toBeUndefined();
   });
 
   test('skips allowlisted Microsoft FQDN', () => {
@@ -390,7 +390,7 @@ describe('scrubText — person name detection', () => {
     const map = new ScrubMap();
     const sample = [
       'From: Vincent Tidwell <vt@example.com>',
-      'To: Adam Congdon <adam@example.com>',
+      'To: Dana Whitfield <dw@example.com>',
       'Cc: Blake Sheffield <bs@example.com>; Chad Aiken <ca@example.com>; Mike Bova <mb@example.com>',
       '',
       'Hey team,',
@@ -413,15 +413,15 @@ describe('scrubText — person name detection', () => {
 
   test('respects name_allowlist from config', () => {
     const map = new ScrubMap();
-    const cfg: PrivacyConfig = { ...baseCfg, name_allowlist: ['Adam Congdon'] };
+    const cfg: PrivacyConfig = { ...baseCfg, name_allowlist: ['Dana Whitfield'] };
     const r = scrubText(
-      'From: Adam Congdon <adam@example.com>\nHi.',
+      'From: Dana Whitfield <dw@example.com>\nHi.',
       map,
       null,
       { sourceEvent: 'test', config: cfg },
     );
-    expect(map.tokenFor('Adam Congdon')).toBeUndefined();
-    expect(r.scrubbed).toContain('Adam Congdon');
+    expect(map.tokenFor('Dana Whitfield')).toBeUndefined();
+    expect(r.scrubbed).toContain('Dana Whitfield');
   });
 
   test('pre-mints person_names from config', () => {
