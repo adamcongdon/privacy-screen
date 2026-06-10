@@ -55,7 +55,7 @@ See `release-manifest.example.json` for the manifest shape and `Plans/INSTALLER.
 
 ## What it covers
 
-PrivacyScreen ships with deterministic regex coverage for the 8-category taxonomy used by [OpenAI's Privacy Filter](https://openai.com/index/introducing-openai-privacy-filter/) plus infrastructure-specific categories Adam works with daily:
+PrivacyScreen ships with deterministic regex coverage for the 8-category taxonomy used by [OpenAI's Privacy Filter](https://openai.com/index/introducing-openai-privacy-filter/) plus infrastructure-specific categories common in enterprise environments:
 
 | Category | Example | Token | Source |
 |---|---|---|---|
@@ -68,8 +68,8 @@ PrivacyScreen ships with deterministic regex coverage for the 8-category taxonom
 | URL with path | `https://internal.acme.com/secret/123` | `{URL}` | OpenAI `private_url` |
 | IPv4 / IPv6 | `10.0.5.3` | `{IP}` | Custom |
 | FQDN | `server.customer.com` | `{HOST}` | Custom (allowlist for vendor infra) |
-| UNC path | `\\server\share` | `{PATH}` | Custom (Veeam-specific) |
-| Domain user | `DOMAIN\user` | `{USER}` | Custom (Veeam-specific) |
+| UNC path | `\\server\share` | `{PATH}` | Custom (enterprise infra) |
+| Domain user | `DOMAIN\user` | `{USER}` | Custom (enterprise infra) |
 | MAC address | `aa:bb:cc:dd:ee:ff` | `{MAC}` | Custom |
 | GUID | `550e8400-…` | `{GUID}` | Custom |
 | Customer names | from `PRIVACY_CONFIG.yaml` | `{CUSTOMER}` | Custom |
@@ -123,13 +123,13 @@ Add to your Claude Code `settings.json`:
 {
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "bun /Users/adam.congdon/code/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
+      { "hooks": [{ "type": "command", "command": "bun /path/to/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
     ],
     "PreToolUse": [
-      { "hooks": [{ "type": "command", "command": "bun /Users/adam.congdon/code/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
+      { "hooks": [{ "type": "command", "command": "bun /path/to/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
     ],
     "PostToolUse": [
-      { "hooks": [{ "type": "command", "command": "bun /Users/adam.congdon/code/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
+      { "hooks": [{ "type": "command", "command": "bun /path/to/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
     ]
   }
 }
@@ -306,7 +306,7 @@ Never commit either. The `.example` template is safe to share.
 Licensed under the **Apache License, Version 2.0**. See [`LICENSE`](LICENSE) for the full text and [`NOTICE`](NOTICE) for attribution + third-party acknowledgments.
 
 ```
-Copyright 2026 Adam Congdon
+Copyright 2026 the privacy-screen authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

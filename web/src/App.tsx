@@ -1,50 +1,23 @@
-import { useEffect, useRef } from 'react';
-import { Shield, CircleDot, AlertCircle, CheckCircle2, MessageSquareWarning } from 'lucide-react';
-import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { Composer } from './components/Composer';
-import { PreviewPane } from './components/PreviewPane';
-import { TokenMapDrawer } from './components/TokenMapDrawer';
-import { ReviewQueue } from './components/ReviewQueue';
-import { SettingsDrawer } from './components/SettingsDrawer';
+import { useEffect } from 'react';
+import {
+  CircleDot,
+  AlertCircle,
+  CheckCircle2,
+  MessageSquareWarning,
+} from 'lucide-react';
+import { Rail } from './components/flow/Rail';
+import { Shell } from './components/flow/Shell';
 import { ContextMenu } from './components/ContextMenu';
 import { CustomCategoryDialog } from './components/CustomCategoryDialog';
 import { FeedbackDialog } from './components/FeedbackDialog';
 import { XlsxColumnReview } from './components/XlsxColumnReview';
 import UpdateAvailableBanner from './components/UpdateAvailableBanner';
 import { useContextMenuShortcuts } from './lib/useContextMenu';
-import { useStore, type ToastEntry } from './store';
+import { useStore, applyTheme, type ToastEntry, type Route } from './store';
 import { getPayloadKind } from './lib/payloadKind';
 import { cn } from './lib/cn';
 import { useFeedbackJob } from './hooks/useFeedbackJob';
 import { FeedbackJobPill } from './components/FeedbackJobPill';
-
-/**
- * Sync-scroll plumbing — refs and handlers shared by the Composer textarea
- * and the Scrubbed Preview pane. Hoisted to App because both panes live in
- * separate sub-trees but should scroll together.
- */
-function useAppSyncScroll() {
-  const composerRef = useRef<HTMLTextAreaElement | null>(null);
-  const previewRef = useRef<HTMLDivElement | null>(null);
-  const isSyncing = useRef(false);
-
-  const mirror = (dst: HTMLElement | null, srcTop: number) => {
-    if (!dst || dst.scrollTop === srcTop) return;
-    isSyncing.current = true;
-    dst.scrollTop = srcTop;
-    requestAnimationFrame(() => { isSyncing.current = false; });
-  };
-  const onComposerScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
-    if (isSyncing.current) return;
-    mirror(previewRef.current, e.currentTarget.scrollTop);
-  };
-  const onPreviewScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    if (isSyncing.current) return;
-    mirror(composerRef.current, e.currentTarget.scrollTop);
-  };
-
-  return { composerRef, previewRef, onComposerScroll, onPreviewScroll };
-}
 
 export default function App(): JSX.Element {
   const refreshHealth = useStore((s) => s.refreshHealth);
@@ -53,14 +26,13 @@ export default function App(): JSX.Element {
   const refreshReview = useStore((s) => s.refreshReview);
   const refreshVersion = useStore((s) => s.refreshVersion);
   const refreshUpdateStatus = useStore((s) => s.refreshUpdateStatus);
-  const health = useStore((s) => s.health);
   const settings = useStore((s) => s.settings);
   const toasts = useStore((s) => s.toasts);
   const dismissToast = useStore((s) => s.dismissToast);
   const composerText = useStore((s) => s.composerText);
   const files = useStore((s) => s.files);
-  const tokenMapOpen = useStore((s) => s.tokenMapOpen);
-  const setTokenMapOpen = useStore((s) => s.setTokenMapOpen);
+  const route = useStore((s) => s.route);
+  const setRoute = useStore((s) => s.setRoute);
   const feedbackOpen = useStore((s) => s.feedbackOpen);
   const setFeedbackOpen = useStore((s) => s.setFeedbackOpen);
   const autoSetPreviewMode = useStore((s) => s.autoSetPreviewMode);
@@ -75,8 +47,11 @@ export default function App(): JSX.Element {
   // Global keyboard shortcuts for the mint-selection workflow.
   useContextMenuShortcuts();
 
-  // Sync-scroll plumbing for Compose ↔ Scrubbed Preview.
-  const sync = useAppSyncScroll();
+  // Apply the persisted/system theme to the document root once on mount so the
+  // `theme-*` class matches the store's hydrated `theme` value.
+  useEffect(() => {
+    applyTheme();
+  }, []);
 
   // Boot — pull everything once.
   useEffect(() => {
@@ -115,7 +90,8 @@ export default function App(): JSX.Element {
     autoSetPreviewMode(kind === 'html-dominant' ? 'rendered' : 'source');
   }, [composerText, files, autoSetPreviewMode, resetPreviewModeOverride]);
 
-  // ⌘K / Ctrl+K — toggle the Token Map drawer when no text field is focused.
+  // ⌘K / Ctrl+K — jump to the Vocabulary route when no text field is focused.
+  // (Was the Token Map drawer toggle pre-Flow; the drawer is now a route.)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
@@ -124,78 +100,21 @@ export default function App(): JSX.Element {
       const tag = target?.tagName?.toLowerCase();
       if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
       e.preventDefault();
-      setTokenMapOpen(!tokenMapOpen);
+      setRoute('vocab');
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [tokenMapOpen, setTokenMapOpen]);
+  }, [setRoute]);
 
   return (
-    <div className="flex h-screen min-h-0 flex-col bg-zinc-950 text-zinc-100">
-      {/* Top bar */}
-      <header className="flex items-center justify-between border-b border-zinc-800 px-4 py-2.5">
-        <div className="flex items-center gap-2">
-          <Shield className="h-4 w-4 text-indigo-400" />
-          <h1 className="font-mono text-sm font-semibold tracking-tight">privacy-screen</h1>
-          {health && (
-            <span className="ml-2 text-[10px] uppercase tracking-wider text-zinc-500">
-              v{health.version}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2.5">
-          <KeyStatus />
-          <HealthDot />
-          <TokenMapDrawer />
-          <button
-            type="button"
-            onClick={() => setFeedbackOpen(true)}
-            className="flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
-            title="Send feedback — files a GitHub issue"
-            aria-label="Send feedback"
-          >
-            <MessageSquareWarning className="h-3.5 w-3.5" /> send feedback
-          </button>
-          <SettingsDrawer />
-        </div>
-      </header>
-
-      {/* Global update strip — slim, sits between header and main. Self-hides
-          when no update is available or the current version has been dismissed. */}
-      <UpdateAvailableBanner />
-
-      {/* Two-column layout — horizontally resizable. */}
-      <main className="flex min-h-0 flex-1">
-        <PanelGroup direction="horizontal" autoSaveId="ps-columns-v3">
-          <Panel defaultSize={45} minSize={30}>
-            <div className="flex h-full min-h-0 flex-col">
-              <Composer
-                textareaRef={sync.composerRef}
-                onScroll={sync.onComposerScroll}
-              />
-            </div>
-          </Panel>
-
-          <PanelResizeHandle className="w-[4px] bg-transparent hover:bg-zinc-700 data-[resize-handle-active]:bg-zinc-600 cursor-col-resize transition-colors" />
-
-          <Panel defaultSize={55} minSize={40}>
-            <div className="flex h-full min-h-0 flex-col">
-              <PanelGroup direction="vertical" autoSaveId="ps-right-column-v3">
-                <Panel defaultSize={65} minSize={30}>
-                  <PreviewPane
-                    scrollRef={sync.previewRef}
-                    onScroll={sync.onPreviewScroll}
-                  />
-                </Panel>
-                <PanelResizeHandle className="h-[4px] bg-transparent hover:bg-zinc-700 data-[resize-handle-active]:bg-zinc-600 cursor-row-resize transition-colors" />
-                <Panel defaultSize={35} minSize={18}>
-                  <ReviewQueue />
-                </Panel>
-              </PanelGroup>
-            </div>
-          </Panel>
-        </PanelGroup>
-      </main>
+    <div className="flex h-screen min-h-0 bg-bg text-text">
+      <Rail />
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Global update strip — slim, sits above the routed screen. Self-hides
+            when no update is available or the current version was dismissed. */}
+        <UpdateAvailableBanner />
+        <RoutedScreen route={route} />
+      </div>
 
       {/* Global overlays */}
       <ContextMenu />
@@ -215,12 +134,103 @@ export default function App(): JSX.Element {
 
       {/* Status note when claude code is missing */}
       {settings && !settings.claude_code.found && (
-        <div className="fixed bottom-4 left-4 max-w-sm rounded-md border border-rose-800 bg-rose-950/70 px-3 py-2 text-xs text-rose-200 shadow-lg backdrop-blur">
+        <div className="fixed bottom-4 left-4 max-w-sm rounded-md border border-danger bg-surface px-3 py-2 text-xs text-danger shadow-lg backdrop-blur">
           Claude Code not found on PATH. Install from
-          <code className="mx-1 rounded bg-rose-900/50 px-1 font-mono">docs.claude.com/en/docs/claude-code</code>,
-          run <code className="mx-1 rounded bg-rose-900/50 px-1 font-mono">claude login</code>, then restart.
+          <code className="mx-1 rounded bg-surface-2 px-1 font-mono">docs.claude.com/en/docs/claude-code</code>,
+          run <code className="mx-1 rounded bg-surface-2 px-1 font-mono">claude login</code>, then restart.
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Shared header-right cluster — Claude status, server health, and send-feedback.
+ * Lived in the old single top bar; now passed into each screen's `Shell` so the
+ * controls persist across routes. (Engineer-C may relocate per-screen controls.)
+ */
+function GlobalHeaderControls(): JSX.Element {
+  const setFeedbackOpen = useStore((s) => s.setFeedbackOpen);
+  return (
+    <>
+      <KeyStatus />
+      <HealthDot />
+      <button
+        type="button"
+        onClick={() => setFeedbackOpen(true)}
+        className="flex items-center gap-1.5 rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-text-dim hover:bg-surface-3 hover:text-text"
+        title="Send feedback — files a GitHub issue"
+        aria-label="Send feedback"
+      >
+        <MessageSquareWarning className="h-3.5 w-3.5" /> send feedback
+      </button>
+    </>
+  );
+}
+
+/**
+ * Screen router. Each route renders a `Shell`-wrapped placeholder for now —
+ * Engineer-C fills in the real Scrub / Review / Vocabulary / Settings bodies.
+ * Titles, subtitles, and the trust band are wired here per the handoff spec.
+ */
+function RoutedScreen({ route }: { route: Route }): JSX.Element {
+  const headerRight = <GlobalHeaderControls />;
+
+  switch (route) {
+    case 'review':
+      return (
+        <Shell
+          title="Review queue"
+          subtitle="Triage low-confidence spans before they're tokenized."
+          headerRight={headerRight}
+          trust
+        >
+          <ScreenPlaceholder name="Review queue" />
+        </Shell>
+      );
+    case 'vocab':
+      return (
+        <Shell
+          title="Vocabulary"
+          subtitle="Every value you've tokenized — stored locally in SQLite, never synced."
+          headerRight={headerRight}
+        >
+          <ScreenPlaceholder name="Vocabulary" />
+        </Shell>
+      );
+    case 'settings':
+      return (
+        <Shell
+          title="Settings"
+          subtitle="Modes, LLM judge, updates, customer names, and data."
+          headerRight={headerRight}
+        >
+          <ScreenPlaceholder name="Settings" />
+        </Shell>
+      );
+    case 'scrub':
+    default:
+      return (
+        <Shell
+          title="Scrub & Send"
+          subtitle="Paste sensitive text — it's tokenized before anything is sent."
+          headerRight={headerRight}
+          trust
+        >
+          <ScreenPlaceholder name="Scrub & Send" />
+        </Shell>
+      );
+  }
+}
+
+/** Temporary body for routes whose screens land in Engineer-C. */
+function ScreenPlaceholder({ name }: { name: string }): JSX.Element {
+  return (
+    <div className="flex h-full items-center justify-center">
+      <div className="ps-panel max-w-md p-6 text-center">
+        <p className="text-sm font-semibold text-text">{name}</p>
+        <p className="mt-1.5 text-xs text-text-dim">Coming in Engineer-C.</p>
+      </div>
     </div>
   );
 }
@@ -229,7 +239,7 @@ function KeyStatus(): JSX.Element {
   const settings = useStore((s) => s.settings);
   if (!settings) {
     return (
-      <span className="text-[11px] uppercase tracking-wider text-zinc-500">loading…</span>
+      <span className="text-[11px] uppercase tracking-wider text-text-faint">loading…</span>
     );
   }
   const cc = settings.claude_code;
@@ -237,7 +247,7 @@ function KeyStatus(): JSX.Element {
     <span
       className={cn(
         'flex items-center gap-1 text-[11px] uppercase tracking-wider',
-        cc.found ? 'text-emerald-400' : 'text-rose-400',
+        cc.found ? 'text-ok' : 'text-danger',
       )}
       title={cc.found ? `Claude Code ${cc.version} on PATH` : 'Claude Code not found'}
     >
@@ -256,10 +266,10 @@ function HealthDot(): JSX.Element {
   const ok = health?.ok === true;
   return (
     <span
-      className="flex items-center gap-1 text-[11px] uppercase tracking-wider text-zinc-500"
+      className="flex items-center gap-1 text-[11px] uppercase tracking-wider text-text-faint"
       title={ok ? 'server reachable' : 'server unreachable'}
     >
-      <CircleDot className={cn('h-3 w-3', ok ? 'text-emerald-400' : 'text-red-400')} />
+      <CircleDot className={cn('h-3 w-3', ok ? 'text-ok' : 'text-danger')} />
       {ok ? 'online' : 'offline'}
     </span>
   );
@@ -274,10 +284,10 @@ function Toast({
 }): JSX.Element {
   const tone =
     toast.kind === 'error'
-      ? 'border-red-700 bg-red-950/90 text-red-100'
+      ? 'border-danger bg-surface text-danger'
       : toast.kind === 'success'
-        ? 'border-emerald-800 bg-emerald-950/90 text-emerald-100'
-        : 'border-zinc-700 bg-zinc-900/90 text-zinc-100';
+        ? 'border-ok bg-surface text-ok'
+        : 'border-border bg-surface text-text';
   return (
     <div
       className={cn(

@@ -59,8 +59,8 @@ describe('VocabStore', () => {
   });
 
   test('allowlist: regex match works', () => {
-    store.addAllowlist('\\.veeam\\.com$', true);
-    expect(store.isAllowlisted('updates.veeam.com')).toBe(true);
+    store.addAllowlist('\\.examplevendor\\.com$', true);
+    expect(store.isAllowlisted('updates.examplevendor.com')).toBe(true);
     expect(store.isAllowlisted('updates.acme.com')).toBe(false);
   });
 
@@ -91,10 +91,10 @@ describe('VocabStore', () => {
 
   // Issue #41 — allowlist persistence across the queue ↔ judge boundary.
   test('addReviewItem suppresses spans already on the allowlist', () => {
-    store.addAllowlist('updates.veeam.com');
+    store.addAllowlist('updates.examplevendor.com');
     const inserted = store.addReviewItem({
-      span: 'updates.veeam.com',
-      surrounding: 'GET updates.veeam.com/manifest',
+      span: 'updates.examplevendor.com',
+      surrounding: 'GET updates.examplevendor.com/manifest',
       suggested_cat: 'fqdn',
       confidence: 0.7,
       source_event: 'judge:userPromptSubmit',
@@ -104,10 +104,10 @@ describe('VocabStore', () => {
   });
 
   test('addReviewItem respects regex allowlist entries', () => {
-    store.addAllowlist('\\.veeam\\.com$', true);
+    store.addAllowlist('\\.examplevendor\\.com$', true);
     const inserted = store.addReviewItem({
-      span: 'mirror.veeam.com',
-      surrounding: 'hit mirror.veeam.com',
+      span: 'mirror.examplevendor.com',
+      surrounding: 'hit mirror.examplevendor.com',
       confidence: 0.8,
       source_event: 'judge:userPromptSubmit',
     });
