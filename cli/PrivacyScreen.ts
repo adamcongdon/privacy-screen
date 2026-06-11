@@ -14,7 +14,7 @@
  */
 
 import { homedir } from 'os';
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, createWriteStream, renameSync, unlinkSync } from 'fs';
 import { execSync } from 'child_process';
 import { VocabStore, defaultDbPath } from '../src/vocab';
 import { ScrubMap } from '../src/scrub-map';
@@ -176,8 +176,17 @@ async function cmdAllowlist(args: string[]): Promise<void> {
 }
 
 async function cmdScrub(): Promise<void> {
-  const { readFileSync } = await import('fs');
-  const text = readFileSync('/dev/stdin', 'utf-8');
+  // Bun.stdin.text() is reliable across macOS + Linux pipes (and when spawned
+  // with custom stdin). The previous readFileSync('/dev/stdin') was the exact
+  // Linux-pipe (and some spawn) bug the hook already fixed at
+  // hooks/PrivacyScreen.hook.ts:62; it could yield '' (or EACCES) leading to
+  // silent "clean" output for 'cli scrub'. Now explicit error on no input.
+  const text = await Bun.stdin.text();
+  if (!text.trim()) {
+    console.error('No input received — pipe text into this command, e.g.:');
+    console.error('  echo "my text" | bun cli/PrivacyScreen.ts scrub');
+    process.exit(1);
+  }
   const s = store();
   const map = new ScrubMap();
   s.loadIntoMap(map);
@@ -345,6 +354,9 @@ async function cmdInstallJudge(args: string[]): Promise<void> {
     fsExists: existsSync,
     fsMkdir: (p) => mkdirSync(p, { recursive: true }),
     fsWrite: (p, data) => writeFileSync(p, data),
+    fsCreateWriteStream: (p) => createWriteStream(p),
+    fsRename: renameSync,
+    fsUnlink: unlinkSync,
     whichLlamaServer: () => {
       try {
         return execSync('which llama-server', { stdio: ['ignore', 'pipe', 'ignore'] })

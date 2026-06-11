@@ -15,7 +15,7 @@ export const mkIpv6 = (): RegExp =>
   /(?:(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,7}:|::(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4})/g;
 
 export const mkEmail = (): RegExp =>
-  /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+  /[p{L}p{N}._%+-]+@(?:[p{L}p{N}](?:[p{L}p{N}-]*[p{L}p{N}])?.)+[p{L}]{2,}/gu;
 
 // UNC path. Path components disallow whitespace — eating spaces caused the
 // regex to swallow the rest of a line (including any trailing credential).
@@ -162,15 +162,15 @@ export const mkCorpEntity = (): RegExp =>
  *   - `^Bob Loblaw <bob@…>` — line-start (with `m` flag)
  */
 export const mkPersonFromHeader = (): RegExp =>
-  /(?:[;,:]|^|\n)\s*([A-Z][a-zA-Z'.\-]+(?:\s+[A-Z][a-zA-Z'.\-]+)+)\s*<[^>]+@/gm;
+  /(?:[;,:]|^|n)s*([p{Lu}][p{L}'.-]+(?:s+[p{Lu}][p{L}'.-]+)+)s*<[^>]+@/gmu;
 
 /** Capitalized Name appearing within 60 chars to the left of an email. */
 export const mkPersonAdjacentToEmail = (): RegExp =>
-  /\b([A-Z][a-zA-Z'.\-]+(?:\s+[A-Z][a-zA-Z'.\-]+)+)(?=[^@\n]{0,60}[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/g;
+  /b([p{Lu}][p{L}'.-]+(?:s+[p{Lu}][p{L}'.-]+)+)(?=[^@n]{0,60}[p{L}p{N}._%+-]+@(?:[p{L}p{N}](?:[p{L}p{N}-]*[p{L}p{N}])?.)+[p{L}]{2,})/gu;
 
 /** Sign-off pattern — "Best,\nName" / "Thanks,\nName" / etc. */
 export const mkSignOffName = (): RegExp =>
-  /\n\s*(?:Best|Thanks|Thank you|Regards|Cheers|Sincerely|Warmly|Talk soon)[,!.]?\s*\n+([A-Z][a-zA-Z'.\-]+(?:\s+[A-Z][a-zA-Z'.\-]+)*)/g;
+  /ns*(?:Best|Thanks|Thank you|Regards|Cheers|Sincerely|Warmly|Talk soon)[,!.]?s*n+([p{Lu}][p{L}'.-]+(?:s+[p{Lu}][p{L}'.-]+)*)/gu;
 
 /**
  * Tokens that look name-shaped but are never people — calendar words, email
@@ -196,7 +196,7 @@ export const NAME_DENYLIST: ReadonlySet<string> = new Set<string>([
   'github', 'stripe', 'cloudflare', 'azure',
 ]);
 
-const PERSON_TOKEN_RE = /^[A-Z][a-zA-Z'.\-]+$/;
+const PERSON_TOKEN_RE = /^[p{Lu}][p{L}'.-]+$/u;
 
 /**
  * True iff `name` looks like a valid human name and is not allowlisted.
@@ -284,6 +284,23 @@ export function looksLikeDate(s: string): boolean {
   const parts = s.split('.');
   if (parts.length < 2) return false;
   return parts.every((p) => /^\d+$/.test(p));
+}
+
+/**
+ * Heuristic to suppress common LLM-judge false positives on code / resource
+ * identifiers (the exact class of noise reported in issue #43: "Repository_2",
+ * "Server_3", etc.). These match the internal token counter shape without the
+ * braces, or general [A-Za-z_][A-Za-z0-9_]*_\d+  and are never real PII names,
+ * orgs, or credentials that a human operator needs to triage.
+ *
+ * Used by the judge path (validateAndShape). Not a security boundary; defense
+ * in depth against small-model overflagging when "prefer over-flagging".
+ */
+export function looksLikeCodeIdentifier(s: string): boolean {
+  if (!s) return false;
+  const t = s.trim();
+  if (/^[A-Za-z_][A-Za-z0-9_]*_\d+$/.test(t)) return true;
+  return false;
 }
 
 // ── Allowlist ─────────────────────────────────────────────────────────────────

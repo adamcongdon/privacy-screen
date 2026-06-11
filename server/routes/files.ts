@@ -2,13 +2,12 @@
  * POST /api/files — multipart file upload + scrub.
  *
  * M1: supports text-like files (.txt .md .log .json .csv .yaml .yml .conf .env-like).
- * M2 (#23): supports .xlsx via the two-step inspect→commit flow. A multipart
- * POST containing a mix of text and .xlsx files returns a heterogeneous
- * `files` array — text entries carry the legacy `{name, size, mime, original,
- * scrubbed, tokens, ...}` shape; xlsx entries carry
- * `{name, size, mime, kind: 'xlsx-inspection', uploadId, sheets}`. The
- * frontend discriminates on `kind`. After inspection, the client follows up
- * with POST /api/files/xlsx/commit (see `server/routes/files-xlsx.ts`).
+ * M2 (#23): supports .xlsx via the two-step inspect→commit flow.
+ * #35: .csv (and .xlsx) now use the column-aware scrub path so operators get
+ * the option to ignore an entire column or parse column items individually
+ * (instead of per-item review). Both return the same `kind: 'xlsx-inspection'`
+ * shape (the UI and commit endpoint are reused; the "xlsx" label is historical).
+ * A multipart POST containing a mix returns heterogeneous `files` array.
  *
  * Body: multipart/form-data with one or more `file` fields.
  *
@@ -48,6 +47,10 @@ function isXlsxLike(name: string, mime: string): boolean {
   return /\.xlsx$/i.test(name) || mime === XLSX_MIME;
 }
 
+function isCsvLike(name: string, mime: string): boolean {
+  return /\.csv$/i.test(name) || mime === 'text/csv';
+}
+
 export const filesRoute = new Hono();
 
 filesRoute.post('/', async (c) => {
@@ -74,15 +77,18 @@ filesRoute.post('/', async (c) => {
       continue;
     }
 
-    // .xlsx dispatch — Segment 3C2 (#23). Stage the bytes + return the
-    // inspection payload so the frontend can show the column-override UI.
-    // No scrubbing happens here; the client follows up with POST
-    // /api/files/xlsx/commit using the returned uploadId.
-    if (isXlsxLike(name, mime)) {
+    // Columnar dispatch (#23 + #35): .xlsx and .csv now share the column-aware
+    // inspect + commit flow. This gives CSV the "ignore entire column" /
+    // "parse column items individually" options (via skip vs regex in the
+    // per-column dropdown) instead of opaque whole-file scrubText().
+    // We reuse the exact same inspection shape + /api/files/xlsx/commit so the
+    // existing XlsxColumnReview UI lights up for CSV uploads with zero web changes.
+    const isColumnar = isXlsxLike(name, mime) || isCsvLike(name, mime);
+    if (isColumnar) {
       const ab = await entry.arrayBuffer();
       const buffer = Buffer.from(ab);
       try {
-        const inspection = await inspectXlsx(buffer);
+        const inspection = await inspectXlsx(buffer, undefined, name);
         const staged = stageUpload(buffer, name);
         results.push({
           name,
@@ -94,7 +100,8 @@ filesRoute.post('/', async (c) => {
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        results.push({ name, size, mime, error: `failed to parse xlsx: ${msg}` });
+        const label = isCsvLike(name, mime) ? 'csv' : 'xlsx';
+        results.push({ name, size, mime, error: `failed to parse ${label}: ${msg}` });
       }
       continue;
     }
