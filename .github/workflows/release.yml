@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -43,7 +43,7 @@ jobs:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/main')
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # Need full history for sha if we embed it; also for the later git commit of manifest.
           fetch-depth: 0
@@ -161,7 +161,7 @@ jobs:
         #   1. Settings → Secrets and variables → Actions → Variables tab
         #   2. Add variable: RUN_VIRUSTOTAL_SCAN = true
         if: ${{ vars.RUN_VIRUSTOTAL_SCAN == 'true' }}
-        uses: crazy-max/ghaction-virustotal@v4
+        uses: crazy-max/ghaction-virustotal@v5
         with:
           files: |
             dist/privacy-screen-darwin-arm64
@@ -176,7 +176,7 @@ jobs:
         # - Windows binary here has already been signed (see step above).
         # - Darwin binaries are unsigned; the sign-macos job will produce final-darwin-* overlays.
         # When RUN_CODE_SIGNING is not enabled, these artifacts (with unsigned darwins) are used directly.
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-binaries
           path: |
@@ -205,10 +205,10 @@ jobs:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/main')
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download built binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: build-binaries
           path: dist/
@@ -238,7 +238,7 @@ jobs:
           ls -l dist/
 
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: installer-windows
           path: dist/privacy-screen-setup-win32-x64.exe
@@ -256,10 +256,10 @@ jobs:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/main')
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download built binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: build-binaries
           path: dist/
@@ -286,7 +286,7 @@ jobs:
           ls -l dist/*.dmg
 
       - name: Upload dmg artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: installer-macos
           path: dist/*.dmg
@@ -305,7 +305,7 @@ jobs:
     if: ${{ vars.RUN_CODE_SIGNING == 'true' }}
     steps:
       - name: Download built darwin binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: build-binaries
           path: dist/
@@ -394,7 +394,7 @@ jobs:
           done
 
       - name: Upload final (signed + notarized + stapled) darwin binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: final-darwin-binaries
           path: |
@@ -424,7 +424,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -486,28 +486,28 @@ jobs:
           mv package.json.tmp package.json
 
       - name: Download built binaries (base layer)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: build-binaries
           path: dist/
 
       - name: Overlay final signed+notarized darwin binaries (when code signing enabled)
         if: ${{ vars.RUN_CODE_SIGNING == 'true' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: final-darwin-binaries
           path: dist/
 
       - name: Download Windows installer (best-effort)
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: installer-windows
           path: dist/
 
       - name: Download macOS installers (best-effort)
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: installer-macos
           path: dist/
