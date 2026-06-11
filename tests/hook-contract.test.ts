@@ -65,6 +65,26 @@ async function runHook(payload: object): Promise<HookOutput> {
   return { exitCode, stdout, stderr, parsed };
 }
 
+/** Like runHook but pipes a raw string to stdin (for invalid-JSON / oversized cases). */
+async function runHookRaw(rawStdin: string): Promise<HookOutput> {
+  const proc = Bun.spawn(['bun', HOOK_PATH], {
+    stdin: 'pipe',
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: { ...process.env, PRIVACY_SCREEN_CONFIG: configPath },
+  });
+  proc.stdin.write(rawStdin);
+  await proc.stdin.end();
+  const stdout = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+  const exitCode = await proc.exited;
+  let parsed: unknown = null;
+  if (stdout.trim()) {
+    try { parsed = JSON.parse(stdout.trim()); } catch { /* leave null */ }
+  }
+  return { exitCode, stdout, stderr, parsed };
+}
+
 // ── UserPromptSubmit ──────────────────────────────────────────────────────────
 
 describe('hook contract — UserPromptSubmit', () => {
@@ -325,29 +345,81 @@ describe('hook contract — error handling', () => {
     expect(stdout.trim()).toBe('');
   });
 
-  test('invalid JSON stdin → no output, exit 0', async () => {
+  // HOOK-03 (#95): non-empty unparseable stdin must FAIL CLOSED in enforce
+  // mode (exit 2), and pass through (exit 0) in observe — never silently
+  // proceed unscreened in enforce.
+  test('invalid JSON stdin → exit 2 in enforce mode (fail closed)', async () => {
     writeFile('enforce');
-    const proc = Bun.spawn(['bun', HOOK_PATH], {
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe',
-      env: { ...process.env, PRIVACY_SCREEN_CONFIG: configPath },
-    });
-    proc.stdin.write('not json at all');
-    await proc.stdin.end();
-    const stdout = await new Response(proc.stdout).text();
-    const code = await proc.exited;
-    expect(code).toBe(0);
-    expect(stdout.trim()).toBe('');
+    const out = await runHookRaw('not json at all');
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain('Unparseable');
   });
 
-  test('input over 1MB is passed through unmodified', async () => {
+  test('invalid JSON stdin → exit 0 in observe mode (pass through)', async () => {
+    writeFile('observe');
+    const out = await runHookRaw('not json at all');
+    expect(out.exitCode).toBe(0);
+  });
+
+  // HOOK-01 (#93): oversized input must FAIL CLOSED in enforce (exit 2) and
+  // pass through in observe — not unconditionally bypass scrubbing.
+  test('input over 1MB → exit 2 in enforce mode (fail closed)', async () => {
     writeFile('enforce');
     const huge = 'x'.repeat(1_100_000);
-    const out = await runHook({ hook_event_name: 'UserPromptSubmit', prompt: huge });
-    expect(out.exitCode).toBe(0);
-    expect(out.stdout.trim()).toBe('');
+    const out = await runHookRaw(
+      JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: huge }),
+    );
+    expect(out.exitCode).toBe(2);
     expect(out.stderr).toContain('exceeds');
+  });
+
+  test('oversized input with a credential is flagged in enforce mode', async () => {
+    writeFile('enforce');
+    const huge =
+      'GITHUB_TOKEN=ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa12 ' + 'x'.repeat(1_100_000);
+    const out = await runHookRaw(
+      JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: huge }),
+    );
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain('Credential');
+  });
+
+  test('input over 1MB → exit 0 in observe mode (pass through)', async () => {
+    writeFile('observe');
+    const huge = 'x'.repeat(1_100_000);
+    const out = await runHookRaw(
+      JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: huge }),
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stderr).toContain('exceeds');
+  });
+});
+
+// ── PostToolUse object-valued tool_response (HOOK-02 #94) ──────────────────────
+
+describe('hook contract — PostToolUse object tool_response', () => {
+  test('object tool_response with credential → exit 2', async () => {
+    writeFile('enforce');
+    const out = await runHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_response: {
+        stdout: 'export GITHUB_TOKEN=ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa12',
+        exitCode: 0,
+      },
+    });
+    expect(out.exitCode).toBe(2);
+  });
+
+  test('object tool_response with IP → stderr PII warning, no throw', async () => {
+    writeFile('enforce');
+    const out = await runHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_response: { stdout: 'server is at 10.66.77.88', exitCode: 0 },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stderr).toContain('PII');
   });
 });
 

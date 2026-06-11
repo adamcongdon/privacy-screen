@@ -26,7 +26,25 @@ import { ScrubMap } from '../src/scrub-map';
 import { VocabStore, defaultDbPath } from '../src/vocab';
 import { scrubText, scrubToolInput, type MintedToken } from '../src/scrubber';
 import { loadConfig, type PrivacyConfig } from '../src/config';
+import { mkCredential } from '../src/patterns';
 import { checkJudgeSync } from './lib/judge-sync';
+
+/** True if raw text contains anything matching the credential regex. */
+function rawHasCredential(text: string): boolean {
+  return mkCredential().test(text);
+}
+
+/**
+ * Fail-closed exit for the PreToolUse / PostToolUse path. In enforce mode a
+ * scan we could not complete (oversized, unparseable) must BLOCK (exit 2)
+ * rather than silently pass the event through unscreened. Observe/disabled
+ * keep pass-through (exit 0) so the modes stay honest.
+ */
+function failClosed(cfg: PrivacyConfig, diagnostic: string): never {
+  process.stderr.write(diagnostic);
+  if (cfg.mode === 'enforce') process.exit(2);
+  process.exit(0);
+}
 
 interface HookInput {
   session_id?: string;
@@ -36,8 +54,11 @@ interface HookInput {
   // PreToolUse / PostToolUse
   tool_name?: string;
   tool_input?: Record<string, unknown>;
-  tool_response?: string;
-  tool_result?: string;
+  // Claude Code sends tool_response/tool_result as a JSON *object* for most
+  // tools (HOOK-02 #94), not a string. Type it as unknown and normalize in
+  // the handler so credential blocking + PII warning actually run.
+  tool_response?: unknown;
+  tool_result?: unknown;
 }
 
 const MAX_INPUT_BYTES = 1_000_000; // 1MB — anything larger gets logged + passed through
@@ -61,23 +82,46 @@ async function main(): Promise<void> {
     // was a Bun.spawn pipe under Linux, which made every hook test trip the
     // early-exit path with no stdout/stderr.
     raw = await Bun.stdin.text();
+    // Empty stdin is a legitimate no-op (exit 0) on every mode (HOOK-03 #95).
     if (!raw.trim()) return;
-  } catch {
-    return;
+  } catch (err) {
+    // HOOK-03 (#95): a stdin *read error* on a non-empty event is uncertainty,
+    // not "nothing happened". Fail closed in enforce; pass through otherwise.
+    failClosed(
+      cfg,
+      `[PrivacyScreen] stdin read error: ${(err as Error)?.message ?? String(err)}\n`,
+    );
   }
 
   if (raw.length > MAX_INPUT_BYTES) {
-    process.stderr.write(
-      `[PrivacyScreen] Input ${raw.length}B exceeds ${MAX_INPUT_BYTES}B — passing through unmodified.\n`,
+    // HOOK-01 (#93): oversized payloads are the highest-PII-density inputs
+    // (e.g. a pasted customer log dump). Previously they bypassed all scrubbing
+    // with only a stderr note — an unconditional fail-open. Now: run the
+    // credential regex over the raw bytes, and in enforce mode block the event
+    // rather than letting it sail through un-tokenized. Observe keeps
+    // pass-through so the mode contract stays honest.
+    const credNote = rawHasCredential(raw)
+      ? ' Credential pattern detected in oversized input.'
+      : '';
+    failClosed(
+      cfg,
+      `[PrivacyScreen] Input ${raw.length}B exceeds ${MAX_INPUT_BYTES}B — ` +
+        `cannot scrub safely.${credNote}\n`,
     );
-    return;
   }
 
   let input: HookInput;
   try {
     input = JSON.parse(raw);
-  } catch {
-    return;
+  } catch (err) {
+    // HOOK-03 (#95): non-empty, unparseable input proceeded completely
+    // unscreened (exit 0) — contradicting the file's Fail-CLOSED contract.
+    // Now fail closed in enforce mode; observe logs and passes.
+    failClosed(
+      cfg,
+      `[PrivacyScreen] Unparseable stdin (${raw.length}B): ` +
+        `${(err as Error)?.message ?? String(err)}\n`,
+    );
   }
 
   const event = input.hook_event_name ?? detectEvent(input);
@@ -263,7 +307,17 @@ async function handlePostTool(
   cfg: PrivacyConfig,
 ): Promise<void> {
   const toolName = input.tool_name ?? 'unknown';
-  const toolResponse = input.tool_result ?? input.tool_response ?? '';
+  const rawResponse = input.tool_result ?? input.tool_response;
+  // HOOK-02 (#94): tool_response is a JSON object for most tools. Feeding an
+  // object straight to scrubText made .matchAll throw, so credential blocking
+  // and PII warning silently never ran (the throw surfaced as a confusing
+  // exit-2 with no scan). Normalize any non-string value to a scannable string.
+  const toolResponse =
+    typeof rawResponse === 'string'
+      ? rawResponse
+      : rawResponse == null
+        ? ''
+        : JSON.stringify(rawResponse);
   if (!toolResponse) return;
 
   // PostToolUse: scan only — cannot rewrite. Block on credentials, warn on PII.
