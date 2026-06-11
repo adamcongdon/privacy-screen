@@ -863,3 +863,24 @@ describe('scrubToolInput — deep nesting fails closed (SCR-02 #55)', () => {
     expect((result as { truncatedScan?: boolean }).truncatedScan).toBeFalsy();
   });
 });
+
+// ── SCR-06 (#59): scan skipped tool fields for sensitive key=value pairs ───────
+describe('scrubToolInput — sensitive KV in skipped fields (SCR-06 #59)', () => {
+  test('password=hunter2 in an Edit old_string sets hasCredentials', () => {
+    const map = new ScrubMap();
+    const input = { old_string: 'password=hunter2', new_string: 'password=changed' };
+    const { result } = scrubToolInput(
+      input, map, null, { sourceEvent: 'test', config: baseCfg }, 'Edit',
+    );
+    expect(result.hasCredentials).toBe(true);
+  });
+
+  test('Grep pattern field with api_key=… is still flagged', () => {
+    const map = new ScrubMap();
+    const input = { pattern: 'api_key=AKIAsomethingsecret', path: '/var/log' };
+    const { result } = scrubToolInput(
+      input, map, null, { sourceEvent: 'test', config: baseCfg }, 'Grep',
+    );
+    expect(result.hasCredentials).toBe(true);
+  });
+});

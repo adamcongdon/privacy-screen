@@ -473,13 +473,24 @@ function scrubObject(
       const outKey = keyResult.scrubbed;
 
       if (skipFields.has(k)) {
-        // Still scan for credentials so we don't leak secrets via "skipped" fields,
+        // Still scan for secrets so we don't leak them via "skipped" fields,
         // but pass the value through unmodified.
         if (typeof v === 'string') {
           const creds = [...v.matchAll(mkCredential())];
           if (creds.length > 0) {
             combined.hasCredentials = true;
             combined.credentialSnippets.push(...creds.map((m) => redactCredential(m[0])));
+          }
+          // SCR-06 (#59): the main path flags sensitive key=value pairs
+          // (password=…, api_key=…) via mkSensitiveKV, but the skip-field
+          // branch only checked mkCredential — an asymmetry that let
+          // 'password=hunter2' in an Edit old_string flow through unflagged.
+          const kvs = [...v.matchAll(mkSensitiveKV())];
+          if (kvs.length > 0) {
+            combined.hasCredentials = true;
+            combined.credentialSnippets.push(
+              ...kvs.map((m) => `${m[1]}=[REDACTED]`),
+            );
           }
         }
         out[outKey] = v;
