@@ -1,30 +1,29 @@
 /**
- * Tests for server/routes/feedback.ts — the async POST /api/feedback flow (#22).
+ * Tests for server/routes/feedback.ts — the async POST /api/feedback flow,
+ * reworked to post through the feedback relay (#15 universal-relay design)
+ * instead of shelling out to `gh issue create`.
  *
  * Strategy: mount the route on a minimal Hono app and call
- * `app.fetch(new Request(…))` directly. We use a test seam
- * (__PRIVACY_SCREEN_TEST_GH_BIN) so the route spawns a stub script instead of
- * the real `gh` CLI — letting us:
- *   1. assert 503 when gh is "not on PATH" (stub absent)
- *   2. capture the title/body that gh sees (anti-leak)
- *   3. assert end-to-end success when the stub prints a fake issue URL
+ * `app.fetch(new Request(…))` directly. A local stub relay (Bun.serve) stands
+ * in for the Cloudflare Worker; the route is pointed at it via the test seam
+ * `__PRIVACY_SCREEN_TEST_RELAY_URL`. The stub captures the exact body POSTed so
+ * we can:
+ *   1. assert end-to-end success when it returns a fake issue number/url
+ *   2. assert the job goes to `error` when the relay fails
+ *   3. capture the relay payload (anti-leak) and prove no raw customer name
+ *      ever leaves the process
  *
  * Privacy invariant under test (ISC-32): the raw customer name set in
- * `cfg.customer_names` MUST NOT appear in the spawn argv OR in the issue body
- * piped over stdin — only {CUSTOMER}/{CUSTOMER_N} tokens.
+ * `cfg.customer_names` MUST NOT appear in the body POSTed to the relay — only
+ * {CUSTOMER}/{CUSTOMER_N} tokens.
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { Hono } from 'hono';
-import { writeFileSync, mkdtempSync, rmSync, chmodSync, readFileSync, existsSync } from 'fs';
+import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import {
-  feedbackRoute,
-  resolveGhBin,
-  buildTitle,
-  buildBody,
-} from '../server/routes/feedback';
+import { feedbackRoute, buildTitle, buildBody } from '../server/routes/feedback';
 import { resetVocab } from '../server/lib/vocab-store';
 import { _resetForTests as resetJobs, getJob } from '../server/lib/feedback-jobs';
 import { assertRedacted } from '../server/lib/feedback-diagnostics';
@@ -32,22 +31,23 @@ import { assertRedacted } from '../server/lib/feedback-diagnostics';
 let workDir: string;
 let configPath: string;
 let dbPath: string;
-/** Path where the stub `gh` script will be written per-test. */
-let stubPath: string;
-/** Path the stub writes its captured argv JSON to. */
-let argvCaptureFile: string;
-/** Path the stub writes its captured stdin (issue body) to. */
-let bodyCaptureFile: string;
 
 const UNIQUE_CUSTOMER = 'TestCustomer_unique_xyz';
+
+// ── Stub relay state ──────────────────────────────────────────────────────────
+let relayServer: ReturnType<typeof Bun.serve> | null = null;
+let relayUrl = '';
+/** The exact request body the stub relay last received. */
+let lastRelayBody: string | null = null;
+/** Toggle the stub between success and failure responses per-test. */
+let relayMode: 'ok' | 'fail' = 'ok';
+/** Issue number the stub returns on success. */
+let relayIssueNumber = 123;
 
 beforeAll(() => {
   workDir = mkdtempSync(join(tmpdir(), 'pai-privacy-feedback-'));
   dbPath = join(workDir, 'vocab.db');
   configPath = join(workDir, 'PRIVACY_CONFIG.yaml');
-  stubPath = join(workDir, 'gh-stub.sh');
-  argvCaptureFile = join(workDir, 'capture-argv.json');
-  bodyCaptureFile = join(workDir, 'capture-body.txt');
 
   writeFileSync(
     configPath,
@@ -62,26 +62,50 @@ beforeAll(() => {
     ].join('\n'),
   );
   process.env.PRIVACY_SCREEN_CONFIG = configPath;
+
+  // Start the stub relay. Captures the POST body and answers per `relayMode`.
+  relayServer = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const url = new URL(req.url);
+      if (req.method === 'POST' && url.pathname === '/feedback') {
+        lastRelayBody = await req.text();
+        if (relayMode === 'fail') {
+          return new Response(JSON.stringify({ ok: false, error: 'relay boom' }), {
+            status: 502,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            issueNumber: relayIssueNumber,
+            issueUrl: `https://github.com/adamcongdon/privacy-screen/issues/${relayIssueNumber}`,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('not found', { status: 404 });
+    },
+  });
+  relayUrl = `http://127.0.0.1:${relayServer.port}`;
+  process.env.__PRIVACY_SCREEN_TEST_RELAY_URL = relayUrl;
 });
 
 afterAll(() => {
   resetVocab();
+  relayServer?.stop(true);
   delete process.env.PRIVACY_SCREEN_CONFIG;
-  delete process.env.__PRIVACY_SCREEN_TEST_GH_BIN;
-  delete process.env.PRIVACY_SCREEN_SKIP_CLAUDE_CHECK;
+  delete process.env.__PRIVACY_SCREEN_TEST_RELAY_URL;
   rmSync(workDir, { recursive: true, force: true });
 });
 
 beforeEach(() => {
-  // Reset the per-test seam envs
-  delete process.env.__PRIVACY_SCREEN_TEST_GH_BIN;
   delete process.env.__PRIVACY_SCREEN_TEST_SCRUB_THROW;
-  delete process.env.PRIVACY_SCREEN_SKIP_CLAUDE_CHECK;
-  // Clean previous capture artefacts and stub
-  if (existsSync(argvCaptureFile)) rmSync(argvCaptureFile, { force: true });
-  if (existsSync(bodyCaptureFile)) rmSync(bodyCaptureFile, { force: true });
-  if (existsSync(stubPath)) rmSync(stubPath, { force: true });
-  // Always start with an empty job store so polling assertions are deterministic
+  // Reset stub relay + job store so assertions are deterministic.
+  lastRelayBody = null;
+  relayMode = 'ok';
+  relayIssueNumber = 123;
   resetJobs();
 });
 
@@ -104,70 +128,6 @@ function makeGetRequest(jobId: string): Request {
 }
 
 /**
- * Write an executable shell stub at stubPath that:
- *   - captures argv (without $0) to argvCaptureFile as a JSON array
- *   - copies stdin to bodyCaptureFile (so we can grep the issue body)
- *   - prints `stdoutContent` to stdout
- *   - exits with the requested status
- *
- * The stub also responds correctly to `--version` so the presence check
- * passes — gh's first call from the route is `gh --version`.
- */
-function installGhStub(stdoutContent: string, exitCode = 0): void {
-  const escapedCapture = argvCaptureFile.replace(/'/g, `'\\''`);
-  const escapedBody = bodyCaptureFile.replace(/'/g, `'\\''`);
-  const escapedStdout = stdoutContent.replace(/'/g, `'\\''`);
-
-  // We write a small bash script:
-  //   * For `--version`: print and exit 0 (so checkGhBinary passes).
-  //   * For `auth status`: print success and exit 0 (so checkGhAuth passes).
-  //     Tests that exercise the auth-failure path set
-  //     __PRIVACY_SCREEN_TEST_GH_AUTH_FAIL=1 before calling the stub.
-  //   * Otherwise: JSON-encode argv (escaping via python3 if available, then
-  //     awk fallback) to the capture file, drain stdin into the body file,
-  //     print the canned stdout, exit with requested code.
-  const script = [
-    '#!/usr/bin/env bash',
-    'set -u',
-    'if [ "${1:-}" = "--version" ]; then',
-    '  echo "gh version 2.50.0 (stub)"',
-    '  exit 0',
-    'fi',
-    'if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then',
-    '  if [ "${__PRIVACY_SCREEN_TEST_GH_AUTH_FAIL:-0}" = "1" ]; then',
-    '    echo "X You are not logged into any GitHub hosts. To log in, run: gh auth login" 1>&2',
-    '    exit 1',
-    '  fi',
-    '  echo "github.com — Logged in as stub-user"',
-    '  exit 0',
-    'fi',
-    '',
-    '# Encode each argv element to JSON (python3 preferred for correctness).',
-    'args_json="["',
-    'first=1',
-    'for a in "$@"; do',
-    '  if command -v python3 >/dev/null 2>&1; then',
-    '    esc=$(printf %s "$a" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")',
-    '  else',
-    '    esc=$(printf %s "$a" | sed \'s/\\\\/\\\\\\\\/g; s/"/\\\\"/g\' | awk \'{printf "\\"%s\\"", $0}\')',
-    '  fi',
-    '  if [ $first -eq 1 ]; then args_json+="$esc"; first=0; else args_json+=", $esc"; fi',
-    'done',
-    'args_json+="]"',
-    `printf %s "$args_json" > '${escapedCapture}'`,
-    '',
-    `cat > '${escapedBody}'`,
-    '',
-    `printf %s '${escapedStdout}'`,
-    `exit ${exitCode}`,
-    '',
-  ].join('\n');
-  writeFileSync(stubPath, script);
-  chmodSync(stubPath, 0o755);
-  process.env.__PRIVACY_SCREEN_TEST_GH_BIN = stubPath;
-}
-
-/**
  * Poll GET /:jobId until status leaves {queued, drafting, filing} or until
  * the 5s ceiling is reached. Returns the last observed state.
  */
@@ -183,21 +143,20 @@ async function pollUntilTerminal(app: Hono, jobId: string, timeoutMs = 5000): Pr
   return last;
 }
 
-// ── Input validation + gating ────────────────────────────────────────────────
+// ── Input validation ──────────────────────────────────────────────────────────
 
 describe('POST /api/feedback — validation', () => {
   test('returns 400 on empty summary', async () => {
-    installGhStub('https://github.com/adamcongdon/privacy-screen/issues/1');
     const app = makeApp();
     const res = await app.fetch(makePostRequest({ summary: '   ' }));
     expect(res.status).toBe(400);
     const j = (await res.json()) as { ok: boolean; error: string };
     expect(j.ok).toBe(false);
     expect(j.error).toContain('summary');
+    expect(lastRelayBody).toBeNull(); // never reached the relay
   });
 
   test('returns 400 on non-object body', async () => {
-    installGhStub('https://github.com/adamcongdon/privacy-screen/issues/1');
     const app = makeApp();
     const res = await app.fetch(
       new Request('http://127.0.0.1/api/feedback', {
@@ -207,56 +166,21 @@ describe('POST /api/feedback — validation', () => {
       }),
     );
     expect(res.status).toBe(400);
+    expect(lastRelayBody).toBeNull();
   });
 });
 
 describe('POST /api/feedback — credential refusal', () => {
   test('returns 400 when scrubber flags a credential in the summary', async () => {
-    installGhStub('https://github.com/adamcongdon/privacy-screen/issues/1');
     const app = makeApp();
     // A high-entropy bearer-style token will trip the credential detector.
-    const summary =
-      'Here is my key: ghp_' + 'A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q7R8';
+    const summary = 'Here is my key: ghp_' + 'A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q7R8';
     const res = await app.fetch(makePostRequest({ summary }));
     expect(res.status).toBe(400);
     const j = (await res.json()) as { ok: boolean; error: string };
     expect(j.ok).toBe(false);
     expect(j.error.toLowerCase()).toContain('credential');
-  });
-});
-
-describe('POST /api/feedback — 503 gating', () => {
-  test('returns 503 when gh is not on PATH', async () => {
-    // Point the seam at a nonexistent binary so checkGhBinary returns found=false
-    process.env.__PRIVACY_SCREEN_TEST_GH_BIN = join(workDir, 'does-not-exist');
-    const app = makeApp();
-    const res = await app.fetch(
-      makePostRequest({ summary: 'something is broken in the UI' }),
-    );
-    expect(res.status).toBe(503);
-    const j = (await res.json()) as { ok: boolean; error: string };
-    expect(j.ok).toBe(false);
-    expect(j.error).toContain('gh');
-  });
-
-  // Issue #42 — gh installed but unauthenticated must return 503 synchronously
-  // with an actionable message, not let the spawn fail much later with a
-  // generic HTTP 401 from GitHub.
-  test('returns 503 with `gh auth login` hint when gh is unauthenticated', async () => {
-    installGhStub('https://github.com/adamcongdon/privacy-screen/issues/1');
-    process.env.__PRIVACY_SCREEN_TEST_GH_AUTH_FAIL = '1';
-    try {
-      const app = makeApp();
-      const res = await app.fetch(
-        makePostRequest({ summary: 'unauth scenario' }),
-      );
-      expect(res.status).toBe(503);
-      const j = (await res.json()) as { ok: boolean; error: string };
-      expect(j.ok).toBe(false);
-      expect(j.error).toContain('gh auth login');
-    } finally {
-      delete process.env.__PRIVACY_SCREEN_TEST_GH_AUTH_FAIL;
-    }
+    expect(lastRelayBody).toBeNull(); // refused before any egress
   });
 });
 
@@ -264,7 +188,6 @@ describe('POST /api/feedback — 503 gating', () => {
 
 describe('POST /api/feedback — async accept', () => {
   test('returns 202 + jobId for a valid submission', async () => {
-    installGhStub('https://github.com/adamcongdon/privacy-screen/issues/77');
     const app = makeApp();
     const res = await app.fetch(makePostRequest({ summary: 'a small bug report' }));
     expect(res.status).toBe(202);
@@ -272,8 +195,7 @@ describe('POST /api/feedback — async accept', () => {
     expect(j.ok).toBe(true);
     expect(typeof j.jobId).toBe('string');
     expect(j.jobId.length).toBeGreaterThan(0);
-
-    // The job must be discoverable via the store immediately
+    // The job must be discoverable via the store immediately.
     expect(getJob(j.jobId)).not.toBeNull();
   });
 });
@@ -291,12 +213,10 @@ describe('GET /api/feedback/:jobId — polling', () => {
   });
 
   test('returns the current job state for a known jobId', async () => {
-    installGhStub('https://github.com/adamcongdon/privacy-screen/issues/88');
     const app = makeApp();
     const post = await app.fetch(makePostRequest({ summary: 'small bug' }));
     const { jobId } = (await post.json()) as { jobId: string };
 
-    // The state may be in any phase here; assert structural shape only.
     const res = await app.fetch(makeGetRequest(jobId));
     expect(res.status).toBe(200);
     const state = (await res.json()) as {
@@ -315,9 +235,8 @@ describe('GET /api/feedback/:jobId — polling', () => {
 // ── End-to-end happy path ────────────────────────────────────────────────────
 
 describe('POST + poll — end to end', () => {
-  test('submits, polls to done, surfaces issueNumber + issueUrl', async () => {
-    const fakeUrl = 'https://github.com/adamcongdon/privacy-screen/issues/99';
-    installGhStub(`Creating issue in adamcongdon/privacy-screen\n${fakeUrl}\n`);
+  test('submits, polls to done, surfaces issueNumber + issueUrl from the relay', async () => {
+    relayIssueNumber = 99;
     const app = makeApp();
 
     const post = await app.fetch(makePostRequest({ summary: 'end-to-end smoke test' }));
@@ -327,16 +246,56 @@ describe('POST + poll — end to end', () => {
     const final = await pollUntilTerminal(app, jobId);
     expect(final).not.toBeNull();
     expect(final.status).toBe('done');
-    expect(final.issueUrl).toBe(fakeUrl);
+    expect(final.issueUrl).toBe('https://github.com/adamcongdon/privacy-screen/issues/99');
     expect(final.issueNumber).toBe(99);
+
+    // The relay received a payload carrying the type label.
+    expect(lastRelayBody).not.toBeNull();
+    const payload = JSON.parse(lastRelayBody as string) as {
+      title: string;
+      body: string;
+      type: string;
+    };
+    expect(payload.type).toBe('bug'); // default when omitted
+    expect(payload.title.length).toBeGreaterThan(0);
+    expect(payload.body).toContain('<details><summary>Diagnostics</summary>');
+  });
+
+  test('passes the chosen feedback type through to the relay', async () => {
+    const app = makeApp();
+    const post = await app.fetch(
+      makePostRequest({ summary: 'a feature idea', type: 'enhancement' }),
+    );
+    const { jobId } = (await post.json()) as { jobId: string };
+    const final = await pollUntilTerminal(app, jobId);
+    expect(final.status).toBe('done');
+    const payload = JSON.parse(lastRelayBody as string) as { type: string };
+    expect(payload.type).toBe('enhancement');
+  });
+});
+
+// ── Relay failure → job error ────────────────────────────────────────────────
+
+describe('POST + poll — relay failure', () => {
+  test('marks the job error (not done) when the relay returns non-2xx', async () => {
+    relayMode = 'fail';
+    const app = makeApp();
+    const post = await app.fetch(makePostRequest({ summary: 'will fail at the relay' }));
+    expect(post.status).toBe(202);
+    const { jobId } = (await post.json()) as { jobId: string };
+
+    const final = await pollUntilTerminal(app, jobId);
+    expect(final.status).toBe('error');
+    expect(typeof final.error).toBe('string');
+    expect(final.error).toContain('relay boom');
+    expect(final.issueUrl).toBeUndefined();
   });
 });
 
 // ── Anti-leak (ISC-32) ───────────────────────────────────────────────────────
 
 describe('POST /api/feedback — anti-leak (ISC-32)', () => {
-  test('raw customer name never appears in argv or issue body', async () => {
-    installGhStub('https://github.com/adamcongdon/privacy-screen/issues/500');
+  test('raw customer name never appears in the relay payload', async () => {
     const app = makeApp();
     const summary = `When I open ${UNIQUE_CUSTOMER}'s tenant the page goes white. ${UNIQUE_CUSTOMER} is on prod.`;
     const post = await app.fetch(makePostRequest({ summary }));
@@ -346,28 +305,21 @@ describe('POST /api/feedback — anti-leak (ISC-32)', () => {
     const final = await pollUntilTerminal(app, jobId);
     expect(final.status).toBe('done');
 
-    // Both capture files must exist and be free of the raw customer name
-    expect(existsSync(argvCaptureFile)).toBe(true);
-    expect(existsSync(bodyCaptureFile)).toBe(true);
-    const argv = readFileSync(argvCaptureFile, 'utf-8');
-    const body = readFileSync(bodyCaptureFile, 'utf-8');
-
-    expect(argv.includes(UNIQUE_CUSTOMER)).toBe(false);
+    // The exact body POSTed to the relay must be free of the raw customer name.
+    expect(lastRelayBody).not.toBeNull();
+    const body = lastRelayBody as string;
     expect(body.includes(UNIQUE_CUSTOMER)).toBe(false);
 
-    // And at least one of them must contain a {CUSTOMER} token — proves the
-    // scrubber actually matched and replaced rather than dropping the field.
-    expect(/\{CUSTOMER(_\d+)?\}/.test(argv + body)).toBe(true);
+    // And it must contain a {CUSTOMER} token — proves the scrubber actually
+    // matched and replaced rather than dropping the field.
+    expect(/\{CUSTOMER(_\d+)?\}/.test(body)).toBe(true);
   });
 });
 
 // ── GET /preview ─────────────────────────────────────────────────────────────
 
 describe('GET /api/feedback/preview — scrubbed diagnostics', () => {
-  test('returns scrubbed diagnostics JSON without spawning gh', async () => {
-    // Even with a deliberately-broken stub, preview must succeed without
-    // touching gh — it's a pure read.
-    process.env.__PRIVACY_SCREEN_TEST_GH_BIN = join(workDir, 'should-not-be-called');
+  test('returns scrubbed diagnostics JSON without egress', async () => {
     const app = makeApp();
     const res = await app.fetch(
       new Request('http://127.0.0.1/api/feedback/preview', { method: 'GET' }),
@@ -382,6 +334,7 @@ describe('GET /api/feedback/preview — scrubbed diagnostics', () => {
     expect(j.config.mode).toBe('observe');
     expect(j.config.llm_validate.enabled).toBe(false);
     expect(JSON.stringify(j)).not.toContain(UNIQUE_CUSTOMER);
+    expect(lastRelayBody).toBeNull(); // preview is a pure read
   });
 });
 
@@ -389,7 +342,6 @@ describe('GET /api/feedback/preview — scrubbed diagnostics', () => {
 
 describe('security regressions', () => {
   test('POST returns 500 generic when scrubText throws', async () => {
-    installGhStub('https://github.com/adamcongdon/privacy-screen/issues/1');
     process.env.__PRIVACY_SCREEN_TEST_SCRUB_THROW = '1';
     const app = makeApp();
     const summary = 'This is a secret summary that must not be echoed';
@@ -398,6 +350,7 @@ describe('security regressions', () => {
     const j = await res.json();
     expect(j).toEqual({ ok: false, error: 'scrub failed — feedback not sent' });
     expect(JSON.stringify(j)).not.toContain(summary);
+    expect(lastRelayBody).toBeNull();
     delete process.env.__PRIVACY_SCREEN_TEST_SCRUB_THROW;
   });
 
@@ -438,22 +391,6 @@ describe('security regressions', () => {
     };
     (bad2 as any).extra = [1, 2, 3];
     expect(() => assertRedacted(bad2 as any)).toThrow();
-  });
-
-  test('production-gated test-seam env var', () => {
-    // Production mode: env override is ignored, resolver returns literal 'gh'.
-    const oldNodeEnv = process.env.NODE_ENV;
-    process.env.__PRIVACY_SCREEN_TEST_GH_BIN = '/tmp/fake-gh-binary';
-
-    process.env.NODE_ENV = 'production';
-    expect(resolveGhBin()).toBe('gh');
-
-    // Non-production: override IS honored.
-    process.env.NODE_ENV = 'test';
-    expect(resolveGhBin()).toBe('/tmp/fake-gh-binary');
-
-    process.env.NODE_ENV = oldNodeEnv ?? '';
-    delete process.env.__PRIVACY_SCREEN_TEST_GH_BIN;
   });
 });
 

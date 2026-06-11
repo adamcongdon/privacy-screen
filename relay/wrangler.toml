@@ -1,0 +1,16 @@
+name = "privacy-screen-feedback"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+
+# Non-secret tunables. Secrets (GH_TOKEN, APP_HMAC_KEY) are set with
+#   bunx wrangler secret put <NAME>
+# and never live in this file.
+[vars]
+RATE_LIMIT_MAX = "10"
+RATE_LIMIT_WINDOW_SECONDS = "3600"
+
+# Per-IP rate-limit store. Create the namespace once and paste its id below:
+#   bunx wrangler kv namespace create RATE_LIMIT
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "ef3bf450ca874d62963e01820d080a91"
