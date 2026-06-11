@@ -29,6 +29,19 @@ export type Mode = 'enforce' | 'observe' | 'disabled';
  */
 export type UpdateChannel = 'off' | 'stable' | 'beta';
 
+/** Canonical manifest URLs for the self-service channel picker (no YAML editing). */
+export const UPDATE_CANONICAL_URLS: Record<'stable' | 'beta', string> = {
+  stable: 'https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json',
+  beta: 'https://raw.githubusercontent.com/adamcongdon/privacy-screen/beta/release-manifest-beta.json',
+};
+
+export function recommendedManifestUrlForChannel(
+  ch: 'off' | 'stable' | 'beta',
+): string | undefined {
+  if (ch === 'off') return undefined;
+  return UPDATE_CANONICAL_URLS[ch];
+}
+
 /**
  * LLM secondary-validation runtime. Only `llama-server` is supported in v1
  * (llama.cpp's HTTP server). The judge is opt-in and runs out-of-band — the
@@ -123,6 +136,20 @@ export interface PrivacyConfig {
   llm_validate: LlmValidateConfig;
   /** Hook-side opt-in knobs (auto-approve precheck, etc). */
   hook: HookConfig;
+
+  /**
+   * Self-service user-defined literal patterns (from right-click "Tokenize selection").
+   * These are high-priority literal matches in the scrubber (priority 1.2).
+   * Persisted via UI only.
+   */
+  user_patterns?: Array<{ text: string; cat: string }>;
+
+  /**
+   * Self-service custom token categories (name + color) created by the user.
+   * Merged with built-ins for pills, menus, vocab filters.
+   * Persisted via UI only.
+   */
+  custom_categories?: Array<{ id: string; label: string; color: string }>;
   /**
    * xlsx scrubber config (Issue #23). Drives column → pattern resolution
    * for `.xlsx` uploads. Optional in the type so call sites that construct
@@ -155,8 +182,7 @@ const DEFAULTS: PrivacyConfig = {
     NotebookEdit: ['old_string', 'new_string'],
   },
   update_channel: 'off',
-  update_manifest_url:
-    'https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json',
+  update_manifest_url: UPDATE_CANONICAL_URLS.stable,
   llm_validate: {
     enabled: false,
     model_path: null,
@@ -173,6 +199,8 @@ const DEFAULTS: PrivacyConfig = {
     columnRules: [],
     autoDetect: true,
   },
+  user_patterns: [],
+  custom_categories: [],
 };
 
 export function loadConfig(explicitPath?: string): PrivacyConfig {
@@ -224,6 +252,8 @@ function mergeConfig(base: PrivacyConfig, override: unknown): PrivacyConfig {
     llm_validate: mergeLlmValidate(base.llm_validate, o.llm_validate),
     hook: mergeHook(base.hook, o.hook),
     xlsx: mergeXlsx(base.xlsx ?? { columnRules: [], autoDetect: true }, o.xlsx),
+    user_patterns: mergeUserPatterns(base.user_patterns ?? [], o.user_patterns),
+    custom_categories: mergeCustomCategories(base.custom_categories ?? [], o.custom_categories),
   };
 }
 
@@ -388,4 +418,35 @@ function mergeSkipFields(
     }
   }
   return out;
+}
+
+function mergeUserPatterns(
+  base: Array<{ text: string; cat: string }>,
+  override: unknown,
+): Array<{ text: string; cat: string }> {
+  if (!Array.isArray(override)) return base;
+  return override
+    .filter((p): p is { text: string; cat: string } =>
+      p && typeof p === 'object' && typeof p.text === 'string' && p.text.length > 0 && typeof p.cat === 'string' && p.cat.length > 0,
+    )
+    .map((p) => ({ text: p.text, cat: p.cat.toLowerCase() }));
+}
+
+function mergeCustomCategories(
+  base: Array<{ id: string; label: string; color: string }>,
+  override: unknown,
+): Array<{ id: string; label: string; color: string }> {
+  if (!Array.isArray(override)) return base;
+  const seen = new Set<string>();
+  const out: Array<{ id: string; label: string; color: string }> = [];
+  for (const c of override) {
+    if (!c || typeof c !== 'object') continue;
+    const id = typeof c.id === 'string' ? c.id : '';
+    const label = typeof c.label === 'string' ? c.label.trim() : '';
+    const color = typeof c.color === 'string' ? c.color : '';
+    if (!id || !label || !color || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, label, color });
+  }
+  return out.length ? out : base;
 }

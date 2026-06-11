@@ -22,6 +22,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Search, Download, Eye, EyeOff, Trash2, Lock } from 'lucide-react';
 import { useStore } from '../../store';
+import { useContextMenu } from '../../lib/useContextMenu';
 import { getCategoryHue } from '../../lib/colors';
 import { categoryLabel, CATS } from '../../lib/categories';
 import type { Token, VocabRow } from '../../api';
@@ -108,6 +109,7 @@ export function VocabularyPage({ query }: { query: string }): JSX.Element {
   const vocab = useStore((s) => s.vocab);
   const refreshVocab = useStore((s) => s.refreshVocab);
   const forgetVocab = useStore((s) => s.forgetVocab);
+  const setCustomDialogOpen = useContextMenu((s) => s.openCustomDialog); // "New category" chip (feature 3)
 
   const [category, setCategory] = useState<string>('all');
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
@@ -179,6 +181,16 @@ export function VocabularyPage({ query }: { query: string }): JSX.Element {
               onClick={() => setCategory(c)}
             />
           ))}
+
+          {/* New category (handoff feature 3) — dashed chip at end of filter row */}
+          <button
+            type="button"
+            onClick={() => setCustomDialogOpen('')}
+            className="inline-flex items-center rounded-full border border-dashed border-border px-2.5 py-0.5 text-xs text-text-faint hover:border-[var(--acc)] hover:text-[var(--acc)]"
+            title="Create a new token category (color + label)"
+          >
+            ＋ New category
+          </button>
         </div>
 
         <div className="ps-panel overflow-hidden">
