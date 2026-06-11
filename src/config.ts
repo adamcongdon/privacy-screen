@@ -4,11 +4,15 @@
  * Resolution order:
  *   1. $PRIVACY_SCREEN_CONFIG (explicit override)
  *   2. ./PRIVACY_CONFIG.yaml (relative to CWD)
- *   3. <project_root>/PRIVACY_CONFIG.yaml (relative to this file)
- *   4. Built-in defaults (no file = no extra config, sane defaults)
+ *   3. $HOME/.privacy-screen/PRIVACY_CONFIG.yaml (canonical user data dir —
+ *      the writable, persistent location used by the installed app; mirrors
+ *      where secrets.ts stores settings.json and judge-control stores models/)
+ *   4. <project_root>/PRIVACY_CONFIG.yaml (relative to this file)
+ *   5. Built-in defaults (no file = no extra config, sane defaults)
  */
 
 import { existsSync, readFileSync } from 'fs';
+import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { parse as parseYaml } from 'yaml';
 import {
@@ -217,14 +221,31 @@ export function loadConfig(explicitPath?: string): PrivacyConfig {
   return applyEnvOverrides(merged);
 }
 
+/**
+ * Canonical user-data location for PRIVACY_CONFIG.yaml — `$HOME/.privacy-screen/
+ * PRIVACY_CONFIG.yaml`. This is the writable, persistent path the installed app
+ * reads from and writes to (the bundled binary runs with cwd=`/` and an
+ * `import.meta.dir` that points at a read-only virtual filesystem, so neither
+ * the CWD nor project-root candidates are usable there). Mirrors secrets.ts.
+ * Exported so the settings writer (server/lib/config-resolver.ts) targets the
+ * exact same file the reader picks up.
+ */
+export function userConfigPath(): string {
+  return join(homedir(), '.privacy-screen', 'PRIVACY_CONFIG.yaml');
+}
+
 function findConfigPath(): string | null {
   // Env-var override is authoritative — if set, never fall through to CWD or
   // project-root candidates, even when the target file doesn't exist. Tests
   // and isolated processes rely on this to keep the dev-machine config out.
   const envOverride = process.env.PRIVACY_SCREEN_CONFIG;
   if (envOverride) return envOverride;
+  // CWD is checked before the user-data dir so the dev workflow (running from
+  // the repo, which has its own PRIVACY_CONFIG.yaml) is unchanged, and so the
+  // test suite — run from the repo root — never picks up a real user config.
   for (const c of [
     join(process.cwd(), 'PRIVACY_CONFIG.yaml'),
+    userConfigPath(),
     resolve(import.meta.dir, '..', 'PRIVACY_CONFIG.yaml'),
   ]) {
     if (existsSync(c)) return c;

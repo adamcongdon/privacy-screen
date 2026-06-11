@@ -13,7 +13,8 @@
  * one (with surrounding comments).
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { dirname } from 'path';
 import { Document, parseDocument, isMap, isScalar, YAMLMap } from 'yaml';
 import {
   loadConfig,
@@ -22,6 +23,18 @@ import {
   UPDATE_CANONICAL_URLS,
 } from '../../src/config';
 import { resolveConfigPath } from './config-resolver';
+
+/**
+ * Write the config file, creating the parent directory if needed. The canonical
+ * user-data location ($HOME/.privacy-screen/) may not exist on a fresh install,
+ * and writeFileSync does not create intermediate directories — without this the
+ * first settings save on a clean machine would throw ENOENT and 500. Mirrors
+ * the ensureDir step in secrets.ts.
+ */
+function writeConfigFile(path: string, contents: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, contents);
+}
 
 /** Fields the GUI may patch. Mirrors a subset of `LlmValidateConfig`. */
 export interface LlmValidatePatch {
@@ -90,7 +103,7 @@ export function patchLlmValidate(patch: LlmValidatePatch): PrivacyConfig {
   }
 
   const out = String(doc);
-  writeFileSync(path, out);
+  writeConfigFile(path, out);
 
   // Re-load so we surface back the canonicalized + defaulted view.
   return loadConfig(path);
@@ -144,7 +157,7 @@ export function patchUpdateConfig(patch: UpdateConfigPatch): PrivacyConfig {
   }
 
   const out = String(doc);
-  writeFileSync(path, out);
+  writeConfigFile(path, out);
 
   return loadConfig(path);
 }
@@ -176,7 +189,7 @@ export function patchScreeningMode(mode: Mode): PrivacyConfig {
 
   doc.set('mode', mode);
 
-  writeFileSync(path, String(doc));
+  writeConfigFile(path, String(doc));
 
   return loadConfig(path);
 }
@@ -207,7 +220,7 @@ export function patchSelfService(patch: SelfServicePatch): PrivacyConfig {
     doc.set('custom_categories', patch.custom_categories);
   }
 
-  writeFileSync(path, String(doc));
+  writeConfigFile(path, String(doc));
 
   return loadConfig(path);
 }
