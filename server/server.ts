@@ -52,6 +52,7 @@ import { shutdownLlmProcess, getLlmClient } from './lib/llm-process';
 import { loadConfig } from '../src/config';
 import { embeddedAssets } from './web-assets.generated';
 import { openBrowser } from './lib/open-browser';
+import { isAllowedOrigin, MUTATING_METHODS } from './lib/origin-policy';
 
 const PORT = Number(process.env.PRIVACY_SCREEN_PORT ?? 31338);
 const HOST = process.env.PRIVACY_SCREEN_BIND_ANY === '1' ? '0.0.0.0' : '127.0.0.1';
@@ -82,6 +83,17 @@ const HOST_ALLOWLIST = new Set([
   `localhost`,
 ]);
 
+// SRV-08 (#81): the Vite dev-server origins (5173/5174) must NOT be admitted
+// in a packaged release — otherwise any local process serving on 5173 could
+// read API responses (including the full vocab dump of real values)
+// cross-origin. Release binaries embed the web bundle (embeddedAssets
+// non-empty); a source/dev checkout does not, and PRIVACY_SCREEN_DEV=1 forces
+// dev mode. The policy itself lives in ./lib/origin-policy (pure + tested).
+const IS_DEV_WEB =
+  process.env.PRIVACY_SCREEN_DEV === '1' || embeddedAssets.length === 0;
+const originPolicy = { port: PORT, isDevWeb: IS_DEV_WEB };
+const allowOrigin = (origin: string): boolean => isAllowedOrigin(origin, originPolicy);
+
 // Defense in depth: reject requests whose Host header isn't loopback.
 // Defeats DNS rebinding against 127.0.0.1:31338 — even if a malicious page
 // resolves a name to our loopback IP, the Host header it sends is the
@@ -95,6 +107,24 @@ app.use('/api/*', async (c, next) => {
   return next();
 });
 
+// SRV-01 (#74): CSRF / cross-origin write guard. Hono's cors() only withholds
+// response headers — it never *rejects* a request, and a text/plain "simple"
+// POST sends no preflight, so a drive-by page could POST to 127.0.0.1:31338
+// (loopback Host passes the check above) and mutate settings/vocab, trigger
+// /api/send, or file feedback. This guard runs BEFORE the route handlers and
+// rejects any state-mutating request (POST/PUT/PATCH/DELETE) that carries an
+// Origin we don't trust. Same-origin requests and tooling that sends no Origin
+// (curl, process-internal app.fetch) are unaffected.
+app.use('/api/*', async (c, next) => {
+  if (MUTATING_METHODS.has(c.req.method)) {
+    const origin = c.req.header('origin');
+    if (origin && !allowOrigin(origin)) {
+      return c.json({ error: 'cross-origin request forbidden' }, 403);
+    }
+  }
+  return next();
+});
+
 // CORS only allow same-origin in production; the local Vite dev server
 // proxies through, so it always presents as the same origin.
 app.use(
@@ -102,14 +132,7 @@ app.use(
   cors({
     origin: (origin) => {
       if (!origin) return undefined;
-      if (origin === `http://localhost:${PORT}` || origin === `http://127.0.0.1:${PORT}`) {
-        return origin;
-      }
-      // Allow the Vite dev server on common ports (5173, 5174)
-      if (origin === 'http://localhost:5173' || origin === 'http://127.0.0.1:5173') {
-        return origin;
-      }
-      return null;
+      return allowOrigin(origin) ? origin : null;
     },
     credentials: false,
   }),
