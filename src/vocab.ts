@@ -10,6 +10,12 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { ScrubMap } from './scrub-map';
 
+/** Extract the TYPE from a token string `{TYPE}` or `{TYPE_n}`. */
+function tokenTypeOf(token: string): string {
+  const m = /^\{([A-Z0-9]+?)(?:_\d+)?\}$/.exec(token);
+  return m ? m[1] : token.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+}
+
 export interface VocabRow {
   real_value: string;
   token: string;
@@ -129,6 +135,10 @@ export class VocabStore {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     this.db = new Database(dbPath, { create: true });
     this.db.exec('PRAGMA journal_mode=WAL');
+    // SCR-03 (#56): concurrent hook processes write to one vocab.db. Without a
+    // busy_timeout a second writer throws SQLITE_BUSY immediately; with it the
+    // writer waits for the lock instead of failing mid-scrub.
+    this.db.exec('PRAGMA busy_timeout=5000');
     this.db.exec(DDL);
   }
 
@@ -142,7 +152,18 @@ export class VocabStore {
     map.loadFromRows(rows);
   }
 
-  /** Persist a newly minted token. Upserts on real_value conflict. */
+  /**
+   * Persist a newly minted token. Upserts on real_value conflict.
+   *
+   * Returns the token that is actually persisted for `realValue`. This is
+   * usually the `token` passed in, but under cross-process contention
+   * (SCR-03 / #56) two VocabStores with independent in-memory counters can
+   * compute the same token for *different* real values. The first writer
+   * wins the `token` UNIQUE constraint; the second would throw. Instead we
+   * catch that specific conflict and atomically re-derive the next free token
+   * for the type from the DB, so minting never throws and never duplicates a
+   * token. Callers should adopt the returned token.
+   */
   persistMint(
     realValue: string,
     token: string,
@@ -150,7 +171,7 @@ export class VocabStore {
     confidence: number,
     project: string | null = null,
     force = false,
-  ): void {
+  ): string {
     const now = Date.now();
     // force=true: explicit user mint — overwrite category/token/confidence so the
     // user's intent always wins over a prior auto-detection under a different category.
@@ -164,13 +185,68 @@ export class VocabStore {
       : `DO UPDATE SET
            last_seen = excluded.last_seen,
            hit_count = hit_count + 1`;
-    this.db
-      .query(
-        `INSERT INTO vocab (real_value, token, category, confidence, first_seen, last_seen, hit_count, project, confirmed_by)
-         VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'auto')
-         ON CONFLICT(real_value) ${conflictClause}`,
+
+    const insert = (tok: string): void => {
+      this.db
+        .query(
+          `INSERT INTO vocab (real_value, token, category, confidence, first_seen, last_seen, hit_count, project, confirmed_by)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'auto')
+           ON CONFLICT(real_value) ${conflictClause}`,
+        )
+        .run(realValue, tok, category, confidence, now, now, project);
+    };
+
+    let tok = token;
+    // Bounded retry: each iteration re-derives the next free token for the type
+    // and retries. The IMMEDIATE transaction + busy_timeout serialize writers,
+    // so the loop converges in at most a few iterations under real contention.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try {
+        this.db.exec('BEGIN IMMEDIATE');
+        // If this real_value already owns a token, keep it (idempotent).
+        const existing = this.db
+          .query<{ token: string }, [string]>(`SELECT token FROM vocab WHERE real_value = ?`)
+          .get(realValue);
+        if (existing && !force) {
+          insert(tok); // bumps hit_count/last_seen via ON CONFLICT(real_value)
+          this.db.exec('COMMIT');
+          return existing.token;
+        }
+        insert(tok);
+        this.db.exec('COMMIT');
+        return tok;
+      } catch (err) {
+        try { this.db.exec('ROLLBACK'); } catch { /* no active txn */ }
+        const msg = (err as Error)?.message ?? String(err);
+        // Only retry on a token-UNIQUE collision (different real_value owns it).
+        if (!/UNIQUE/i.test(msg) || !/token/i.test(msg)) throw err;
+        const next = this.nextFreeToken(tokenTypeOf(tok));
+        if (next === tok) throw err; // can't make progress — surface it
+        tok = next;
+      }
+    }
+    // Exhausted retries — last attempt outside the loop so the original error
+    // surfaces rather than silently dropping the mint.
+    insert(tok);
+    return tok;
+  }
+
+  /**
+   * Derive the next free token string for a token type by scanning existing
+   * tokens of that type in the DB. Mirrors ScrubMap's `{TYPE}` / `{TYPE_n}`
+   * shape: the first is `{TYPE}`, then `{TYPE_1}`, `{TYPE_2}`, …
+   */
+  private nextFreeToken(type: string): string {
+    const rows = this.db
+      .query<{ token: string }, [string, string]>(
+        `SELECT token FROM vocab WHERE token = ? OR token LIKE ?`,
       )
-      .run(realValue, token, category, confidence, now, now, project);
+      .all(`{${type}}`, `{${type}_%}`);
+    const used = new Set(rows.map((r) => r.token));
+    if (!used.has(`{${type}}`)) return `{${type}}`;
+    let n = 1;
+    while (used.has(`{${type}_${n}}`)) n++;
+    return `{${type}_${n}}`;
   }
 
   /**
