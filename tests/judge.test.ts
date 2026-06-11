@@ -123,6 +123,38 @@ describe('runJudge — happy path', () => {
   });
 });
 
+describe('runJudge — no raw judge output on stderr by default (JDG-01 / #65)', () => {
+  test('does not write verbatim model response (residual PII) to stderr', async () => {
+    const secret = 'admin@acme.com';
+    const client = new MockLlmClient([
+      llmJson([
+        { text: secret, category: 'other', confidence: 0.9, reason: 'looks like email' },
+      ]),
+    ]);
+    const map = new ScrubMap();
+
+    const orig = process.stderr.write.bind(process.stderr);
+    let captured = '';
+    // @ts-expect-error narrow override for the test
+    process.stderr.write = (chunk: unknown) => {
+      captured += String(chunk);
+      return true;
+    };
+    const prevDebug = process.env.PRIVACY_SCREEN_DEBUG_JUDGE;
+    delete process.env.PRIVACY_SCREEN_DEBUG_JUDGE;
+    try {
+      await runJudge('Please email admin@acme.com about the migration soon.', map, makeOpts(client));
+    } finally {
+      process.stderr.write = orig;
+      if (prevDebug === undefined) delete process.env.PRIVACY_SCREEN_DEBUG_JUDGE;
+      else process.env.PRIVACY_SCREEN_DEBUG_JUDGE = prevDebug;
+    }
+
+    expect(captured).not.toContain(secret);
+    expect(captured).not.toContain('judge.raw');
+  });
+});
+
 describe('runJudge — early exit', () => {
   test('input below 24 chars short-circuits and does NOT call the client', async () => {
     const client = new MockLlmClient([llmJson([])]); // would-be response
