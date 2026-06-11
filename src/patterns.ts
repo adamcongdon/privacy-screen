@@ -11,8 +11,27 @@
 export const mkIpv4 = (): RegExp =>
   /\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b/g;
 
+// IPv6 — full form, plus `::` compression with groups on BOTH sides
+// (e.g. fe80::1ff:fe23:4567:890a). The previous regex only handled
+// leading-`::` or trailing-`:` forms, so a normal link-local address like
+// fe80::1ff:fe23:4567:890a matched only the `fe80::` prefix and left the rest
+// in cleartext (caught mechanically by the SCR-11 no-residual-PII invariant).
 export const mkIpv6 = (): RegExp =>
-  /(?:(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,7}:|::(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4})/g;
+  new RegExp(
+    [
+      // 8 full groups
+      '(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}',
+      // groups :: groups (compression in the middle, both sides present)
+      '(?:[0-9a-fA-F]{1,4}:){1,6}:(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4}',
+      // leading :: with following groups
+      '::(?:[0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}',
+      // trailing :: after leading groups
+      '(?:[0-9a-fA-F]{1,4}:){1,7}:',
+      // the unspecified address ::
+      '::',
+    ].join('|'),
+    'g',
+  );
 
 export const mkEmail = (): RegExp =>
   /[\p{L}\p{N}._%+-]+@(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?\.)+[\p{L}]{2,}/gu;
