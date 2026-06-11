@@ -15,7 +15,7 @@ export const mkIpv6 = (): RegExp =>
   /(?:(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,7}:|::(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4})/g;
 
 export const mkEmail = (): RegExp =>
-  /[p{L}p{N}._%+-]+@(?:[p{L}p{N}](?:[p{L}p{N}-]*[p{L}p{N}])?.)+[p{L}]{2,}/gu;
+  /[\p{L}\p{N}._%+-]+@(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?\.)+[\p{L}]{2,}/gu;
 
 // UNC path. Path components disallow whitespace — eating spaces caused the
 // regex to swallow the rest of a line (including any trailing credential).
@@ -162,15 +162,15 @@ export const mkCorpEntity = (): RegExp =>
  *   - `^Bob Loblaw <bob@…>` — line-start (with `m` flag)
  */
 export const mkPersonFromHeader = (): RegExp =>
-  /(?:[;,:]|^|n)s*([p{Lu}][p{L}'.-]+(?:s+[p{Lu}][p{L}'.-]+)+)s*<[^>]+@/gmu;
+  /(?:[;,:]|^|\n)\s*([\p{Lu}][\p{L}'.-]+(?:\s+[\p{Lu}][\p{L}'.-]+)+)\s*<[^>]+@/gmu;
 
 /** Capitalized Name appearing within 60 chars to the left of an email. */
 export const mkPersonAdjacentToEmail = (): RegExp =>
-  /b([p{Lu}][p{L}'.-]+(?:s+[p{Lu}][p{L}'.-]+)+)(?=[^@n]{0,60}[p{L}p{N}._%+-]+@(?:[p{L}p{N}](?:[p{L}p{N}-]*[p{L}p{N}])?.)+[p{L}]{2,})/gu;
+  /\b([\p{Lu}][\p{L}'.-]+(?:\s+[\p{Lu}][\p{L}'.-]+)+)(?=[^@\n]{0,60}[\p{L}\p{N}._%+-]+@(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?\.)+[\p{L}]{2,})/gu;
 
 /** Sign-off pattern — "Best,\nName" / "Thanks,\nName" / etc. */
 export const mkSignOffName = (): RegExp =>
-  /ns*(?:Best|Thanks|Thank you|Regards|Cheers|Sincerely|Warmly|Talk soon)[,!.]?s*n+([p{Lu}][p{L}'.-]+(?:s+[p{Lu}][p{L}'.-]+)*)/gu;
+  /\n\s*(?:Best|Thanks|Thank you|Regards|Cheers|Sincerely|Warmly|Talk soon)[,!.]?\s*\n+([\p{Lu}][\p{L}'.-]+(?:\s+[\p{Lu}][\p{L}'.-]+)*)/gu;
 
 /**
  * Tokens that look name-shaped but are never people — calendar words, email
@@ -196,7 +196,7 @@ export const NAME_DENYLIST: ReadonlySet<string> = new Set<string>([
   'github', 'stripe', 'cloudflare', 'azure',
 ]);
 
-const PERSON_TOKEN_RE = /^[p{Lu}][p{L}'.-]+$/u;
+const PERSON_TOKEN_RE = /^[\p{Lu}][\p{L}'.-]+$/u;
 
 /**
  * True iff `name` looks like a valid human name and is not allowlisted.

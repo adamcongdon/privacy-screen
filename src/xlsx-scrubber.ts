@@ -348,7 +348,7 @@ async function loadWorkbook(
   const wb = new ExcelJS.Workbook();
   if (/\.csv$/i.test(fileName)) {
     const { Readable } = await import('stream');
-    const text = Buffer.from(buffer).toString('utf8');
+    const text = asBuffer(buffer).toString('utf8');
     const stream = Readable.from([text]);
     await wb.csv.read(stream);
   } else {
