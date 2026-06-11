@@ -40,10 +40,13 @@ import {
   Download,
   Trash2,
   AlertTriangle,
+  Link,
+  ArrowRight,
   type LucideIcon,
 } from 'lucide-react';
 import { useStore } from '../../store';
 import type { ScreenMode } from '../../store';
+import { UPDATE_CANONICAL_URLS } from '../../api';
 
 /** Section card — 30px rounded icon tile + title + optional description + body. */
 function Card({
@@ -370,6 +373,22 @@ function JudgeCard(): JSX.Element {
 const CHANNELS = ['off', 'stable', 'beta'] as const;
 type Channel = (typeof CHANNELS)[number];
 
+function relTime(ts: number | null): string {
+  if (!ts) return '';
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 8) return 'just now';
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  return `${Math.round(s / 3600)}h ago`;
+}
+
+function sourceLabel(url: string): string {
+  const u = url.trim();
+  if (u === UPDATE_CANONICAL_URLS.stable) return 'Official stable channel · main branch';
+  if (u === UPDATE_CANONICAL_URLS.beta) return 'Official beta channel · beta branch';
+  return 'Custom manifest source';
+}
+
 function UpdatesCard(): JSX.Element {
   const settings = useStore((s) => s.settings);
   const saveSettings = useStore((s) => s.saveSettings);
@@ -377,13 +396,46 @@ function UpdatesCard(): JSX.Element {
   const refreshVersion = useStore((s) => s.refreshVersion);
   const refreshUpdateStatus = useStore((s) => s.refreshUpdateStatus);
   const pushToast = useStore((s) => s.pushToast);
+  const downloadUpdate = useStore((s) => s.downloadUpdate);
 
   const channel: Channel = (settings?.update_channel ?? 'off') as Channel;
+  const currentUrl = settings?.update_manifest_url ?? '';
+
+  // Local draft for the editable URL field (self-service, no YAML).
+  const [draft, setDraft] = useState(currentUrl);
+  const [isChecking, setIsChecking] = useState(false);
+  const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null);
+  // Optional client-side probe result for rich mismatch/notfound diagnosis on custom URLs.
+  const [probe, setProbe] = useState<{ manifestChannel?: string; httpOk?: boolean } | null>(null);
+
+  // Sync draft when settings change externally (save from elsewhere, boot, etc).
+  useEffect(() => {
+    setDraft(currentUrl || '');
+  }, [currentUrl]);
+
+  // Reset transient check state when channel flips.
+  useEffect(() => {
+    if (channel === 'off') {
+      setIsChecking(false);
+      setProbe(null);
+    }
+  }, [channel]);
+
+  const off = channel === 'off';
+  const canon = channel === 'off' ? '' : UPDATE_CANONICAL_URLS[channel];
+  const draftValid = /^https:\/\/\S+$/i.test(draft.trim());
+  const dirty = draft.trim() !== (currentUrl || '').trim();
+  const isCanon = draft.trim() === canon;
+
+  const installed = versionInfo?.version ?? '…';
 
   const onChannel = (c: Channel) => {
     if (c === channel) return;
-    // Persist the channel through the real settings API (mirrors SettingsDrawer).
-    void saveSettings({ update_channel: c }).then(() => {
+    const nextCanon = c === 'off' ? '' : UPDATE_CANONICAL_URLS[c];
+    const patch: { update_channel: Channel; update_manifest_url?: string } = { update_channel: c };
+    if (nextCanon) patch.update_manifest_url = nextCanon;
+    void saveSettings(patch).then(() => {
+      // draft syncs via the settings effect above.
       setTimeout(() => {
         void refreshVersion();
         void refreshUpdateStatus();
@@ -391,33 +443,194 @@ function UpdatesCard(): JSX.Element {
     });
   };
 
-  const onCheck = async () => {
-    await refreshVersion();
-    const v = useStore.getState().versionInfo;
-    if (v?.updateAvailable && v.updateInfo) {
-      pushToast('success', `Update available: ${v.latestKnown} (${v.updateInfo.channel}).`);
-    } else if (v?.error) {
-      pushToast('error', 'Could not reach the update manifest (network or config).');
-    } else if (v) {
-      pushToast('info', `You are on ${v.version} — no newer ${v.channel} release found.`);
-    }
-    await refreshUpdateStatus();
+  const saveUrl = () => {
+    if (!draftValid || !dirty) return;
+    void saveSettings({ update_manifest_url: draft.trim() }).then(() => {
+      void refreshVersion();
+      void refreshUpdateStatus();
+    });
   };
 
-  const version = versionInfo?.version ?? '…';
-  const upToDate = !versionInfo?.updateAvailable;
+  const useRecommended = () => {
+    if (!canon) return;
+    setDraft(canon);
+    void saveSettings({ update_manifest_url: canon }).then(() => {
+      pushToast('success', `Using recommended ${channel} manifest`);
+      void refreshVersion();
+      void refreshUpdateStatus();
+    });
+  };
+
+  const runClientProbe = async (url: string) => {
+    setProbe(null);
+    try {
+      const res = await fetch(url, { method: 'GET', redirect: 'error' });
+      if (!res.ok) {
+        setProbe({ httpOk: false });
+        return;
+      }
+      const m = await res.json().catch(() => null);
+      const mc = m && typeof m === 'object' && 'channel' in m ? String((m as any).channel) : undefined;
+      setProbe({ httpOk: true, manifestChannel: mc });
+    } catch {
+      setProbe({ httpOk: false });
+    }
+  };
+
+  const onCheck = async () => {
+    if (off) return;
+    const urlToCheck = draft.trim() || currentUrl;
+    setIsChecking(true);
+    setProbe(null);
+    try {
+      await refreshVersion();
+      await refreshUpdateStatus();
+      setLastCheckedAt(Date.now());
+      // Probe for rich diagnostics (mismatch / notfound) without changing server check contract.
+      if (urlToCheck) {
+        void runClientProbe(urlToCheck);
+      }
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
+  // Derive rich status for the panel (server truth for available/uptodate + probe for custom diagnostics).
+  const v = versionInfo;
+  let status: 'idle' | 'checking' | 'off' | 'uptodate' | 'available' | 'notfound' | 'mismatch' | 'error' = 'idle';
+  if (off) status = 'off';
+  else if (isChecking) status = 'checking';
+  else if (v?.error) status = 'error';
+  else if (v?.updateAvailable && v.updateInfo) {
+    // Server says there is a newer matching-platform asset on the requested channel.
+    if (v.updateInfo.channel && v.updateInfo.channel !== channel) status = 'mismatch';
+    else status = 'available';
+  } else if (probe && probe.httpOk === false) {
+    status = 'notfound';
+  } else if (probe && probe.manifestChannel && probe.manifestChannel !== channel) {
+    status = 'mismatch';
+  } else if (channel === 'stable') {
+    // Stable has no published manifest yet (per design + current release state).
+    status = 'notfound';
+  } else {
+    status = 'uptodate';
+  }
+
+  const triedUrl = (isChecking ? draft.trim() : currentUrl) || draft.trim();
+
+  const cfg = {
+    idle: {
+      c: 'var(--text-faint)',
+      bg: 'var(--surface-2)',
+      ic: RefreshCw,
+      t: 'Not checked yet',
+      d: `Run a check to see what’s available on the ${channel} channel.`,
+    },
+    checking: {
+      c: 'var(--acc)',
+      bg: 'var(--acc-tint)',
+      ic: RefreshCw,
+      t: 'Checking…',
+      d: triedUrl,
+      showUrl: true,
+    },
+    off: {
+      c: 'var(--text-faint)',
+      bg: 'var(--surface-2)',
+      ic: Lock,
+      t: 'Updates are off',
+      d: 'Privacy Screen will never reach out for updates.',
+    },
+    uptodate: {
+      c: 'var(--ok)',
+      bg: 'var(--ok-tint)',
+      ic: Check,
+      t: 'Up to date',
+      d: `On ${v?.version ?? installed} — latest on the ${channel} channel.`,
+      showUrl: true,
+    },
+    available: {
+      c: 'var(--acc)',
+      bg: 'var(--acc-tint)',
+      ic: Download,
+      t: `Update available · ${v?.updateInfo?.version ?? ''}`,
+      d: `Found on the ${v?.updateInfo?.channel ?? channel} channel. Nothing installs until you apply it.`,
+      showUrl: true,
+      showActions: 'available',
+    },
+    notfound: {
+      c: 'var(--warn)',
+      bg: 'var(--warn-tint)',
+      ic: AlertTriangle,
+      t: 'No release found (404)',
+      d: 'The stable channel has no published manifest yet — switch to Beta for current builds.',
+      showUrl: true,
+      showActions: 'notfound',
+    },
+    mismatch: {
+      c: 'var(--warn)',
+      bg: 'var(--warn-tint)',
+      ic: AlertTriangle,
+      t: 'Channel mismatch',
+      d: (probe?.manifestChannel
+        ? `Manifest is for the “${probe.manifestChannel}” channel, but “${channel}” is selected. `
+        : '') + 'Point at the matching manifest or use the recommended URL.',
+      showUrl: true,
+    },
+    error: {
+      c: 'var(--danger)',
+      bg: 'var(--danger-bg)',
+      ic: AlertTriangle,
+      t: 'Couldn’t check',
+      d: 'Network error or invalid URL while fetching the manifest.',
+      showUrl: true,
+    },
+  }[status];
+
+  let displayDesc = cfg.d;
+  if (status === 'notfound' && channel === 'beta') {
+    displayDesc = 'No release manifest found at this URL — use the recommended beta URL or check your custom source.';
+  }
+
+  const StatusIcon = cfg.ic;
 
   return (
-    <Card
-      icon={RefreshCw}
-      title="Updates"
-      description="Opt-in. No telemetry; SHA-256 verified before any swap."
-    >
-      <div className="mb-3 flex items-center gap-2.5">
+    <div className="ps-panel" style={{ padding: 18 }}>
+      {/* Header row with icon tile + title + installed version chip (matches reference) */}
+      <div className="flex items-center gap-2.5" style={{ marginBottom: 4 }}>
+        <span
+          className="grid place-items-center rounded-[8px]"
+          style={{
+            width: 30,
+            height: 30,
+            flex: 'none',
+            background: 'var(--acc-tint)',
+          }}
+          aria-hidden="true"
+        >
+          <RefreshCw size={16} color="var(--acc)" />
+        </span>
+        <span className="text-[14.5px] font-semibold text-text">Updates</span>
+        <span className="flex-1" />
+        <span
+          className="inline-flex items-center rounded-md border border-border bg-surface-2 px-2 py-0.5 font-mono text-[11px] text-text"
+          style={{ height: 22 }}
+        >
+          {installed}
+        </span>
+      </div>
+      <p className="text-[12px] leading-[1.45] text-text-faint" style={{ margin: '0 0 14px 40px' }}>
+        Opt-in. No telemetry; the manifest is fetched with a plain GET and SHA-256 verified before any swap.
+      </p>
+
+      {/* Channel segmented control + description */}
+      <div className="mb-3 flex flex-col gap-1.5">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.09em] text-text-faint">Channel</span>
         <div
           role="radiogroup"
           aria-label="Update channel"
           className="inline-flex items-center gap-0.5 rounded-lg border border-border bg-surface-2 p-0.5"
+          style={{ width: 'fit-content' }}
         >
           {CHANNELS.map((c) => {
             const active = channel === c;
@@ -436,30 +649,161 @@ function UpdatesCard(): JSX.Element {
             );
           })}
         </div>
+        <span className="text-[11.5px] leading-[1.45] text-text-faint">
+          {channel === 'off' && 'No update checks. Privacy Screen never contacts the network for updates.'}
+          {channel === 'stable' && 'Vetted releases from the main branch. Rare, well-tested builds.'}
+          {channel === 'beta' && 'Release candidates from the beta branch. New betas land often — nothing installs automatically.'}
+        </span>
+      </div>
+
+      {/* Update source editor (hidden entirely for Off — zero network) */}
+      {!off && (
+        <div
+          className="mb-3 rounded-[10px] border border-border bg-surface-2"
+          style={{ padding: 13 }}
+        >
+          <div className="mb-2 flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.09em] text-text-faint">
+              <Link size={13} color="var(--text-dim)" aria-hidden="true" /> Update source
+            </span>
+            {isCanon ? (
+              <span
+                className="inline-flex items-center gap-1 rounded-md px-1.5 text-[10px] font-medium"
+                style={{ height: 18, background: 'var(--acc-tint)', color: 'var(--acc)', border: '1px solid transparent' }}
+              >
+                <Check size={11} color="var(--acc)" aria-hidden="true" /> Recommended
+              </span>
+            ) : (
+              <span className="inline-flex items-center rounded-md border border-border px-1.5 text-[10px] font-medium text-text-dim" style={{ height: 18 }}>
+                Custom
+              </span>
+            )}
+          </div>
+
+          <span className="mb-1.5 block text-[12px] font-semibold text-text-dim">{sourceLabel(draft.trim() || currentUrl)}</span>
+
+          <div className="flex items-stretch gap-2">
+            <input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  saveUrl();
+                }
+              }}
+              spellCheck={false}
+              placeholder="https://…/release-manifest.json"
+              className="min-w-0 flex-1 rounded-[10px] border bg-surface px-2.5 font-mono text-[11.5px] text-text placeholder:text-text-faint"
+              style={{
+                height: 32,
+                borderColor: draft && !draftValid ? 'var(--danger-border)' : 'var(--border)',
+              }}
+            />
+            <button
+              type="button"
+              disabled={!dirty || !draftValid}
+              onClick={saveUrl}
+              className="flex-none rounded-[8px] border border-border bg-surface-2 px-3 text-[12px] font-medium text-text-dim hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
+              style={{ height: 32 }}
+            >
+              Save
+            </button>
+          </div>
+
+          <div className="mt-1.5 flex min-h-[18px] items-center justify-between gap-2 text-[11px]">
+            <span style={{ color: draft && !draftValid ? 'var(--danger)' : 'var(--text-faint)' }}>
+              {draft && !draftValid ? 'Must be an https:// URL.' : 'Power users can point at a fork, mirror, or internal copy.'}
+            </span>
+            {!isCanon && draftValid && (
+              <button
+                type="button"
+                onClick={useRecommended}
+                className="flex items-center gap-1 rounded px-1.5 text-[11px] text-text-dim hover:text-text"
+              >
+                <RefreshCw size={11} aria-hidden="true" /> Use recommended
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Check button + last checked */}
+      <div className="mb-2 flex items-center gap-2">
         <button
           type="button"
+          className="flex h-8 items-center gap-1.5 rounded-[8px] bg-[var(--acc)] px-3 text-[12px] font-semibold text-[var(--acc-ink)] disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={off || isChecking}
           onClick={() => void onCheck()}
-          disabled={channel === 'off'}
-          className="flex items-center gap-1.5 rounded-[8px] px-2.5 py-1 text-[12px] font-medium text-text-dim hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
-          title={channel === 'off' ? 'Pick a channel to check for updates' : 'Check for updates now'}
         >
-          <RefreshCw size={13} aria-hidden="true" /> Check now
+          <RefreshCw
+            size={13}
+            aria-hidden="true"
+            className={isChecking ? 'animate-spin' : ''}
+          />
+          Check for updates now
         </button>
-      </div>
-      <div className="flex items-center gap-2 text-[12px]">
-        <span className="text-text-dim">
-          On <span className="font-mono">{version}</span>
-        </span>
-        <span className="text-text-faint">·</span>
-        {channel === 'off' ? (
-          <span className="text-text-faint">Update checks off</span>
-        ) : (
-          <span style={{ color: upToDate ? 'var(--ok)' : 'var(--warn)' }}>
-            {upToDate ? 'Up to date' : `Update available: ${versionInfo?.updateInfo?.version ?? ''}`}
-          </span>
+        {lastCheckedAt && !isChecking && (
+          <span className="text-[11px] text-text-faint">Last checked {relTime(lastCheckedAt)}</span>
         )}
       </div>
-    </Card>
+
+      {/* Rich status panel */}
+      <div
+        className="flex items-start gap-2.5 rounded-[10px] px-3 py-2.5"
+        style={{ background: cfg.bg, color: cfg.c }}
+      >
+        <StatusIcon
+          size={16}
+          aria-hidden="true"
+          className={isChecking ? 'mt-0.5 animate-spin' : 'mt-0.5'}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="text-[12.5px] font-semibold">{cfg.t}</div>
+          <div className="text-[11.5px] leading-[1.4] text-[color:var(--text-dim)]" style={{ wordBreak: 'break-word' }}>
+            {displayDesc}
+          </div>
+          {cfg.showUrl && triedUrl && (
+            <div className="mt-0.5 break-all font-mono text-[10px] text-text-faint">{triedUrl}</div>
+          )}
+
+          {/* Inline actions for terminal states */}
+          {cfg.showActions === 'available' && v?.updateInfo && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void downloadUpdate()}
+                className="flex items-center gap-1.5 rounded-[8px] bg-[var(--acc)] px-2.5 py-1 text-[12px] font-semibold text-[var(--acc-ink)]"
+              >
+                <Download size={13} aria-hidden="true" /> Download {v.updateInfo.version}
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  window.open(
+                    v.updateInfo?.notesUrl || 'https://github.com/adamcongdon/privacy-screen/releases',
+                    '_blank',
+                    'noopener',
+                  )
+                }
+                className="flex items-center gap-1.5 rounded-[8px] border border-border bg-transparent px-2.5 py-1 text-[12px] font-medium text-text-dim hover:bg-surface-2"
+              >
+                Release notes
+              </button>
+            </div>
+          )}
+          {cfg.showActions === 'notfound' && channel === 'stable' && (
+            <button
+              type="button"
+              onClick={() => onChannel('beta')}
+              className="mt-2 flex items-center gap-1.5 rounded-[8px] border border-border bg-transparent px-2.5 py-1 text-[12px] font-medium text-text-dim hover:bg-surface-2"
+            >
+              <ArrowRight size={13} aria-hidden="true" /> Switch to Beta
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

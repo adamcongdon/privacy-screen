@@ -95,6 +95,14 @@ update_channel: off
 # Branch flow: ac-build (daily) → PR to beta (deploys beta) → PR from beta to main (deploys stable)
 update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
 
+# Self-service user patterns (right-click "Tokenize selection as..." in Scrub).
+# These are literal high-priority matches. Do not edit by hand — use the UI.
+user_patterns: []
+
+# Self-service custom token categories (name + color) created from Vocab or the tokenize menu.
+# Merged with built-ins for rendering and scrubbing. UI only.
+custom_categories: []
+
 # ---------------------------------------------------------------------------
 # Opt-in LLM secondary validator (JUDGE, not editor).
 #

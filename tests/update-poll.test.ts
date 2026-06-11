@@ -110,6 +110,8 @@ test('channel=off → no interval registered, no fetch issued', async () => {
       mode: 'enforce',
       update_channel: 'off',
       update_manifest_url: 'https://example.invalid/manifest.json',
+      user_patterns: [],
+      custom_categories: [],
       claude_code: { found: false, version: null },
     },
   });
@@ -133,6 +135,8 @@ test('channel=stable → polls /api/version on interval', async () => {
       mode: 'enforce',
       update_channel: 'stable',
       update_manifest_url: 'https://example.invalid/manifest.json',
+      user_patterns: [],
+      custom_categories: [],
       claude_code: { found: false, version: null },
     },
   });
@@ -157,6 +161,8 @@ test('stopVersionPoller halts further fetches', async () => {
       mode: 'enforce',
       update_channel: 'stable',
       update_manifest_url: 'https://example.invalid/manifest.json',
+      user_patterns: [],
+      custom_categories: [],
       claude_code: { found: false, version: null },
     },
   });
@@ -185,6 +191,8 @@ test('hidden tab skips fetch', async () => {
       mode: 'enforce',
       update_channel: 'stable',
       update_manifest_url: 'https://example.invalid/manifest.json',
+      user_patterns: [],
+      custom_categories: [],
       claude_code: { found: false, version: null },
     },
   });
@@ -208,6 +216,8 @@ test('double-start is a no-op (single interval cadence)', async () => {
       mode: 'enforce',
       update_channel: 'stable',
       update_manifest_url: 'https://example.invalid/manifest.json',
+      user_patterns: [],
+      custom_categories: [],
       claude_code: { found: false, version: null },
     },
   });

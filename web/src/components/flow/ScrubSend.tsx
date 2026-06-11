@@ -35,6 +35,7 @@ import {
   useState,
   Fragment,
 } from 'react';
+import { useContextMenu } from '../../lib/useContextMenu';
 import {
   FileText,
   Shield,
@@ -241,6 +242,10 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
   const tokenUnion = useStore((s) => s.tokenUnion);
   const pushToast = useStore((s) => s.pushToast);
 
+  // For right-click TokenizeMenu (handoff addendum feature 1 + 3 "New category").
+  const openCtxMenu = useContextMenu((s) => s.openMenu);
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
+
   // Local phase machine: compose → streaming → done. Derived from store
   // streaming + whether a reply exists; editing input returns to compose.
   const lastAssistant = useMemo(() => {
@@ -379,8 +384,17 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
             )}
           </div>
           <textarea
+            ref={taRef}
             value={composerText}
             onChange={(e) => setComposerText(e.target.value)}
+            onContextMenu={(e) => {
+              const ta = taRef.current;
+              if (!ta) return;
+              const sel = composerText.slice(ta.selectionStart, ta.selectionEnd).trim();
+              if (!sel) return; // empty selection → let native menu
+              e.preventDefault();
+              openCtxMenu(e.clientX, e.clientY, sel);
+            }}
             spellCheck={false}
             autoComplete="off"
             aria-label="Text to scrub"
