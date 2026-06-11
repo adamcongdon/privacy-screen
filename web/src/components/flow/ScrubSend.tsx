@@ -14,18 +14,16 @@
  *   messages, streamError, send, abortSend, showRawTokens / setShowRawTokens,
  *   resetConversation, tokenUnion.
  *
- * Screening mode (Observe / Enforce / Disabled): the web SettingsView/SettingsPatch
- * API does NOT expose a screening mode (the server `Mode` in src/config.ts is not
- * surfaced through /api/settings). Per the "verify names, never fabricate an API
- * call" rule we keep it CLIENT-SIDE. As of Engineer-C2 it is lifted into the
+ * Screening mode (Observe / Enforce / Disabled): the canonical `mode` lives in
+ * PRIVACY_CONFIG.yaml and IS surfaced + persisted through /api/settings (GET
+ * returns it; POST writes it via patchScreeningMode). It is mirrored into the
  * Zustand store (store.mode / store.setMode) so this screen and the Settings
- * radio group share ONE source of truth; setMode re-runs refreshScrub. The
- * segmented control here writes store.setMode. NOTE: credentials block the send
- * in EVERY mode — store.send() re-scrubs server-side and aborts on
- * hasCredentials regardless of mode — so the credential-block UX here is keyed
- * on hasCredentials, not on Enforce. Mode currently only affects labeling/copy;
- * the tokenization + credential guard are always on. When the settings API
- * later exposes a real mode, wire setMode to it.
+ * radio group share ONE source of truth; store.setMode persists via
+ * api.saveSettings({ mode }) and re-runs refreshScrub. The segmented control
+ * here writes store.setMode. NOTE: credentials block the send in EVERY mode —
+ * store.send() re-scrubs server-side and aborts on hasCredentials regardless of
+ * mode — so the credential-block UX here is keyed on hasCredentials, not on
+ * Enforce. Tokenization + the credential guard are always on.
  */
 import {
   useCallback,
@@ -37,6 +35,7 @@ import {
 } from 'react';
 import { useContextMenu } from '../../lib/useContextMenu';
 import { Segmented } from '../ui/Segmented';
+import { FileDropZone } from '../FileDropZone';
 import {
   FileText,
   Shield,
@@ -158,6 +157,7 @@ function ReplyView({
 export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
   const composerText = useStore((s) => s.composerText);
   const setComposerText = useStore((s) => s.setComposerText);
+  const files = useStore((s) => s.files);
   const refreshScrub = useStore((s) => s.refreshScrub);
   const scrubbed = useStore((s) => s.scrubbed);
   const tokens = useStore((s) => s.tokens);
@@ -213,7 +213,13 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
   // Enforce — the UI must match the always-protective store.
   const disabled = mode === 'disabled';
   const blocked = hasCredentials;
-  const empty = !composerText.trim();
+  // "Empty" must mirror store.buildPayload: a file contributes content only when
+  // it has `scrubbed` text and no `error` (errored files are skipped). So the
+  // payload is empty iff the composer is blank AND every attached file is either
+  // errored or has no scrubbed content. This lets a files-only payload enable
+  // Send + show the preview, while an errored-only attachment stays disabled.
+  const empty =
+    !composerText.trim() && files.every((f) => f.error || !f.scrubbed);
 
   // ── Live scrub (debounced, ported from Composer.tsx) ───────────────────────
   // Runs in EVERY mode (incl. Disabled) — send() always tokenizes server-side,
@@ -335,6 +341,15 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
               resize: 'none',
             }}
           />
+          {/* Drag-and-drop / browse file scrubbing — restored after the Flow
+              redesign dropped the old Composer's FileDropZone. Reads/writes the
+              same store surface (files / addFiles / removeFile); the scrubbed
+              file content is folded into buildPayload so the preview + Send pick
+              it up. xlsx/csv drops route through the XlsxColumnReview modal
+              (mounted in App.tsx). */}
+          <div className="px-4 pb-3 pt-1">
+            <FileDropZone />
+          </div>
         </section>
 
         {/* ── SEAM ─────────────────────────────────────────────────────────── */}
