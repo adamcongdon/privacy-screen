@@ -27,20 +27,21 @@
 
 ## Current State (as of handoff)
 
-**Open issues: 7**
+**Open issues: 6**
 
 - #108: Sign the macOS .dmg/.app and Windows setup.exe when signing is enabled (P2, deployment/release) — **needs-user**
 - #105: Sign the release manifest and attach build provenance attestations (P1, release/security) — **needs-user**
 - #90: Drop client-side manifest probe; fix CORS false '404' diagnosis (P3-low, web, has `wontfix` label)
-- #70: Wire JUDGE_SCHEMA into llama request as json_schema response_format (P2, judge)
 - #63: Cache apply() alternation regex and allowlist lookups (P2, scrubber)
 - #62: Route induced-pattern mints through the recordMint guards (P2, scrubber)
 - #35: when parsing CSV, i need the option to ignore or allow an en (P2, scrubber)
 
 **Recent closures (examples from the batch, including the very last wave):**
-#111, #110, #109, #107, #106, #104, #103, #102, #101, #100, #99, #98, #97, #96, #95, #94, #93, #92, #91, #89, #88, #87, #86, #85, #84, #61, #56, etc.
+#111, #110, #109, #107, #106, #104, #103, #102, #101, #100, #99, #98, #97, #96, #95, #94, #93, #92, #91, #89, #88, #87, #86, #85, #84, #71, #61, #56, etc.
 
-**Latest addition (just before handoff):** #61 (SCR-08 user_patterns) closed SUCCESS by its narrow subagent. Full TDD (red on literal not tokenizing from config), `preMintUserPatterns` implemented in scrubber.ts (modeled on preMintCustomers/Persons), isolated on 31398 with config-only user_patterns (no vocab pre-seed), API verification that declarative literals now mint/scrub correctly under their cat, rich evidence + close. "ISSUE #61: SUCCESS".
+**Latest additions (just before handoff):**
+- #71 (JDG-07 chunk overlap) closed SUCCESS. TDD red first (boundary-straddling PII test failing because chunks cut mid-name), added `CHUNK_OVERLAP_CHARS = 150` + overlap slice in `chunkText` (src/judge/judge.ts), reused existing `seen` dedup, isolated 31400 with mock, full evidence + close. "ISSUE #71: SUCCESS".
+- #61 (SCR-08 user_patterns) closed SUCCESS by its narrow subagent. Full TDD (red on literal not tokenizing from config), `preMintUserPatterns` implemented in scrubber.ts (modeled on preMintCustomers/Persons), isolated on 31398 with config-only user_patterns (no vocab pre-seed), API verification that declarative literals now mint/scrub correctly under their cat, rich evidence + close. "ISSUE #61: SUCCESS".
 
 **Environment:** Clean. All `/tmp/ps-fable-*` (including worktrees) removed. No lingering fable ports.
 
@@ -70,7 +71,7 @@ Both issues have been updated post-PR creation with context pointing at #112.
 
 ## What Claude Should Do Next
 
-1. **Monitor the remaining 5 actionable open issues** (70, 63, 62, 35 — 90 is wontfix). The last wave of narrow subs were launched for most of them (including the one that just closed #61). Watch GH for closures (they should post rich evidence and close when they finish their ~8-12 min cycles).
+1. **Monitor the remaining 3 actionable open issues** (63, 62, 35 — 90 is wontfix). The last wave of narrow subs were launched for most of them (including the ones that just closed #71 and #61). Watch GH for closures (they should post rich evidence and close when they finish their ~8-12 min cycles).
 
 2. **When the last ones close**, do a final sweep:
    - Confirm open issues are only the 2 needs-user + #90 (or whatever the user decides on wontfix).
