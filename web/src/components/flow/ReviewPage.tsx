@@ -30,6 +30,7 @@ import { getCategoryHue } from '../../lib/colors';
 import { categoryLabel } from '../../lib/categories';
 import type { ReviewItem } from '../../api';
 import { Segmented } from '../ui/Segmented';
+import { PatternSuggestions } from './PatternSuggestions';
 
 const POLL_MS = 8000; // matches the existing ReviewQueue poll cadence
 
@@ -283,6 +284,7 @@ export function ReviewPage(): JSX.Element {
 
       {/* ── right rail ───────────────────────────────────────────────────── */}
       <aside className="flex w-[270px] flex-none flex-col gap-3.5">
+        <PatternSuggestions />
         <div className="ps-panel" style={{ padding: 16 }}>
           <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-text-dim">
             This session

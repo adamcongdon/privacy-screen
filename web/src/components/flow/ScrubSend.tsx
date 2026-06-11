@@ -36,6 +36,7 @@ import {
 import { useContextMenu } from '../../lib/useContextMenu';
 import { Segmented } from '../ui/Segmented';
 import { FileDropZone } from '../FileDropZone';
+import { HtmlRenderedView } from '../HtmlRenderedView';
 import {
   FileText,
   Shield,
@@ -52,13 +53,15 @@ import {
   Plus,
   Lock,
   CheckCircle2,
+  Code2,
 } from 'lucide-react';
 import { useStore } from '../../store';
 import { getCategoryInlineStyles, getCategoryHue } from '../../lib/colors';
 import { categoryLabel } from '../../lib/categories';
 import { deanonymize, type TokenLike } from '../../lib/deanon';
+import { getPayloadKind, pickPrimaryHtmlFile } from '../../lib/payloadKind';
 import type { Token } from '../../api';
-import type { ScreenMode } from '../../store';
+import type { PreviewMode, ScreenMode } from '../../store';
 import { tokenizeForRender, mergeTokenSources, type Run } from '../../lib/tokens';
 
 const DEBOUNCE_MS = 200; // matches Composer.tsx
@@ -174,6 +177,13 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
   const resetConversation = useStore((s) => s.resetConversation);
   const tokenUnion = useStore((s) => s.tokenUnion);
   const pushToast = useStore((s) => s.pushToast);
+  // Source/rendered preview toggle — restored after the Flow redesign orphaned
+  // HtmlRenderedView. The store owns previewMode; App.tsx auto-defaults it from
+  // payload kind (html-dominant ⇒ rendered) and this control is the user
+  // override (setPreviewMode flips previewModeUserOverrode so the auto-default
+  // stops fighting). See store.ts + App.tsx.
+  const previewMode = useStore((s) => s.previewMode);
+  const setPreviewMode = useStore((s) => s.setPreviewMode);
 
   // For right-click TokenizeMenu (handoff addendum feature 1 + 3 "New category").
   const openCtxMenu = useContextMenu((s) => s.openMenu);
@@ -259,6 +269,30 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
     // tokens minted on prior turns. Single impl for #92.
     return mergeTokenSources(tokens, tokenUnion);
   }, [tokens, tokenUnion]);
+
+  // ── Source / rendered HTML preview (ported from PreviewPane.tsx) ────────────
+  // Only an actual HTML file's scrubbed content is renderable — the combined
+  // tokenized stream is never fed to the iframe. Mirrors PreviewPane gating:
+  // the toggle is only meaningful when there's a primary HTML file with scrubbed
+  // content (payloadKind is html-dominant or mixed). When unavailable we pin the
+  // effective mode to 'source' so a stale 'rendered' pick can't blank the panel.
+  const payloadKind = useMemo(
+    () => getPayloadKind({ composerText, files }),
+    [composerText, files],
+  );
+  const primaryHtmlFile = useMemo(() => pickPrimaryHtmlFile(files), [files]);
+  const canRenderHtml =
+    payloadKind !== 'text' && !!primaryHtmlFile?.scrubbed && !empty;
+  const effectivePreviewMode: PreviewMode = canRenderHtml ? previewMode : 'source';
+  const otherFileCount = files.filter(
+    (f) => !f.error && f !== primaryHtmlFile,
+  ).length;
+  // Merge current-turn tokens with the cross-session union so the iframe can
+  // resolve realValues for tokens minted on prior turns (same as replyTokens).
+  const renderedTokens = useMemo(
+    () => mergeTokenSources(tokens, tokenUnion),
+    [tokens, tokenUnion],
+  );
 
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -393,16 +427,33 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
                     {blocked ? 'Cannot send' : 'Safe to send'}
                   </span>
                 </span>
-                <button
-                  type="button"
-                  onClick={onCopy}
-                  disabled={!scrubbed}
-                  aria-label="Copy scrubbed text"
-                  className="flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-text-dim enabled:hover:bg-surface-2 enabled:hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
-                  {copied ? 'Copied' : 'Copy'}
-                </button>
+                <div className="flex items-center gap-2">
+                  {/* Source vs rendered-HTML toggle — only shown when there is an
+                      HTML file with scrubbed content to render (mirrors the old
+                      PreviewPane gating). Bound to the store; this is the user
+                      override over App.tsx's payload-kind auto-default. */}
+                  {canRenderHtml && (
+                    <Segmented<PreviewMode>
+                      label="Preview mode"
+                      value={effectivePreviewMode}
+                      onChange={setPreviewMode}
+                      options={[
+                        { value: 'source', label: 'Source', icon: <Code2 size={12} aria-hidden="true" /> },
+                        { value: 'rendered', label: 'Rendered', icon: <Eye size={12} aria-hidden="true" /> },
+                      ]}
+                    />
+                  )}
+                  <button
+                    type="button"
+                    onClick={onCopy}
+                    disabled={!scrubbed}
+                    aria-label="Copy scrubbed text"
+                    className="flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-text-dim enabled:hover:bg-surface-2 enabled:hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
               </div>
 
               {blocked && (
@@ -425,40 +476,59 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
                 </div>
               )}
 
-              <div
-                className="ps-mono min-h-0 flex-1 overflow-auto"
-                style={{
-                  padding: 16,
-                  fontSize: 12.5,
-                  lineHeight: 2,
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  color: 'var(--text)',
-                }}
-              >
-                {empty ? (
-                  <span className="text-text-faint">Tokens will appear here as you type.</span>
-                ) : (
-                  <>
-                    {runs.map((r, i) =>
-                      r.type === 'text' ? (
-                        <Fragment key={i}>{r.text}</Fragment>
-                      ) : (
-                        <Pill key={i} run={r} />
-                      ),
-                    )}
-                    {/* Inline credential "blocked" chips appended so the user sees
-                        each detected credential without exposing its real value. */}
-                    {blocked &&
-                      credentialSnippets.map((_, i) => (
-                        <Fragment key={`cred-${i}`}>
-                          {' '}
-                          <BlockedChip />
-                        </Fragment>
-                      ))}
-                  </>
-                )}
-              </div>
+              {effectivePreviewMode === 'rendered' && primaryHtmlFile?.scrubbed ? (
+                <div className="flex min-h-0 flex-1 flex-col gap-1.5 p-3">
+                  {payloadKind === 'mixed' && (
+                    <p className="text-[10.5px] text-text-faint">
+                      Rendering{' '}
+                      <span className="ps-mono text-text-dim">{primaryHtmlFile.name}</span>
+                      {otherFileCount > 0 &&
+                        ` · ${otherFileCount} other file${otherFileCount === 1 ? '' : 's'} in source`}
+                    </p>
+                  )}
+                  <div className="min-h-0 flex-1">
+                    <HtmlRenderedView
+                      html={primaryHtmlFile.scrubbed}
+                      tokens={renderedTokens}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div
+                  className="ps-mono min-h-0 flex-1 overflow-auto"
+                  style={{
+                    padding: 16,
+                    fontSize: 12.5,
+                    lineHeight: 2,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    color: 'var(--text)',
+                  }}
+                >
+                  {empty ? (
+                    <span className="text-text-faint">Tokens will appear here as you type.</span>
+                  ) : (
+                    <>
+                      {runs.map((r, i) =>
+                        r.type === 'text' ? (
+                          <Fragment key={i}>{r.text}</Fragment>
+                        ) : (
+                          <Pill key={i} run={r} />
+                        ),
+                      )}
+                      {/* Inline credential "blocked" chips appended so the user sees
+                          each detected credential without exposing its real value. */}
+                      {blocked &&
+                        credentialSnippets.map((_, i) => (
+                          <Fragment key={`cred-${i}`}>
+                            {' '}
+                            <BlockedChip />
+                          </Fragment>
+                        ))}
+                    </>
+                  )}
+                </div>
+              )}
             </>
           ) : (
             <>
