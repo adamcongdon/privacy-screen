@@ -177,6 +177,11 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
   const resetConversation = useStore((s) => s.resetConversation);
   const tokenUnion = useStore((s) => s.tokenUnion);
   const pushToast = useStore((s) => s.pushToast);
+  // #83: surface in-flight + failed scrub state. Previously the store set these
+  // but no component read them, so a stale/failed scrub showed under a green
+  // "Safe to send" header and Copy copied the stale text.
+  const isScrubbing = useStore((s) => s.isScrubbing);
+  const scrubError = useStore((s) => s.scrubError);
   // Source/rendered preview toggle — restored after the Flow redesign orphaned
   // HtmlRenderedView. The store owns previewMode; App.tsx auto-defaults it from
   // payload kind (html-dominant ⇒ rendered) and this control is the user
@@ -223,6 +228,14 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
   // Enforce — the UI must match the always-protective store.
   const disabled = mode === 'disabled';
   const blocked = hasCredentials;
+  // #83: a scrub that is in-flight or failed means the preview is NOT a
+  // trustworthy "safe" representation. Reflect that in the header + controls so
+  // the user never sees "Safe to send" over stale/failed scrub output and can't
+  // Copy/Send it. scrubFailed takes precedence; scrubbing is the interim state.
+  const scrubFailed = scrubError !== null && !blocked;
+  const scrubbing = isScrubbing && !blocked;
+  // Copy/Send must be disabled until a fresh successful scrub exists.
+  const previewUntrustworthy = scrubbing || scrubFailed;
   // "Empty" must mirror store.buildPayload: a file contributes content only when
   // it has `scrubbed` text and no `error` (errored files are skipped). So the
   // payload is empty iff the composer is blank AND every attached file is either
@@ -414,17 +427,30 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
                 className="flex items-center justify-between gap-2 px-4 py-3"
                 style={{ borderBottom: '1px solid var(--border)' }}
               >
-                <span className="flex items-center gap-2">
-                  {blocked ? (
+                <span className="flex items-center gap-2" role={scrubFailed ? 'alert' : undefined}>
+                  {blocked || scrubFailed ? (
                     <ShieldAlert size={15} color="var(--danger)" aria-hidden="true" />
                   ) : (
-                    <Shield size={15} color="var(--acc)" aria-hidden="true" />
+                    <Shield size={15} color={scrubbing ? 'var(--text-dim)' : 'var(--acc)'} aria-hidden="true" />
                   )}
                   <span
                     className="text-[11px] font-semibold uppercase tracking-[0.06em]"
-                    style={{ color: blocked ? 'var(--danger)' : 'var(--acc)' }}
+                    style={{
+                      color: blocked || scrubFailed
+                        ? 'var(--danger)'
+                        : scrubbing
+                          ? 'var(--text-dim)'
+                          : 'var(--acc)',
+                    }}
                   >
-                    {blocked ? 'Cannot send' : 'Safe to send'}
+                    {/* #83: precedence — credential block > scrub failed > scrubbing > safe */}
+                    {blocked
+                      ? 'Cannot send'
+                      : scrubFailed
+                        ? 'Scrub failed'
+                        : scrubbing
+                          ? 'Scrubbing…'
+                          : 'Safe to send'}
                   </span>
                 </span>
                 <div className="flex items-center gap-2">
@@ -446,7 +472,7 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
                   <button
                     type="button"
                     onClick={onCopy}
-                    disabled={!scrubbed}
+                    disabled={!scrubbed || previewUntrustworthy}
                     aria-label="Copy scrubbed text"
                     className="flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-text-dim enabled:hover:bg-surface-2 enabled:hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
                   >
@@ -672,7 +698,7 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
               </span>
               <button
                 type="button"
-                disabled={blocked || empty}
+                disabled={blocked || empty || previewUntrustworthy}
                 onClick={onSend}
                 className="flex items-center gap-1.5 rounded-lg px-5 text-[14px] font-semibold disabled:cursor-not-allowed disabled:opacity-50"
                 style={{ height: 42, background: 'var(--acc)', color: 'var(--acc-ink)' }}
