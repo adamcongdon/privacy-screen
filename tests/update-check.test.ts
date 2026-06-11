@@ -357,6 +357,27 @@ describe('checkForUpdate', () => {
     expect(observedInit?.redirect).toBe('error');
   });
 
+  test('fetch bypasses HTTP cache so "check now" never reports a stale release', async () => {
+    // Regression: a long-running app process honored the manifest's
+    // Cache-Control max-age and kept returning the version it first fetched
+    // (e.g. still beta.13 after beta.14 published). The check must always
+    // request a fresh manifest.
+    let observedInit: RequestInit | undefined;
+    const spyingFetch = (async (_url: string, init?: RequestInit) => {
+      observedInit = init;
+      return jsonResponse(manifest());
+    }) as unknown as typeof fetch;
+    await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: spyingFetch,
+    });
+    expect(observedInit?.cache).toBe('no-store');
+    const headers = (observedInit?.headers ?? {}) as Record<string, string>;
+    expect(headers['cache-control']).toBe('no-cache');
+  });
+
   test('manifest GET that errors on redirect returns null (no beacon forwarded)', async () => {
     const redirectErrorFetch = (async () => {
       throw new TypeError("Failed to fetch: redirect mode 'error' got redirect");
