@@ -27,7 +27,7 @@
 import ExcelJS from 'exceljs';
 import {
   mkEmail, mkPhone, mkIpv4, mkIpv6, mkFqdn, mkStreetAddress,
-  mkUncPath, mkDomainUser, mkMac, mkGuid, mkCreditCard,
+  mkUncPath, mkDomainUser, mkMac, mkGuid, mkCreditCard, mkCredential,
 } from './patterns';
 import { ScrubMap } from './scrub-map';
 import { VocabStore } from './vocab';
@@ -126,6 +126,14 @@ export interface XlsxScrubSummary {
   cellsScrubbed: number;
   /** Map of `${sheetName}::${header}` → resolved pattern (or 'skip' / 'regex' / 'unresolved'). */
   columnsResolved: Record<string, string>;
+  /**
+   * SCR-05 (#58): OR-merged across every cell/header/metadata field. When true,
+   * the workbook contained a credential and the server must refuse to return the
+   * buffer (BLOCK-ALWAYS), exactly like the text/tool paths.
+   */
+  hasCredentials: boolean;
+  /** Redacted credential snippets (never the raw secret) for operator triage. */
+  credentialSnippets: string[];
 }
 
 /** Top-level result of `scrubXlsx` — buffer + summary. */
@@ -288,6 +296,110 @@ function isEmptyCell(cell: ExcelJS.Cell): boolean {
 /** True iff the cell's underlying value is a string (not number/date/etc.). */
 function isStringCell(cell: ExcelJS.Cell): boolean {
   return typeof cell.value === 'string';
+}
+
+/** Mask a detected credential to a short, non-reversible snippet. */
+function redactXlsxCredential(cred: string): string {
+  const head = cred.slice(0, 4);
+  return `${head}…[${cred.length} chars]`;
+}
+
+/**
+ * SCR-04/05 (#57/#58): scrub a single piece of cell-or-metadata text.
+ * Runs the credential gate first (a credential is replaced with
+ * [CREDENTIAL-REDACTED] and flagged on the summary — never tokenized/persisted),
+ * otherwise runs the standard scrubText pipeline. Returns the cleaned string
+ * and whether it changed.
+ */
+function scrubScalarText(
+  text: string,
+  map: ScrubMap,
+  vocab: VocabStore | null,
+  ctx: ScrubContext,
+  summary: XlsxScrubSummary,
+): { value: string; changed: boolean } {
+  if (!text) return { value: text, changed: false };
+  const creds = [...text.matchAll(mkCredential())];
+  if (creds.length > 0) {
+    summary.hasCredentials = true;
+    summary.credentialSnippets.push(...creds.map((m) => redactXlsxCredential(m[0])));
+    const replaced = text.replace(mkCredential(), '[CREDENTIAL-REDACTED]');
+    return { value: replaced, changed: replaced !== text };
+  }
+  const result = scrubText(text, map, vocab, ctx);
+  if (result.hasCredentials) {
+    summary.hasCredentials = true;
+    summary.credentialSnippets.push(...result.credentialSnippets);
+  }
+  return { value: result.scrubbed, changed: result.scrubbed !== text };
+}
+
+/**
+ * SCR-04 (#57): scrub a cell regardless of its value shape — plain string,
+ * rich text ({ richText: [{text}] }), hyperlink ({ text, hyperlink }), or a
+ * cached formula result ({ formula, result }). Mutates cell.value in place and
+ * returns true if anything changed. Numbers/dates/booleans are left untouched.
+ */
+function scrubCellAnyShape(
+  cell: ExcelJS.Cell,
+  map: ScrubMap,
+  vocab: VocabStore | null,
+  ctx: ScrubContext,
+  summary: XlsxScrubSummary,
+): boolean {
+  const v = cell.value as unknown;
+
+  // Plain string.
+  if (typeof v === 'string') {
+    const r = scrubScalarText(v, map, vocab, ctx, summary);
+    if (r.changed) cell.value = r.value;
+    return r.changed;
+  }
+
+  if (v && typeof v === 'object') {
+    const obj = v as Record<string, unknown>;
+
+    // Rich text: { richText: [{ text, font? }, ...] }
+    if (Array.isArray(obj.richText)) {
+      let changed = false;
+      for (const run of obj.richText as Array<{ text?: string }>) {
+        if (typeof run.text === 'string') {
+          const r = scrubScalarText(run.text, map, vocab, ctx, summary);
+          if (r.changed) { run.text = r.value; changed = true; }
+        }
+      }
+      if (changed) cell.value = { ...obj } as unknown as ExcelJS.CellValue;
+      return changed;
+    }
+
+    // Hyperlink: { text, hyperlink } — scrub BOTH the display text and target.
+    if (typeof obj.hyperlink === 'string' || typeof obj.text === 'string') {
+      let changed = false;
+      const next: Record<string, unknown> = { ...obj };
+      if (typeof obj.text === 'string') {
+        const r = scrubScalarText(obj.text, map, vocab, ctx, summary);
+        if (r.changed) { next.text = r.value; changed = true; }
+      }
+      if (typeof obj.hyperlink === 'string') {
+        const r = scrubScalarText(obj.hyperlink, map, vocab, ctx, summary);
+        if (r.changed) { next.hyperlink = r.value; changed = true; }
+      }
+      if (changed) cell.value = next as unknown as ExcelJS.CellValue;
+      return changed;
+    }
+
+    // Cached formula result: { formula, result } — scrub the result string.
+    if ('formula' in obj && typeof obj.result === 'string') {
+      const r = scrubScalarText(obj.result, map, vocab, ctx, summary);
+      if (r.changed) {
+        cell.value = { ...obj, result: r.value } as unknown as ExcelJS.CellValue;
+        return true;
+      }
+      return false;
+    }
+  }
+
+  return false;
 }
 
 /** Truncate `s` to `max` chars, suffixing with ellipsis when shortened. */
@@ -455,7 +567,18 @@ function applyForceMint(
   pattern: PatternName,
   map: ScrubMap,
   vocab: VocabStore | null,
+  summary: XlsxScrubSummary,
 ): string {
+  // SCR-05 (#58): never mint/persist a credential — a force-minted column
+  // (e.g. Email) could otherwise tokenize a leaked API key into vocab.db where
+  // restore() could resurrect it. Redact and flag instead.
+  const creds = [...cellText.matchAll(mkCredential())];
+  if (creds.length > 0) {
+    summary.hasCredentials = true;
+    summary.credentialSnippets.push(...creds.map((m) => redactXlsxCredential(m[0])));
+    return cellText.replace(mkCredential(), '[CREDENTIAL-REDACTED]');
+  }
+
   const type = patternToTokenType(pattern);
   const rx = resolvePatternRegex(pattern);
 
@@ -523,6 +646,8 @@ export async function scrubXlsx(
     rows: 0,
     cellsScrubbed: 0,
     columnsResolved: {},
+    hasCredentials: false,
+    credentialSnippets: [],
   };
 
   wb.eachSheet((sheet) => {
@@ -610,7 +735,7 @@ export async function scrubXlsx(
           // Force-mint: always coerce to string and tokenize.
           const text = cellTextValue(cell);
           if (!text) continue;
-          const next = applyForceMint(text, action.pattern, map, vocab);
+          const next = applyForceMint(text, action.pattern, map, vocab, summary);
           if (next !== text) {
             cell.value = next;
             summary.cellsScrubbed += 1;
@@ -625,6 +750,15 @@ export async function scrubXlsx(
           // cell counts.
           const text = cellTextValue(cell);
           if (!text) continue;
+          // SCR-05 (#58): credential check before any mint/persist.
+          const creds = [...text.matchAll(mkCredential())];
+          if (creds.length > 0) {
+            summary.hasCredentials = true;
+            summary.credentialSnippets.push(...creds.map((m) => redactXlsxCredential(m[0])));
+            cell.value = text.replace(mkCredential(), '[CREDENTIAL-REDACTED]');
+            summary.cellsScrubbed += 1;
+            continue;
+          }
           const r = map.mint(action.tokenType, text);
           if (r.isNew && vocab) {
             vocab.persistMint(text, r.token, action.tokenType.toLowerCase(), 1.0);
@@ -637,20 +771,43 @@ export async function scrubXlsx(
         }
 
         // action.kind === 'regex' — whole-cell scrubText fallback.
-        // Only touch string cells; skip numbers / dates / booleans
-        // (the regex layer has no meaningful match surface on them and
-        // mutating them risks data corruption).
-        if (!isStringCell(cell)) continue;
-        const text = cellTextValue(cell);
-        if (!text) continue;
-        const result = scrubText(text, map, vocab, ctx);
-        if (result.scrubbed !== text) {
-          cell.value = result.scrubbed;
+        // SCR-04 (#57): handle EVERY value shape (plain string, rich text,
+        // hyperlink, cached formula result), not just plain strings — those
+        // object-valued cells previously passed through uncleaned.
+        if (scrubCellAnyShape(cell, map, vocab, ctx, summary)) {
           summary.cellsScrubbed += 1;
         }
       }
     }
+
+    // SCR-04 (#57): scrub the HEADER ROW itself — a PII value in a header
+    // (a person's name/email used as a column title) was never scrubbed.
+    const headerRowObj = sheet.getRow(1);
+    for (let col = 1; col <= colCount; col += 1) {
+      const hc = headerRowObj.getCell(col);
+      if (isEmptyCell(hc)) continue;
+      if (scrubCellAnyShape(hc, map, vocab, ctx, summary)) {
+        summary.cellsScrubbed += 1;
+      }
+    }
+
+    // SCR-04 (#57): scrub the sheet name too (it can carry a customer name).
+    const cleanName = scrubScalarText(sheet.name, map, vocab, ctx, summary);
+    if (cleanName.changed && cleanName.value.trim()) {
+      try { sheet.name = cleanName.value; } catch { /* invalid sheet name — leave as-is */ }
+    }
   });
+
+  // SCR-04 (#57): blank workbook core metadata (creator / lastModifiedBy /
+  // company) before serialization — these embed the author's real identity and
+  // a bare personal name won't reliably regex-match, so we neutralize them
+  // outright rather than rely on tokenization.
+  for (const prop of ['creator', 'lastModifiedBy', 'company'] as const) {
+    const val = (wb as unknown as Record<string, unknown>)[prop];
+    if (typeof val === 'string' && val.trim()) {
+      (wb as unknown as Record<string, unknown>)[prop] = '[REDACTED]';
+    }
+  }
 
   const out = await writeWorkbook(wb, fileName ?? '');
   return { scrubbedBuffer: out, summary };
