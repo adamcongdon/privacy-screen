@@ -364,6 +364,14 @@ export class VocabStore {
    * matches that they've already declared safe. We filter at read time
    * so the fix takes effect immediately on the next GET /api/review.
    */
+  /** True if `value` already has a confirmed/auto token in the vocab table. */
+  hasToken(value: string): boolean {
+    const row = this.db
+      .query<{ token: string }, [string]>(`SELECT token FROM vocab WHERE real_value = ?`)
+      .get(value);
+    return row !== null && row !== undefined;
+  }
+
   pendingReview(): Array<ReviewItem & { id: number }> {
     const rows = this.db
       .query<ReviewItem & { id: number }, []>(
@@ -371,7 +379,35 @@ export class VocabStore {
          FROM review_queue WHERE status = 'pending' ORDER BY detected_at DESC`,
       )
       .all();
-    return rows.filter((row) => !this.isAllowlisted(row.span));
+
+    // #116: drop spans that are allowlisted OR already approved in Vocabulary
+    // (they're no longer "pending" — the Scrub pane already tokenizes them).
+    const live = rows.filter(
+      (row) => !this.isAllowlisted(row.span) && !this.hasToken(row.span),
+    );
+
+    // #116: collapse overlapping/substring spans of the same value to a single
+    // canonical entry (the longest span wins). The review queue was dominated
+    // by truncations/substrings of one value (e.g. an FQDN and "my.host.l",
+    // "my.host."), all proposed as the same category — these are not distinct
+    // findings. Keep the first (newest, longest-preferred) representative per
+    // family and drop any later span that is a substring of an already-kept one
+    // (or vice-versa), case-insensitively.
+    const kept: Array<ReviewItem & { id: number }> = [];
+    // Process longest-first so the canonical full value is kept and its
+    // substrings are absorbed.
+    const byLengthDesc = [...live].sort((a, b) => b.span.length - a.span.length);
+    for (const row of byLengthDesc) {
+      const s = row.span.toLowerCase();
+      const overlaps = kept.some((k) => {
+        const ks = k.span.toLowerCase();
+        return ks.includes(s) || s.includes(ks);
+      });
+      if (!overlaps) kept.push(row);
+    }
+    // Restore the original newest-first ordering for the UI.
+    const keptIds = new Set(kept.map((k) => k.id));
+    return live.filter((row) => keptIds.has(row.id));
   }
 
   /** Transition a review item to a new status. */
