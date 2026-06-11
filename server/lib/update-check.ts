@@ -211,9 +211,20 @@ export async function checkForUpdate(
       // legitimate here and would let a manifest-host adversary forward
       // the beacon to a third party. Reject 30x at the fetch layer.
       redirect: 'error',
-      // Explicitly: no custom headers, no body, no credentials.
-      // We send nothing about this machine beyond what an anonymous
-      // GET inherently reveals to the host.
+      // Never serve a cached manifest. A long-running app process otherwise
+      // honors the manifest's Cache-Control max-age (raw.githubusercontent
+      // sends max-age=300) and keeps returning the version it first fetched —
+      // so "Check for updates now" reports a stale release (e.g. still beta.13
+      // minutes after beta.14 published). `cache: 'no-store'` bypasses Bun's
+      // per-process HTTP cache; the no-cache headers ask the CDN for a
+      // revalidated copy. This is a user-initiated point check, not a hot path.
+      cache: 'no-store',
+      headers: {
+        'cache-control': 'no-cache',
+        pragma: 'no-cache',
+      },
+      // Otherwise: no body, no credentials. We send nothing about this machine
+      // beyond what an anonymous GET inherently reveals to the host.
     });
     if (!res.ok) return null;
     const raw: unknown = await res.json();
