@@ -35,9 +35,10 @@
 - #63: Cache apply() alternation regex and allowlist lookups (P2, scrubber)
 
 **Recent closures (examples from the batch, including the very last wave):**
-#111, #110, #109, #107, #106, #104, #103, #102, #101, #100, #99, #98, #97, #96, #95, #94, #93, #92, #91, #89, #88, #87, #86, #85, #84, #71, #68, #61, #56, etc.
+#111, #110, #109, #107, #106, #104, #103, #102, #101, #100, #99, #98, #97, #96, #95, #94, #93, #92, #91, #89, #88, #87, #86, #85, #84, #73, #71, #68, #61, #56, etc.
 
 **Latest additions (just before handoff):**
+- #73 (JDG-09 mock multi-chunk) closed SUCCESS. TDD red first (route mock only supported single response, queue-empty on 2+ chunks), made `PRIVACY_SCREEN_LLM_MOCK_RESPONSE` accept JSON array for repeating responses, added multi-chunk accumulation/saturation/dedup tests in judge.test.ts + end-to-end route test, isolated 31397, full evidence + close. "ISSUE #73: SUCCESS".
 - #91 (WEB-09 a11y arrows + focus trap) closed SUCCESS. TDD + shared `Segmented` component with roving tabindex + Arrow/Home/End (used across ScrubSend, Settings, Review), switched Onboarding + CustomCategoryDialog to Radix Dialog for proper focus trap/restore/aria, real Browser ReviewStories + agent-browser on isolated 31394 (mode arrows + modal trap assertions + baseline smoke), full evidence + close. "ISSUE #91: SUCCESS".
 - #71 (JDG-07 chunk overlap) closed SUCCESS. TDD red first (boundary-straddling PII test failing because chunks cut mid-name), added `CHUNK_OVERLAP_CHARS = 150` + overlap slice in `chunkText` (src/judge/judge.ts), reused existing `seen` dedup, isolated 31400 with mock, full evidence + close. "ISSUE #71: SUCCESS".
 - #68 (JDG-04 model SHA pin + verify) closed SUCCESS (P1-high security). TDD red first (size/tamper mismatch tests), pinned `expectedSha256` in MODELS + verify gate (size band + refuse + delete partial) in both `cli/install-judge.ts` (default + override) and `server/routes/judge-control.ts` (post-stream), real sha computed from existing model, isolated 31386, tamper never lands/wired (TDD + server sim), full evidence + close. "ISSUE #68: SUCCESS".
@@ -71,7 +72,7 @@ Both issues have been updated post-PR creation with context pointing at #112.
 
 ## What Claude Should Do Next
 
-1. **Monitor the remaining 1 actionable open issue** (#63 — 90 is wontfix). The last wave of narrow subs were launched for most of them (including the ones that just closed #91, #71, #68, and #61). Watch GH for the final closure (it should post rich evidence and close when it finishes).
+1. **Monitor the remaining 1 actionable open issue** (#63 — 90 is wontfix). The last wave of narrow subs were launched for most of them (including the ones that just closed #73, #91, #71, #68, and #61). Watch GH for the final closure (it should post rich evidence and close when it finishes).
 
 2. **When the last ones close**, do a final sweep:
    - Confirm open issues are only the 2 needs-user + #90 (or whatever the user decides on wontfix).
