@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -43,7 +43,7 @@ jobs:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/main')
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # Need full history for sha if we embed it; also for the later git commit of manifest.
           fetch-depth: 0
@@ -57,26 +57,29 @@ jobs:
       - name: Compute version + channel + tag info
         id: vars
         run: |
-          BASE_VERSION=$(jq -r .version package.json)
           BRANCH="${{ github.ref_name }}"
           SHORT_SHA=$(git rev-parse --short HEAD)
           RUN_NUM="${{ github.run_number }}"
 
           if [ "$BRANCH" = "beta" ]; then
             CHANNEL="beta"
-            # Qualify the version baked into the binary + manifest for this beta build.
-            # Using run_number gives a monotonically increasing id for compareVersions.
-            QUAL_VERSION="${BASE_VERSION}-beta.${RUN_NUM}"
-            TAG="v${QUAL_VERSION}"
             MANIFEST_NAME="release-manifest-beta.json"
             PRERELEASE_FLAG="--prerelease"
-            RELEASE_TITLE="Beta ${BASE_VERSION} (run ${RUN_NUM}, ${SHORT_SHA})"
           else
             CHANNEL="stable"
-            QUAL_VERSION="${BASE_VERSION}"
-            TAG="v${QUAL_VERSION}"
             MANIFEST_NAME="release-manifest.json"
             PRERELEASE_FLAG=""
+          fi
+
+          # Source of truth: git tags. package.json is treated as a floor only.
+          # See scripts/compute-version.ts for the increment rules.
+          TAG=$(bun scripts/compute-version.ts "$CHANNEL")
+          QUAL_VERSION="${TAG#v}"
+          BASE_VERSION="${QUAL_VERSION%-beta.*}"
+
+          if [ "$CHANNEL" = "beta" ]; then
+            RELEASE_TITLE="Beta ${QUAL_VERSION} (${SHORT_SHA})"
+          else
             RELEASE_TITLE="v${QUAL_VERSION}"
           fi
 
@@ -92,11 +95,12 @@ jobs:
 
           echo "channel=$CHANNEL version=$QUAL_VERSION tag=$TAG manifest=$MANIFEST_NAME"
 
-      - name: Prepare beta-qualified package.json version (ephemeral, for this build only)
-        if: steps.vars.outputs.channel == 'beta'
+      - name: Stamp package.json with the computed version (ephemeral, for this build only)
+        # build-release.ts reads pkg.version verbatim to bake into the binary +
+        # manifest. We never commit this change; create-release restores it.
         run: |
           QUAL="${{ steps.vars.outputs.qual_version }}"
-          echo "Temporarily setting package.json version to ${QUAL} for beta binary + manifest"
+          echo "Temporarily setting package.json version to ${QUAL} for binary + manifest"
           jq --arg v "$QUAL" '.version = $v' package.json > package.json.tmp
           mv package.json.tmp package.json
 
@@ -157,7 +161,7 @@ jobs:
         #   1. Settings → Secrets and variables → Actions → Variables tab
         #   2. Add variable: RUN_VIRUSTOTAL_SCAN = true
         if: ${{ vars.RUN_VIRUSTOTAL_SCAN == 'true' }}
-        uses: crazy-max/ghaction-virustotal@v4
+        uses: crazy-max/ghaction-virustotal@v5
         with:
           files: |
             dist/privacy-screen-darwin-arm64
@@ -172,7 +176,7 @@ jobs:
         # - Windows binary here has already been signed (see step above).
         # - Darwin binaries are unsigned; the sign-macos job will produce final-darwin-* overlays.
         # When RUN_CODE_SIGNING is not enabled, these artifacts (with unsigned darwins) are used directly.
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-binaries
           path: |
@@ -189,6 +193,105 @@ jobs:
           ls -l dist/ || true
 
   # ---------------------------------------------------------------------------
+  # Windows double-click installer (Inno Setup). Runs on a Windows runner so we
+  # can use ISCC. Packages the (already-signed-when-enabled) win32 binary from
+  # the build job into dist/privacy-screen-setup-win32-x64.exe. Best-effort:
+  # create-release attaches the installer only if this job succeeds.
+  # ---------------------------------------------------------------------------
+  package-windows:
+    name: package-windows
+    needs: build
+    runs-on: windows-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/main')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download built binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: build-binaries
+          path: dist/
+
+      - name: Compute version
+        id: vars
+        shell: bash
+        run: |
+          BASE_VERSION=$(jq -r .version package.json)
+          if [ "${{ github.ref_name }}" = "beta" ]; then
+            echo "version=${BASE_VERSION}-beta.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: bash
+        run: |
+          ISCC="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          # MSYS_NO_PATHCONV stops Git Bash from rewriting the /D define into a
+          # Windows path, which would make ISCC see it as a second script file
+          # ("You may not specify more than one script filename").
+          MSYS_NO_PATHCONV=1 "$ISCC" "/DMyAppVersion=${{ steps.vars.outputs.version }}" installers/windows/privacy-screen.iss
+          ls -l dist/
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: installer-windows
+          path: dist/privacy-screen-setup-win32-x64.exe
+
+  # ---------------------------------------------------------------------------
+  # macOS .app + .dmg installers (arm64 + x64). Runs on a macOS runner for
+  # hdiutil. Packages the darwin binaries from the build job. Best-effort.
+  # NOTE: this packages the build-job darwins; when RUN_CODE_SIGNING is enabled
+  # the standalone signed+notarized raw binaries are still released separately.
+  # ---------------------------------------------------------------------------
+  package-macos:
+    name: package-macos
+    needs: build
+    runs-on: macos-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/main')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download built binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: build-binaries
+          path: dist/
+
+      - name: Compute version
+        id: vars
+        run: |
+          BASE_VERSION=$(jq -r .version package.json)
+          if [ "${{ github.ref_name }}" = "beta" ]; then
+            echo "version=${BASE_VERSION}-beta.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build .app + .dmg (arm64 + x64)
+        run: |
+          chmod +x dist/privacy-screen-darwin-arm64 dist/privacy-screen-darwin-x64 || true
+          bash installers/macos/package-macos.sh \
+            --binary dist/privacy-screen-darwin-arm64 \
+            --version "${{ steps.vars.outputs.version }}" --arch arm64 --outdir dist
+          bash installers/macos/package-macos.sh \
+            --binary dist/privacy-screen-darwin-x64 \
+            --version "${{ steps.vars.outputs.version }}" --arch x64 --outdir dist
+          ls -l dist/*.dmg
+
+      - name: Upload dmg artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: installer-macos
+          path: dist/*.dmg
+
+  # ---------------------------------------------------------------------------
   # macOS code signing + notarization (only when RUN_CODE_SIGNING=true).
   # Produces final-darwin-* artifacts containing the Developer ID signed +
   # Apple-notarized + stapled binaries. These overlay the build-binaries darwins
@@ -202,7 +305,7 @@ jobs:
     if: ${{ vars.RUN_CODE_SIGNING == 'true' }}
     steps:
       - name: Download built darwin binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: build-binaries
           path: dist/
@@ -291,7 +394,7 @@ jobs:
           done
 
       - name: Upload final (signed + notarized + stapled) darwin binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: final-darwin-binaries
           path: |
@@ -307,7 +410,7 @@ jobs:
   # ---------------------------------------------------------------------------
   create-release:
     name: create-release (${{ github.ref_name }})
-    needs: [test, build, sign-macos]
+    needs: [test, build, sign-macos, package-windows, package-macos]
     runs-on: ubuntu-latest
     # Only on direct pushes to the protected branches (post-merge). PRs never release.
     # The "always()" + result check lets this proceed when sign-macos was skipped
@@ -321,7 +424,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -334,24 +437,30 @@ jobs:
       - name: Compute version + channel + tag info
         id: vars
         run: |
-          BASE_VERSION=$(jq -r .version package.json)
           BRANCH="${{ github.ref_name }}"
           SHORT_SHA=$(git rev-parse --short HEAD)
           RUN_NUM="${{ github.run_number }}"
 
           if [ "$BRANCH" = "beta" ]; then
             CHANNEL="beta"
-            QUAL_VERSION="${BASE_VERSION}-beta.${RUN_NUM}"
-            TAG="v${QUAL_VERSION}"
             MANIFEST_NAME="release-manifest-beta.json"
             PRERELEASE_FLAG="--prerelease"
-            RELEASE_TITLE="Beta ${BASE_VERSION} (run ${RUN_NUM}, ${SHORT_SHA})"
           else
             CHANNEL="stable"
-            QUAL_VERSION="${BASE_VERSION}"
-            TAG="v${QUAL_VERSION}"
             MANIFEST_NAME="release-manifest.json"
             PRERELEASE_FLAG=""
+          fi
+
+          # Source of truth: git tags. Must match the build job's computation
+          # since build and create-release run on the same commit (same tags
+          # visible). See scripts/compute-version.ts for the rules.
+          TAG=$(bun scripts/compute-version.ts "$CHANNEL")
+          QUAL_VERSION="${TAG#v}"
+          BASE_VERSION="${QUAL_VERSION%-beta.*}"
+
+          if [ "$CHANNEL" = "beta" ]; then
+            RELEASE_TITLE="Beta ${QUAL_VERSION} (${SHORT_SHA})"
+          else
             RELEASE_TITLE="v${QUAL_VERSION}"
           fi
 
@@ -367,8 +476,9 @@ jobs:
 
           echo "channel=$CHANNEL version=$QUAL_VERSION tag=$TAG manifest=$MANIFEST_NAME"
 
-      - name: Prepare beta-qualified package.json (ephemeral, for manifest generation only)
-        if: steps.vars.outputs.channel == 'beta'
+      - name: Stamp package.json with the computed version (ephemeral, for manifest generation)
+        # build-release.ts --manifest-only reads pkg.version verbatim to write
+        # into the manifest. We never commit this change; the next step restores it.
         run: |
           QUAL="${{ steps.vars.outputs.qual_version }}"
           echo "Temporarily setting package.json version to ${QUAL} for manifest"
@@ -376,16 +486,30 @@ jobs:
           mv package.json.tmp package.json
 
       - name: Download built binaries (base layer)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: build-binaries
           path: dist/
 
       - name: Overlay final signed+notarized darwin binaries (when code signing enabled)
         if: ${{ vars.RUN_CODE_SIGNING == 'true' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: final-darwin-binaries
+          path: dist/
+
+      - name: Download Windows installer (best-effort)
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: installer-windows
+          path: dist/
+
+      - name: Download macOS installers (best-effort)
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: installer-macos
           path: dist/
 
       - name: Verify we have the three platform binaries in dist/
@@ -441,6 +565,24 @@ jobs:
             )
 
           echo "Release $TAG created/updated with assets."
+
+      - name: Attach desktop installers to the release (best-effort)
+        # Installers are first-install convenience artifacts. If their packaging
+        # jobs failed or were skipped, the core release (raw binaries + manifest)
+        # is unaffected — we just don't attach installers this run.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          shopt -s nullglob
+          ASSETS=( dist/privacy-screen-setup-win32-x64.exe dist/*.dmg )
+          if [ ${#ASSETS[@]} -eq 0 ]; then
+            echo "No installer artifacts present; skipping installer attach."
+            exit 0
+          fi
+          echo "Attaching installers: ${ASSETS[*]}"
+          gh release upload "$TAG" "${ASSETS[@]}" --clobber
 
       - name: Restore clean package.json (do not commit the beta-qualified version)
         if: steps.vars.outputs.channel == 'beta'

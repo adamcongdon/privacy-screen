@@ -1,0 +1,24 @@
+privacy-screen
+Copyright 2026 the privacy-screen authors
+
+This product includes software developed by the privacy-screen authors
+(https://github.com/adamcongdon/privacy-screen).
+
+Licensed under the Apache License, Version 2.0 (the "License");
+see the LICENSE file in this distribution for the full text.
+
+----------------------------------------------------------------------
+
+Third-party dependencies are listed in `package.json` and retain their
+own licenses. Notable runtime dependencies include:
+
+  - Hono (MIT)              — https://github.com/honojs/hono
+  - exceljs (MIT)           — https://github.com/exceljs/exceljs
+  - React (MIT)             — https://github.com/facebook/react
+  - Radix UI (MIT)          — https://github.com/radix-ui/primitives
+  - lucide-react (ISC)      — https://github.com/lucide-icons/lucide
+  - zustand (MIT)           — https://github.com/pmndrs/zustand
+  - keytar (MIT)            — https://github.com/atom/node-keytar
+  - tailwindcss (MIT)       — https://github.com/tailwindlabs/tailwindcss
+
+For the complete and current list, run `bun pm ls` against this checkout.

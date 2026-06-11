@@ -18,7 +18,7 @@
 - Release workflow also performs VirusTotal scanning of the built platform binaries (when `VT_API_KEY` secret is configured).
 - Release workflow supports optional code signing (see "Code signing" section below).
 
-### Claude automation (ported from `adamcongdon/se-lz`)
+### Claude automation
 
 - `claude.yml` — `@claude` mention handler. Replies on issues, issue comments, PR review comments, and PR reviews that contain `@claude`. Uses [`anthropics/claude-code-action@v1`](https://github.com/anthropics/claude-code-action). Requires secret `CLAUDE_CODE_OAUTH_TOKEN` (generate via `claude setup-token`). Without the secret, the workflow runs but the action step fails — the rest of the repo is unaffected.
 - `claude-code-review.yml` — auto code review on every PR open/sync/reopen/ready_for_review. Calls the `code-review:code-review` plugin via `claude-code-action`. Same `CLAUDE_CODE_OAUTH_TOKEN` secret as `claude.yml`.
@@ -63,7 +63,7 @@ They can be re-enabled by renaming the files once GHAS is available.
 
 ## Code signing for releases (issue #14)
 
-Releases can (and should) be code-signed so that end users get properly signed+notarized macOS binaries (Developer ID + hardened runtime + Apple notarization + staple) and Authenticode-signed Windows binaries. This matches the signing flow used in related VeeamHub projects.
+Releases can (and should) be code-signed so that end users get properly signed+notarized macOS binaries (Developer ID + hardened runtime + Apple notarization + staple) and Authenticode-signed Windows binaries.
 
 ### Enabling
 1. In the repo: Settings → Secrets and variables → Actions → Variables tab

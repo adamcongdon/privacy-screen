@@ -1,6 +1,6 @@
 /**
  * PII scrubber — core anonymization engine.
- * Port of se-lz/src/SECC.Infrastructure/Services/PiiScrubber.cs
+ * Ported from an internal C# reference implementation.
  *
  * Orchestrates pattern detection, vocabulary minting, and text substitution.
  * Produces a ScrubResult that the PrivacyScreen hook uses to decide
@@ -69,6 +69,11 @@ export interface ScrubContext {
   sessionId?: string;
   /** Optional config — falls back to loadConfig() if absent. */
   config?: PrivacyConfig;
+  /**
+   * Self-service user literal patterns (from UI "Tokenize selection").
+   * Matched literally (case-insensitive, partial, no word boundaries), high priority.
+   */
+  userPatterns?: Array<{ text: string; cat: string }>;
 }
 
 /**
@@ -96,6 +101,26 @@ export function scrubText(
   // can permanently silence a previously-minted name.
   preMintCustomers(map, vocab, cfg);
   preMintPersons(map, vocab, cfg);
+  preMintUserPatterns(map, vocab, cfg);
+
+  // ── User literal patterns (self-service "Tokenize selection", high priority 1.2) ──
+  // Match literally (escaped, case-insensitive, partial ok — no \b), before heuristics.
+  // This makes explicit user choices always win over customer names and detectors.
+  if (ctx.userPatterns && ctx.userPatterns.length > 0) {
+    for (const p of ctx.userPatterns) {
+      if (!p.text || !p.cat) continue;
+      const escaped = p.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(escaped, 'gi');
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text)) !== null) {
+        const matchText = m[0];
+        // Use the provided cat for the token type/prefix (upper for token, lower for category).
+        const type = p.cat.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+        const cat = p.cat.toLowerCase();
+        maybeRecordMint(map, vocab, type, matchText, cat, 1.2, minted);
+      }
+    }
+  }
 
   // ── Step 1: Credential check — BLOCK ALWAYS ──────────────────────────────
   const credMatches = [...text.matchAll(mkCredential())];
@@ -325,6 +350,26 @@ function preMintPersons(
     const r = map.mint('PERSON', name);
     if (r.isNew && vocab) {
       vocab.persistMint(name, r.token, 'person', 1.0);
+    }
+  }
+}
+
+function preMintUserPatterns(
+  map: ScrubMap,
+  vocab: VocabStore | null,
+  cfg: PrivacyConfig,
+): void {
+  const patterns = cfg.user_patterns ?? [];
+  for (const p of patterns) {
+    if (!p || !p.text || !p.cat) continue;
+    if (vocab?.isAllowlisted(p.text)) continue;
+    if (map.tokenFor(p.text) !== undefined) continue;
+    // Sanitize cat the same way the ctx.userPatterns literal path does (high-prio 1.2).
+    const type = p.cat.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+    const cat = p.cat.toLowerCase();
+    const r = map.mint(type, p.text);
+    if (r.isNew && vocab) {
+      vocab.persistMint(p.text, r.token, cat, 1.2);
     }
   }
 }

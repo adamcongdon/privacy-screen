@@ -27,6 +27,9 @@ import {
   type ChatMessage,
   type InducedPatternDto,
   type JudgeStatus,
+  type XlsxInspectionEntry,
+  type XlsxSheetInspection,
+  type XlsxCommitOverrides,
 } from './api';
 
 export type FileChip = {
@@ -54,11 +57,78 @@ export type ToastEntry = {
   message: string;
 };
 
+/**
+ * Pending xlsx review state — #23 Segment 3C3.
+ *
+ * Set by `addFiles` when the server returns an `XlsxInspectionEntry`. The
+ * `XlsxColumnReview` modal renders iff this is non-null. Cleared on commit
+ * success or explicit cancel.
+ *
+ * **Concurrency policy**: only one review may be active at a time. If a
+ * user drops multiple xlsx files, the first becomes the active review and
+ * the rest are toasted as "ignored — review the current one first". This
+ * keeps the UX linear and avoids juggling staged uploads in the store; a
+ * dropped xlsx that wasn't shown is also dropped server-side once the
+ * staging TTL expires (~5 min).
+ */
+export type PendingXlsx = {
+  uploadId: string;
+  fileName: string;
+  size: number;
+  sheets: XlsxSheetInspection[];
+};
+
+export type PendingXlsxPayload = PendingXlsx;
+
+// Async feedback job types — polled by the UI to surface filing progress.
+export type JobStatus = 'queued' | 'drafting' | 'filing' | 'done' | 'error';
+export type FeedbackJobState = {
+  jobId: string;
+  status: JobStatus;
+  issueNumber?: number;
+  issueUrl?: string;
+  error?: string;
+};
+
 export type PreviewMode = 'source' | 'rendered';
+
+/**
+ * Screening mode for the Scrub screen + Settings radio group.
+ *
+ * Persisted server-side in PRIVACY_CONFIG.yaml and surfaced through
+ * `/api/settings` (GET returns `mode`; POST accepts `mode`). This is the SAME
+ * canonical `mode` the hook/CLI enforcement path reads (src/config.ts), so the
+ * web Settings screen and the hook share one source of truth. Hydrated from
+ * `settings.mode` on load; `setMode` persists via `saveSettings({ mode })`.
+ *
+ * - observe:  detect + tokenize, but never block on a credential.
+ * - enforce:  block send while a credential is present (recommended default).
+ * - disabled: text passes through untouched (no tokens).
+ */
+export type ScreenMode = 'observe' | 'enforce' | 'disabled';
+
+/** Active theme — drives the root `theme-*` class and CSS custom properties. */
+export type Theme = 'dark' | 'light';
+
+/** Top-level route for the Flow shell. `history`/`chat` are reserved (rail keeps
+ * them disabled in Engineer-B) but remain valid members. */
+export type Route = 'scrub' | 'review' | 'vocab' | 'settings' | 'history' | 'chat';
 
 const LS_PREVIEW_MODE = 'ps.preview-mode';
 const LS_TOKENMAP_OPEN = 'ps.tokenmap-open';
 const LS_DISMISSED_UPDATE = 'ps.dismissed-update-version';
+const LS_THEME = 'ps-theme';
+/** First-run gate key. Unset → show Onboarding; '1' → onboarding complete. */
+const LS_ONBOARDED = 'ps-onboarded';
+
+const VALID_ROUTES: readonly Route[] = [
+  'scrub',
+  'review',
+  'vocab',
+  'settings',
+  'history',
+  'chat',
+];
 
 /**
  * Periodic version-poll cadence. 4 hours — quiet enough to be invisible, frequent
@@ -94,6 +164,74 @@ function readLsTokenMapOpen(): boolean {
   }
 }
 
+function readLsTheme(): Theme {
+  try {
+    const v = globalThis.localStorage?.getItem(LS_THEME);
+    if (v === 'light' || v === 'dark') return v;
+    // No stored preference — fall back to the OS color scheme.
+    if (globalThis.matchMedia?.('(prefers-color-scheme: light)').matches) {
+      return 'light';
+    }
+    return 'dark';
+  } catch {
+    return 'dark';
+  }
+}
+
+/**
+ * Read the first-run gate. Returns true once the user has completed onboarding
+ * (localStorage `ps-onboarded` === '1'). Mirrors the other `readLs*` helpers —
+ * defensive against unavailable/quota-restricted localStorage.
+ */
+function readLsOnboarded(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(LS_ONBOARDED) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Boot-time route reader: parses `location.hash` (`#/vocab`) into a valid Route,
+ * defaulting to 'scrub'. Exported for tests to verify the round-trip with
+ * `setRoute` (which writes the hash) — production reads it once at store init.
+ */
+export function readHashRoute(): Route {
+  try {
+    const raw = (globalThis.location?.hash ?? '').replace(/^#\/?/, '').trim();
+    return (VALID_ROUTES as readonly string[]).includes(raw)
+      ? (raw as Route)
+      : 'scrub';
+  } catch {
+    return 'scrub';
+  }
+}
+
+/**
+ * Apply the theme to the document root by setting the `theme-<theme>` class.
+ * Safe to call at boot (App can invoke once on mount) and from `setTheme`.
+ */
+export function applyThemeClass(theme: Theme): void {
+  try {
+    if (globalThis.document?.documentElement) {
+      globalThis.document.documentElement.className = 'theme-' + theme;
+    }
+  } catch {
+    // ignore — non-DOM (test/SSR) environments
+  }
+}
+
+/**
+ * Boot-time theme sync: reads the persisted/system theme and applies the root
+ * class. Returns the resolved theme. App should call this once on mount so the
+ * `theme-*` class matches the store's hydrated `theme` value.
+ */
+export function applyTheme(): Theme {
+  const t = readLsTheme();
+  applyThemeClass(t);
+  return t;
+}
+
 function readLsDismissedUpdate(): string | null {
   try {
     return globalThis.localStorage?.getItem(LS_DISMISSED_UPDATE) ?? null;
@@ -124,6 +262,14 @@ type State = {
   credentialSnippets: string[];
   isScrubbing: boolean;
   scrubError: string | null;
+  /**
+   * True while addFiles is in-flight to the server. Used to gate the
+   * FileDropZone against concurrent uploads — without this guard a second
+   * drop fires while the first POST /api/files is still resolving, the
+   * state updates interleave, and the user sees the second drop appear
+   * to do nothing (issue #37).
+   */
+  isUploading: boolean;
 
   // Conversation
   messages: SessionMessage[];
@@ -144,6 +290,21 @@ type State = {
   previewModeUserOverrode: boolean;
   /** Token Map slide-in drawer open/closed. Persisted to localStorage. */
   tokenMapOpen: boolean;
+  /** Active theme — 'dark' (default) or 'light'. Persisted to localStorage('ps-theme'). */
+  theme: Theme;
+  /**
+   * First-run gate. False until the user finishes Onboarding; persisted to
+   * localStorage('ps-onboarded'). App overlays <Onboarding> while this is false.
+   */
+  onboarded: boolean;
+  /**
+   * Screening mode for Scrub & Settings. Persisted server-side via
+   * `/api/settings` (see ScreenMode docs); hydrated from `settings.mode` on
+   * load. Defaults to 'enforce' until settings hydrate.
+   */
+  mode: ScreenMode;
+  /** Active top-level route for the Flow shell. Reflected in location.hash. */
+  route: Route;
   /** Send-feedback dialog open/closed. Not persisted — ephemeral per session. */
   feedbackOpen: boolean;
 
@@ -155,6 +316,10 @@ type State = {
   health: { ok: boolean; version: string } | null;
   judgeStatus: JudgeStatus | null;
   isJudging: boolean;
+
+  // Self-service from handoff addendum
+  userPatterns: Array<{ text: string; cat: string }>;
+  customCategories: Array<{ id: string; label: string; color: string }>;
 
   // Update (beta/stable channel + download/apply)
   versionInfo: Awaited<ReturnType<typeof api.version>> | null;
@@ -175,6 +340,12 @@ type State = {
   // Toasts
   toasts: ToastEntry[];
 
+  // Active async feedback job (polled state from the backend)
+  activeFeedbackJob: FeedbackJobState | null;
+
+  /** Pending xlsx column review — null when no xlsx awaiting commit (#23). */
+  pendingXlsx: PendingXlsx | null;
+
   // ── actions ──────────────────────────────────────────────────────────────
   setComposerText: (t: string) => void;
   setShowRawTokens: (v: boolean) => void;
@@ -185,6 +356,18 @@ type State = {
   autoSetPreviewMode: (m: PreviewMode) => void;
   resetPreviewModeOverride: () => void;
   setTokenMapOpen: (o: boolean) => void;
+  /** Set the active theme — persists to localStorage and applies the root class. */
+  setTheme: (t: Theme) => void;
+  /** Mark first-run onboarding complete (persists `ps-onboarded`) or reset it. */
+  setOnboarded: (v: boolean) => void;
+  /**
+   * Set the screening mode and re-run the current scrub so the Scrub screen
+   * reflects the new mode immediately (Enforce blocks credentials; Disabled
+   * passes through). Client-side only — see ScreenMode docs.
+   */
+  setMode: (m: ScreenMode) => void;
+  /** Set the active route — updates location.hash to `#/<route>`. */
+  setRoute: (r: Route) => void;
   setFeedbackOpen: (o: boolean) => void;
   resetConversation: () => void;
 
@@ -205,6 +388,10 @@ type State = {
   refreshJudgeStatus: () => Promise<void>;
   setJudgeEnabled: (enabled: boolean) => Promise<void>;
   installJudgeModel: (model: string) => Promise<void>;
+
+  /** Self-service literal patterns (feature 1) and custom categories (feature 3). */
+  addUserPattern: (value: string, cat: string) => Promise<void>;
+  createCustomCategory: (label: string, color: string, seedText?: string) => Promise<void>;
 
   refreshVersion: () => Promise<void>;
   refreshUpdateStatus: () => Promise<void>;
@@ -228,7 +415,11 @@ type State = {
     type?: string,
   ) => Promise<void>;
   addCustomerName: (name: string) => Promise<void>;
-  forgetVocab: (realValue: string) => Promise<void>;
+  /** #88: support optional toastLabel so callers (masked rows in VocabularyPage) can
+   * reference by *token* in the success toast instead of realValue. Legacy callers
+   * (Settings chips, DataPrivacy clear) continue to pass 1 arg and see the real (as
+   * those surfaces intentionally display the value). */
+  forgetVocab: (realValue: string, toastLabel?: string) => Promise<void>;
   /** Mint a selected span as a specific category — drives the context-menu UX. */
   mintSelection: (value: string, category: string) => Promise<void>;
 
@@ -237,6 +428,23 @@ type State = {
 
   pushToast: (kind: ToastEntry['kind'], message: string) => void;
   dismissToast: (id: number) => void;
+
+  // Async feedback job actions
+  startFeedbackJob: (jobId: string) => void;
+  setFeedbackJobState: (state: FeedbackJobState) => void;
+  clearFeedbackJob: () => void;
+
+  // Xlsx review actions (#23)
+  startXlsxReview: (payload: PendingXlsxPayload) => void;
+  clearXlsxReview: () => void;
+  /**
+   * POST /api/files/xlsx/commit using the active pendingXlsx.uploadId + the
+   * caller-supplied overrides. On 200, triggers a browser download of the
+   * scrubbed bytes via a synthetic anchor, toasts success, and clears the
+   * review. On error: toasts and leaves pendingXlsx intact so the user can
+   * adjust selections and retry.
+   */
+  commitXlsxReview: (overrides: XlsxCommitOverrides) => Promise<void>;
 };
 
 // Module-level so the AbortController survives state recreations and store
@@ -334,6 +542,7 @@ export const useStore = create<State>((set, get) => {
   hasCredentials: false,
   credentialSnippets: [],
   isScrubbing: false,
+  isUploading: false,
   scrubError: null,
 
   messages: [],
@@ -348,6 +557,10 @@ export const useStore = create<State>((set, get) => {
   previewMode: readLsPreviewMode(),
   previewModeUserOverrode: false,
   tokenMapOpen: readLsTokenMapOpen(),
+  theme: readLsTheme(),
+  onboarded: readLsOnboarded(),
+  mode: 'enforce',
+  route: readHashRoute(),
   feedbackOpen: false,
 
   vocab: [],
@@ -358,12 +571,21 @@ export const useStore = create<State>((set, get) => {
   judgeStatus: null,
   isJudging: false,
 
+  userPatterns: [],
+  customCategories: [],
+
   versionInfo: null,
   updateStatus: null,
   dismissedUpdateVersion: readLsDismissedUpdate(),
   settingsDeepLink: null,
 
   toasts: [],
+
+    // Active async feedback job, polled by useFeedbackJob
+    activeFeedbackJob: null,
+
+    // No xlsx awaiting column review at boot (#23).
+    pendingXlsx: null,
 
   setComposerText: (t) => set({ composerText: t }),
   setShowRawTokens: (v) => set({ showRawTokens: v }),
@@ -385,6 +607,43 @@ export const useStore = create<State>((set, get) => {
   setTokenMapOpen: (o) => {
     writeLs(LS_TOKENMAP_OPEN, o ? '1' : '0');
     set({ tokenMapOpen: o });
+  },
+
+  setTheme: (t) => {
+    writeLs(LS_THEME, t);
+    applyThemeClass(t);
+    set({ theme: t });
+  },
+
+  setOnboarded: (v) => {
+    writeLs(LS_ONBOARDED, v ? '1' : '0');
+    set({ onboarded: v });
+  },
+
+  setMode: (m) => {
+    // Optimistic: flip the UI immediately, then persist to PRIVACY_CONFIG.yaml
+    // via /api/settings and re-run the current scrub so the Scrub screen
+    // reflects the new mode live. saveSettings() syncs `mode` back from the
+    // server response (and rolls the toast); a failed save surfaces an error
+    // toast but leaves the optimistic value so the user can retry.
+    set({ mode: m });
+    void get()
+      .saveSettings({ mode: m })
+      .catch(() => {
+        /* saveSettings already surfaced an error toast */
+      })
+      .finally(() => {
+        void get().refreshScrub();
+      });
+  },
+
+  setRoute: (r) => {
+    try {
+      if (globalThis.location) globalThis.location.hash = '#/' + r;
+    } catch {
+      // ignore in non-DOM environments
+    }
+    set({ route: r });
   },
 
   setFeedbackOpen: (o) => set({ feedbackOpen: o }),
@@ -409,6 +668,10 @@ export const useStore = create<State>((set, get) => {
 
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 
+  startFeedbackJob: (jobId) => set({ activeFeedbackJob: { jobId, status: 'queued' } }),
+  setFeedbackJobState: (state) => set({ activeFeedbackJob: state }),
+  clearFeedbackJob: () => set({ activeFeedbackJob: null }),
+
   buildPayload: (useOriginal = false) => {
     const { composerText, files } = get();
     const parts: string[] = [];
@@ -426,44 +689,106 @@ export const useStore = create<State>((set, get) => {
   addFiles: async (incoming) => {
     const list = Array.from(incoming as ArrayLike<File>);
     if (list.length === 0) return;
+    // Guard against concurrent uploads (issue #37). Without this, a fast
+    // second drop races the first POST /api/files: the server log shows
+    // only the first request, the second appears to hang, and the UI never
+    // updates because state writes from the two `set()` calls interleave.
+    // Surfacing a toast also makes the rejection visible — silence was the
+    // original failure mode.
+    if (get().isUploading) {
+      get().pushToast('info', 'still uploading the previous batch — try again in a moment');
+      return;
+    }
+    set({ isUploading: true });
     try {
       const res = await api.uploadFiles(list);
+
+      // Partition: xlsx-inspection entries route to the review modal; everything
+      // else (text + error rows) flows down the existing FileChip path.
+      const xlsxEntries: XlsxInspectionEntry[] = [];
+      const textEntries: UploadedFile[] = [];
+      for (const entry of res.files) {
+        if ('kind' in entry && entry.kind === 'xlsx-inspection') {
+          xlsxEntries.push(entry);
+        } else {
+          // Discriminator absent → text-like UploadedFile (success or error row).
+          textEntries.push(entry as UploadedFile);
+        }
+      }
+
+      // ── Text path (unchanged behavior) ────────────────────────────────────
       const chips: FileChip[] = [];
       const idBase = Date.now();
       let i = 0;
       const newTokens: Token[] = [];
-      for (const u of res.files) {
+      for (const u of textEntries) {
         const id = `f${idBase}-${i++}`;
         chips.push(fileChipFromUploaded(u, id));
         if (u.tokens) newTokens.push(...u.tokens);
       }
-      set((s) => ({
-        files: [...s.files, ...chips],
-        tokenUnion: mergeTokenUnion(s.tokenUnion, newTokens),
-      }));
-      // Refresh scrub (skipJudge=true) so preview updates without double-firing
-      // the judge — we fire it below using the upload response data directly.
-      void get().refreshScrub({ skipJudge: true });
-      // Fire judge for each clean file using the server's upload response data.
-      // Skip errored and credential chips; `?? []` handles absent token arrays.
-      const judgeChips = chips.filter(
-        (c) => !c.error && !c.hasCredentials && c.scrubbed && c.scrubbed.length >= MIN_JUDGE_PAYLOAD,
-      );
-      for (const chip of judgeChips) {
-        api.judgePost(chip.scrubbed!, chip.tokens ?? []);
+      if (chips.length > 0) {
+        set((s) => ({
+          files: [...s.files, ...chips],
+          tokenUnion: mergeTokenUnion(s.tokenUnion, newTokens),
+        }));
+        // Refresh scrub (skipJudge=true) so preview updates without double-firing
+        // the judge — we fire it below using the upload response data directly.
+        void get().refreshScrub({ skipJudge: true });
+        // Fire judge for each clean file using the server's upload response data.
+        const judgeChips = chips.filter(
+          (c) => !c.error && !c.hasCredentials && c.scrubbed && c.scrubbed.length >= MIN_JUDGE_PAYLOAD,
+        );
+        for (const chip of judgeChips) {
+          api.judgePost(chip.scrubbed!, chip.tokens ?? []);
+        }
+        if (judgeChips.length > 0) {
+          set({ isJudging: true });
+          startJudgePoller();
+        }
+        for (const chip of chips) {
+          if (chip.error) get().pushToast('error', `${chip.name}: ${chip.error}`);
+          else if (chip.hasCredentials)
+            get().pushToast('error', `${chip.name}: credential detected — review before sending`);
+          else get().pushToast('success', `${chip.name} scrubbed (${chip.size}B)`);
+        }
       }
-      if (judgeChips.length > 0) {
-        set({ isJudging: true });
-        startJudgePoller();
-      }
-      for (const chip of chips) {
-        if (chip.error) get().pushToast('error', `${chip.name}: ${chip.error}`);
-        else if (chip.hasCredentials)
-          get().pushToast('error', `${chip.name}: credential detected — review before sending`);
-        else get().pushToast('success', `${chip.name} scrubbed (${chip.size}B)`);
+
+      // ── Xlsx path (#23 Segment 3C3) ───────────────────────────────────────
+      // Surface the first xlsx as the active review. If the user already has a
+      // pending review (e.g. they dropped xlsx files in back-to-back batches),
+      // skip even the first of this batch — they need to resolve the in-flight
+      // one first. Extras in either case get a toast so silence is impossible.
+      if (xlsxEntries.length > 0) {
+        const already = get().pendingXlsx !== null;
+        if (already) {
+          for (const x of xlsxEntries) {
+            get().pushToast(
+              'info',
+              `${x.name}: xlsx queued — finish the current review first`,
+            );
+          }
+        } else {
+          const [first, ...rest] = xlsxEntries;
+          if (first) {
+            get().startXlsxReview({
+              uploadId: first.uploadId,
+              fileName: first.name,
+              size: first.size,
+              sheets: first.sheets,
+            });
+          }
+          for (const x of rest) {
+            get().pushToast(
+              'info',
+              `${x.name}: additional xlsx ignored — review the current one first`,
+            );
+          }
+        }
       }
     } catch (err) {
       get().pushToast('error', `upload failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      set({ isUploading: false });
     }
   },
 
@@ -488,7 +813,8 @@ export const useStore = create<State>((set, get) => {
     }
     set({ isScrubbing: true, scrubError: null });
     try {
-      const r = await api.scrub(payload, false);
+      const patterns = get().userPatterns;
+      const r = await api.scrub(payload, false, patterns.length ? patterns : undefined);
       set((s) => ({
         scrubbed: r.scrubbed,
         tokens: r.tokens,
@@ -596,7 +922,12 @@ export const useStore = create<State>((set, get) => {
   refreshSettings: async () => {
     try {
       const s = await api.settings();
-      set({ settings: s });
+      set({
+        settings: s,
+        mode: s.mode,
+        userPatterns: s.user_patterns ?? [],
+        customCategories: s.custom_categories ?? [],
+      });
     } catch (err) {
       get().pushToast('error', `settings fetch failed: ${err instanceof Error ? err.message : err}`);
     }
@@ -644,6 +975,58 @@ export const useStore = create<State>((set, get) => {
       get().pushToast('error', `install failed: ${msg}`);
       throw err;
     }
+  },
+
+  addUserPattern: async (value, cat) => {
+    const trimmed = value.trim();
+    if (!trimmed || !cat) return;
+    const c = cat.toLowerCase();
+    // Optimistic + persist the patterns list (self-service, like updates).
+    const current = get().userPatterns;
+    const next = [...current, { text: trimmed, cat: c }];
+    set({ userPatterns: next });
+    try {
+      await api.saveSettings({ user_patterns: next });
+      // Also mint a vocab entry so it appears in Vocabulary and gets a stable token.
+      // Use a synthetic "pattern" category or the provided cat for display.
+      await api.addVocab(trimmed, c);
+      get().pushToast('success', `Pattern added for “${trimmed}”`);
+    } catch (err) {
+      // rollback on failure
+      set({ userPatterns: current });
+      get().pushToast('error', `Failed to save pattern: ${err instanceof Error ? err.message : err}`);
+      throw err;
+    }
+    // Re-scrub so the new literal pattern applies immediately.
+    void get().refreshScrub();
+    void get().refreshVocab();
+  },
+
+  createCustomCategory: async (label, color, seedText) => {
+    const trimmed = label.trim();
+    if (!trimmed) return;
+    // Slug: lower, non-alnum to _, deduped id.
+    const id = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'custom';
+    const existing = get().customCategories.some((c) => c.id === id || c.label.toLowerCase() === trimmed.toLowerCase());
+    if (existing) {
+      get().pushToast('error', 'A category with that name already exists.');
+      return;
+    }
+    const next = [...get().customCategories, { id, label: trimmed, color }];
+    set({ customCategories: next });
+    try {
+      await api.saveSettings({ custom_categories: next });
+      get().pushToast('success', `Category “${trimmed}” created`);
+      if (seedText && seedText.trim()) {
+        // If created from tokenize menu with selection, also add the pattern under the new cat.
+        await get().addUserPattern(seedText.trim(), id);
+      }
+    } catch (err) {
+      set({ customCategories: get().customCategories.filter((c) => c.id !== id) });
+      get().pushToast('error', `Failed to save category: ${err instanceof Error ? err.message : err}`);
+      throw err;
+    }
+    void get().refreshVocab();
   },
 
   refreshVersion: async () => {
@@ -732,7 +1115,13 @@ export const useStore = create<State>((set, get) => {
   saveSettings: async (partial) => {
     try {
       const s = await api.saveSettings(partial);
-      set({ settings: s });
+      // Sync key fields (including new self-service ones) from server's canonical view.
+      set({
+        settings: s,
+        mode: s.mode,
+        userPatterns: s.user_patterns ?? [],
+        customCategories: s.custom_categories ?? [],
+      });
       get().pushToast('success', 'settings saved');
     } catch (err) {
       get().pushToast('error', `settings save failed: ${err instanceof Error ? err.message : err}`);
@@ -771,11 +1160,15 @@ export const useStore = create<State>((set, get) => {
     }
   },
 
-  forgetVocab: async (realValue) => {
+  forgetVocab: async (realValue, toastLabel) => {
     try {
       await api.forgetVocab(realValue);
       await Promise.all([get().refreshVocab(), get().refreshScrub()]);
-      get().pushToast('success', `forgot "${realValue}"`);
+      // #88: when masked row triggers, pass token as toastLabel so toast never
+      // leaks the real value. When omitted (or falsy), fall back to realValue
+      // for legacy callers where the value is visible.
+      const label = toastLabel || realValue;
+      get().pushToast('success', `forgot "${label}"`);
     } catch (err) {
       get().pushToast(
         'error',
@@ -881,4 +1274,70 @@ export const useStore = create<State>((set, get) => {
     }
     set({ isStreaming: false });
   },
+
+  // ── Xlsx review (#23 Segment 3C3) ─────────────────────────────────────────
+
+  startXlsxReview: (payload) => set({ pendingXlsx: payload }),
+  clearXlsxReview: () => set({ pendingXlsx: null }),
+
+  commitXlsxReview: async (overrides) => {
+    const pending = get().pendingXlsx;
+    if (!pending) {
+      // Defensive — UI should not call this without a pending review, but if
+      // it does we surface it rather than silently dropping.
+      get().pushToast('error', 'no xlsx pending review');
+      return;
+    }
+    try {
+      const r = await api.commitXlsx(pending.uploadId, overrides);
+      triggerXlsxDownload(r.base64, r.fileName);
+      get().pushToast(
+        'success',
+        `scrubbed ${pending.fileName} — ${r.summary.cellsScrubbed} cells`,
+      );
+      get().clearXlsxReview();
+    } catch (err) {
+      // Leave pendingXlsx intact so the user can adjust selections and retry.
+      get().pushToast(
+        'error',
+        `xlsx commit failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    }
+  },
 }); });
+
+/**
+ * Browser-side download helper for the xlsx commit response.
+ *
+ * Decodes the base64 payload into a Uint8Array, wraps it in an OOXML-typed
+ * Blob, and uses a synthetic `<a download>` click to surface the file in the
+ * user's default download location. Revokes the object URL after the click
+ * so we don't leak per-commit memory if the user processes many workbooks
+ * in a single session.
+ *
+ * Kept module-private (not exported on the store) because it has no React
+ * surface — pure DOM side effect.
+ */
+function triggerXlsxDownload(base64: string, fileName: string): void {
+  // Defensive: skip in non-browser contexts (tests, SSR). The store actions
+  // that call this only run in the browser, but a unit test that exercises
+  // `commitXlsxReview` against a mocked api should not blow up on document.
+  if (typeof document === 'undefined') return;
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  // Some browsers require the anchor to be in the DOM for `.click()` to fire
+  // a download in restrictive contexts (Safari, some Chromium variants).
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}

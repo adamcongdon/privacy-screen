@@ -28,10 +28,11 @@ export function HtmlRenderedView({ html, tokens, className }: Props): JSX.Elemen
         referrerPolicy="no-referrer"
         loading="eager"
         title="Rendered HTML preview"
-        className="h-full w-full rounded-md border border-zinc-800 bg-white"
+        className="h-full w-full rounded-md border bg-white"
+        style={{ borderColor: 'var(--border)' }}
       />
-      <p className="mt-1 text-[10px] text-zinc-500">
-        Links and scripts disabled. Switch to <span className="font-semibold">Source</span>{' '}
+      <p className="mt-1 text-[10.5px] text-text-faint">
+        Links and scripts disabled. Switch to <span className="font-semibold text-text-dim">Source</span>{' '}
         to mint new tokens from selection.
       </p>
     </div>
