@@ -37,10 +37,11 @@
 - #35: when parsing CSV, i need the option to ignore or allow an en (P2, scrubber)
 
 **Recent closures (examples from the batch, including the very last wave):**
-#111, #110, #109, #107, #106, #104, #103, #102, #101, #100, #99, #98, #97, #96, #95, #94, #93, #92, #91, #89, #88, #87, #86, #85, #84, #71, #61, #56, etc.
+#111, #110, #109, #107, #106, #104, #103, #102, #101, #100, #99, #98, #97, #96, #95, #94, #93, #92, #91, #89, #88, #87, #86, #85, #84, #71, #68, #61, #56, etc.
 
 **Latest additions (just before handoff):**
 - #71 (JDG-07 chunk overlap) closed SUCCESS. TDD red first (boundary-straddling PII test failing because chunks cut mid-name), added `CHUNK_OVERLAP_CHARS = 150` + overlap slice in `chunkText` (src/judge/judge.ts), reused existing `seen` dedup, isolated 31400 with mock, full evidence + close. "ISSUE #71: SUCCESS".
+- #68 (JDG-04 model SHA pin + verify) closed SUCCESS (P1-high security). TDD red first (size/tamper mismatch tests), pinned `expectedSha256` in MODELS + verify gate (size band + refuse + delete partial) in both `cli/install-judge.ts` (default + override) and `server/routes/judge-control.ts` (post-stream), real sha computed from existing model, isolated 31386, tamper never lands/wired (TDD + server sim), full evidence + close. "ISSUE #68: SUCCESS".
 - #61 (SCR-08 user_patterns) closed SUCCESS by its narrow subagent. Full TDD (red on literal not tokenizing from config), `preMintUserPatterns` implemented in scrubber.ts (modeled on preMintCustomers/Persons), isolated on 31398 with config-only user_patterns (no vocab pre-seed), API verification that declarative literals now mint/scrub correctly under their cat, rich evidence + close. "ISSUE #61: SUCCESS".
 
 **Environment:** Clean. All `/tmp/ps-fable-*` (including worktrees) removed. No lingering fable ports.
@@ -71,7 +72,7 @@ Both issues have been updated post-PR creation with context pointing at #112.
 
 ## What Claude Should Do Next
 
-1. **Monitor the remaining 3 actionable open issues** (63, 62, 35 — 90 is wontfix). The last wave of narrow subs were launched for most of them (including the ones that just closed #71 and #61). Watch GH for closures (they should post rich evidence and close when they finish their ~8-12 min cycles).
+1. **Monitor the remaining 3 actionable open issues** (63, 62, 35 — 90 is wontfix). The last wave of narrow subs were launched for most of them (including the ones that just closed #71, #68, and #61). Watch GH for closures (they should post rich evidence and close when they finish their ~8-12 min cycles).
 
 2. **When the last ones close**, do a final sweep:
    - Confirm open issues are only the 2 needs-user + #90 (or whatever the user decides on wontfix).
