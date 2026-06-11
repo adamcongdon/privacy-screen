@@ -39,6 +39,15 @@ export const UPDATE_CANONICAL_URLS: Record<'stable' | 'beta', string> = {
   beta: 'https://raw.githubusercontent.com/adamcongdon/privacy-screen/beta/release-manifest-beta.json',
 };
 
+/**
+ * Default feedback-relay base URL. The "Send feedback" flow POSTs to
+ * `${this}/feedback`. After deploying the Cloudflare Worker (see relay/README.md),
+ * update this to the real `*.workers.dev` host (or a custom domain). Users can
+ * override at runtime via `PRIVACY_SCREEN_FEEDBACK_RELAY_URL` without a rebuild.
+ */
+export const FEEDBACK_RELAY_DEFAULT_URL =
+  'https://privacy-screen-feedback.automating-adam.workers.dev';
+
 export function recommendedManifestUrlForChannel(
   ch: 'off' | 'stable' | 'beta',
 ): string | undefined {
@@ -131,6 +140,16 @@ export interface PrivacyConfig {
   /** URL of the release manifest (JSON). Used only when `update_channel !== 'off'`. */
   update_manifest_url: string;
   /**
+   * Base URL of the feedback relay (the Cloudflare Worker that holds the
+   * GitHub credential and files issues on the user's behalf). The "Send
+   * feedback" flow POSTs to `${feedback_relay_url}/feedback`. Default points
+   * at the project's deployed relay; override with the
+   * `PRIVACY_SCREEN_FEEDBACK_RELAY_URL` env var (e.g. to point at a staging
+   * relay) without rebuilding. Must be https — same posture as
+   * `update_manifest_url`. Egress only happens when the user clicks Send.
+   */
+  feedback_relay_url: string;
+  /**
    * Opt-in LLM secondary validator. The judge runs AFTER the regex+vocab
    * scrubber, sees the already-scrubbed text, and can only add items to the
    * review queue — never mutate the hot-path output. Disabled by default;
@@ -187,6 +206,7 @@ const DEFAULTS: PrivacyConfig = {
   },
   update_channel: 'off',
   update_manifest_url: UPDATE_CANONICAL_URLS.stable,
+  feedback_relay_url: FEEDBACK_RELAY_DEFAULT_URL,
   llm_validate: {
     enabled: false,
     model_path: null,
@@ -270,6 +290,11 @@ function mergeConfig(base: PrivacyConfig, override: unknown): PrivacyConfig {
     skip_scrub_fields: mergeSkipFields(base.skip_scrub_fields, o.skip_scrub_fields),
     update_channel: isUpdateChannel(o.update_channel) ? o.update_channel : base.update_channel,
     update_manifest_url: safeManifestUrl(o.update_manifest_url, base.update_manifest_url),
+    feedback_relay_url: safeHttpsUrl(
+      o.feedback_relay_url,
+      base.feedback_relay_url,
+      'feedback_relay_url',
+    ),
     llm_validate: mergeLlmValidate(base.llm_validate, o.llm_validate),
     hook: mergeHook(base.hook, o.hook),
     xlsx: mergeXlsx(base.xlsx ?? { columnRules: [], autoDetect: true }, o.xlsx),
@@ -368,22 +393,39 @@ function isUpdateChannel(v: unknown): v is UpdateChannel {
  * Anything else (http://, missing, malformed, non-string) falls back to the
  * built-in default and emits a one-line stderr warning. The 4-hour update
  * poll only reaches whatever this resolves to, so we refuse to leak the
- * version-check beacon in plaintext.
+ * version-check beacon in plaintext. Preserves the URL verbatim (manifest URLs
+ * are full file paths — no trailing-slash normalization).
  */
 function safeManifestUrl(value: unknown, fallback: string): string {
+  return safeHttpsUrl(value, fallback, 'update_manifest_url', { stripTrailingSlash: false });
+}
+
+/**
+ * Generic https-only URL validator, shared by the feedback relay base URL and
+ * the update manifest URL. Non-string / non-https / malformed values fall back
+ * to `fallback` with a one-line stderr warning naming `field`. By default the
+ * returned URL has any trailing slash stripped so callers can append a path
+ * cleanly; pass `{ stripTrailingSlash: false }` to preserve it verbatim.
+ */
+function safeHttpsUrl(
+  value: unknown,
+  fallback: string,
+  field: string,
+  opts: { stripTrailingSlash?: boolean } = {},
+): string {
   if (typeof value !== 'string' || value.length === 0) return fallback;
   try {
     const u = new URL(value);
     if (u.protocol !== 'https:') {
       process.stderr.write(
-        `[PrivacyScreen] update_manifest_url must use https:// — got '${u.protocol}//...'. Falling back to default.\n`,
+        `[PrivacyScreen] ${field} must use https:// — got '${u.protocol}//...'. Falling back to default.\n`,
       );
       return fallback;
     }
-    return value;
+    return opts.stripTrailingSlash === false ? value : value.replace(/\/+$/, '');
   } catch {
     process.stderr.write(
-      `[PrivacyScreen] update_manifest_url is not a valid URL. Falling back to default.\n`,
+      `[PrivacyScreen] ${field} is not a valid URL. Falling back to default.\n`,
     );
     return fallback;
   }

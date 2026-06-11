@@ -171,6 +171,9 @@ export type XlsxCommitResponse = {
   base64: string;
 };
 
+/** Feedback type → GitHub label. Mirrors server/lib/feedback-relay.ts. */
+export type FeedbackType = 'bug' | 'enhancement' | 'question';
+
 export type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
 export type SseHandlers = {
@@ -516,6 +519,24 @@ export const api = {
 
   async deletePattern(id: number): Promise<{ ok: true }> {
     return json(await fetch(`/api/patterns/${id}`, { method: 'DELETE' }));
+  },
+
+  /**
+   * Submit feedback to the relay-backed pipeline. Returns the async jobId on
+   * a 202 accept; throws ApiError (with the server's message) on validation
+   * failure (400) or scrub/redaction failure (500). The caller polls
+   * /api/feedback/:jobId via useFeedbackJob for the terminal state.
+   */
+  async submitFeedback(
+    summary: string,
+    type: FeedbackType,
+  ): Promise<{ ok: true; jobId: string }> {
+    const res = await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ summary, type }),
+    });
+    return json<{ ok: true; jobId: string }>(res);
   },
 
   // Fire-and-forget: sends scrubbed text to the LLM judge for secondary PII

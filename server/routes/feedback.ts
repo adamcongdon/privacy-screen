@@ -1,55 +1,59 @@
 /**
- * /api/feedback — Send-feedback button backend (Issue #15, async rework #22).
+ * /api/feedback — Send-feedback button backend (Issue #15; universal-relay
+ * rework supersedes the gh-CLI async design of #22).
  *
  * Three endpoints:
- *   GET  /preview      — returns the scrubbed diagnostics JSON. No spawn.
+ *   GET  /preview      — returns the scrubbed diagnostics JSON. No egress.
  *                        Used by the UI to show the user what's about to be sent.
- *   POST /             — accepts { summary: string }, runs scrub + credential
- *                        gating, then enqueues a background job that pipes a
- *                        deterministically-assembled body to
- *                        `gh issue create --body-file -`. Returns 202 + jobId
- *                        immediately. No LLM, no inline spawn wait.
+ *   POST /             — accepts { summary: string, type?: 'bug'|'enhancement'|
+ *                        'question' }, runs scrub + credential gating, then
+ *                        enqueues a background job that POSTs a
+ *                        deterministically-assembled issue to the feedback relay
+ *                        (see server/lib/feedback-relay.ts + relay/). Returns
+ *                        202 + jobId immediately. No LLM, no `gh`, no inline wait.
  *   GET  /:jobId       — poll for status (queued | drafting | filing | done | error).
- *                        On done, returns issueNumber + issueUrl extracted from
- *                        gh's stdout.
+ *                        On done, returns issueNumber + issueUrl from the relay.
  *
- * Test seam: __PRIVACY_SCREEN_TEST_GH_BIN overrides the gh binary used for
- * both the presence check AND the spawn. This lets tests stub the CLI without
- * touching PATH.
+ * Why a relay: creating a GitHub issue needs an `Issues: write` credential. That
+ * cannot be shipped in a distributed desktop binary, so it lives server-side
+ * behind a small Cloudflare Worker we control. This is what makes feedback work
+ * for ANY user — no GitHub account, no `gh` CLI.
  *
- * Privacy invariant (ISC-32): every string that enters the spawn argv or the
- * issue body has been through scrubText() against the user's vocab + scrub
- * map. The anti-leak test captures the argv + body via the same stub pattern
- * and asserts no raw customer name appears, only {CUSTOMER}/{CUSTOMER_N}
- * tokens.
+ * Test seam: __PRIVACY_SCREEN_TEST_RELAY_URL (non-production) points the relay
+ * client at a local stub server so tests never touch the network.
+ *
+ * Privacy invariant (ISC-32): every string that enters the relay payload has
+ * been through scrubText() against the user's vocab + scrub map. The anti-leak
+ * test captures the exact body POSTed to the (stub) relay and asserts no raw
+ * customer name appears, only {CUSTOMER}/{CUSTOMER_N} tokens.
  */
 
 import { Hono } from 'hono';
-import { spawnSync } from 'child_process';
 import { loadConfig } from '../../src/config';
 import { scrubText } from '../../src/scrubber';
 import { ScrubMap } from '../../src/scrub-map';
 import { getVocab } from '../lib/vocab-store';
 import { collectDiagnostics, type Diagnostics, assertRedacted } from '../lib/feedback-diagnostics';
 import { createJob, getJob, updateJob } from '../lib/feedback-jobs';
+import {
+  postToRelay,
+  isFeedbackType,
+  type FeedbackType,
+} from '../lib/feedback-relay';
 
 export const feedbackRoute = new Hono();
 
-/** Hard cap on the user summary so a pathological paste can't blow argv length. */
+/** Hard cap on the user summary so a pathological paste can't blow the payload. */
 const MAX_SUMMARY_LEN = 8_000;
-/** Wall-clock budget for the `gh issue create` spawn. */
-const SPAWN_TIMEOUT_MS = 60_000;
-/** Maximum stderr we keep around when surfacing a gh failure. */
-const STDERR_TRUNCATE_LEN = 1_000;
-/** Maximum issue-title length we send to gh. */
+/** Maximum error length we keep around when surfacing a relay failure. */
+const ERROR_TRUNCATE_LEN = 1_000;
+/** Maximum issue-title length we send to the relay. */
 const TITLE_MAX_LEN = 60;
-/** GitHub repo the issue is filed against. */
-const TARGET_REPO = 'adamcongdon/privacy-screen';
 
 /**
  * GET /api/feedback/preview — return the diagnostics in their scrubbed form
  * so the UI can show the user exactly what's about to be sent. Pure read —
- * no spawn, no network egress.
+ * no egress.
  */
 feedbackRoute.get('/preview', (c) => {
   try {
@@ -71,7 +75,7 @@ feedbackRoute.get('/preview', (c) => {
 
 /**
  * POST /api/feedback — scrub-and-validate inline, then enqueue a background
- * job and return 202 + jobId. Never blocks the caller on the gh spawn.
+ * job and return 202 + jobId. Never blocks the caller on the relay round-trip.
  */
 feedbackRoute.post('/', async (c) => {
   const raw: unknown = await c.req.json().catch(() => null);
@@ -83,47 +87,14 @@ feedbackRoute.post('/', async (c) => {
     return c.json({ ok: false, error: 'summary is required' }, 400);
   }
 
-  // ── 1. Gate on local gh CLI presence ─────────────────────────────────────
-  const ghBin = resolveGhBin();
-  const presence = checkGhBinary(ghBin);
-  if (!presence.found) {
-    return c.json(
-      {
-        ok: false,
-        error:
-          'gh CLI not found on PATH — install GitHub CLI and run `gh auth login` ' +
-          'before submitting feedback.',
-      },
-      503,
-    );
-  }
-
-  // ── 1b. Gate on gh authentication (issue #42) ────────────────────────────
-  //
-  // checkGhBinary only verifies the binary exists — it does NOT verify the
-  // user has logged in. Without this guard, the user submits feedback, the
-  // dialog closes, and the background spawn fails much later with a generic
-  // HTTP 401 from GitHub's GraphQL API. That error then surfaces in the
-  // feedback pill with no actionable hint. Gate up front so the user gets a
-  // synchronous, actionable message in the dialog.
-  const auth = checkGhAuth(ghBin);
-  if (!auth.ok) {
-    return c.json(
-      {
-        ok: false,
-        error:
-          'gh is installed but not authenticated — run `gh auth login` in a ' +
-          'terminal, then try again.' +
-          (auth.detail ? ` (gh said: ${auth.detail})` : ''),
-      },
-      503,
-    );
-  }
+  // Optional feedback type → GitHub label. Defaults to 'bug' for back-compat
+  // with older clients that only send { summary }.
+  const type: FeedbackType = isFeedbackType(body.type) ? body.type : 'bug';
 
   const cfg = loadConfig();
   const diagnostics = collectDiagnostics(cfg);
 
-  // ── 2. Scrub everything that's about to leave the process ───────────────
+  // ── Scrub everything that's about to leave the process ──────────────────
   //
   // Use a fresh ScrubMap rather than the server-wide singleton so we do not
   // pollute the shared vocab state with one-off summary tokens. The user's
@@ -180,16 +151,16 @@ feedbackRoute.post('/', async (c) => {
     );
   }
 
-  // ── 3. Enqueue the background job and return immediately ────────────────
+  // ── Enqueue the background job and return immediately ───────────────────
   const job = createJob();
   // Fire-and-forget. The worker owns all subsequent state transitions; if it
   // throws unexpectedly the catch below records the error on the job so a
   // polling client still gets a final state instead of hanging forever.
-  void runJob(job.jobId, ghBin, summaryScrub.scrubbed, diagnosticsScrubJson.scrubbed).catch(
+  void runJob(job.jobId, summaryScrub.scrubbed, diagnosticsScrubJson.scrubbed, type).catch(
     (err) => {
       const msg = (err as Error)?.message ?? String(err);
       process.stderr.write('[privacy-screen] feedback.job.unexpected: ' + msg + '\n');
-      updateJob(job.jobId, { status: 'error', error: msg.slice(0, STDERR_TRUNCATE_LEN) });
+      updateJob(job.jobId, { status: 'error', error: msg.slice(0, ERROR_TRUNCATE_LEN) });
     },
   );
 
@@ -218,9 +189,9 @@ feedbackRoute.get('/:jobId', (c) => {
  */
 export async function runJob(
   jobId: string,
-  ghBin: string,
   summary: string,
   diagnosticsJson: string,
+  type: FeedbackType,
 ): Promise<void> {
   updateJob(jobId, { status: 'drafting' });
 
@@ -229,72 +200,18 @@ export async function runJob(
 
   updateJob(jobId, { status: 'filing' });
 
-  try {
-    const proc = Bun.spawn({
-      cmd: [
-        ghBin,
-        'issue',
-        'create',
-        '--repo',
-        TARGET_REPO,
-        '--title',
-        title,
-        '--body-file',
-        '-',
-      ],
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe',
-      env: process.env,
-      signal: AbortSignal.timeout(SPAWN_TIMEOUT_MS),
-    });
+  const result = await postToRelay({ title, body: issueBody, type });
 
-    // Write the body to stdin and close it. `proc.stdin` is a FileSink in Bun.
-    try {
-      proc.stdin.write(issueBody);
-      await proc.stdin.end();
-    } catch (err) {
-      // If the child died before we finished writing, fall through to exit code
-      // handling — stderr usually has the real reason.
-      process.stderr.write('[privacy-screen] feedback.gh.stdin.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
-    }
-
-    const stdoutPromise = new Response(proc.stdout).text().catch(() => '');
-    const stderrPromise = new Response(proc.stderr).text().catch(() => '');
-    const exitCode = await proc.exited;
-    const stdout = await stdoutPromise;
-    const stderr = (await stderrPromise).slice(0, STDERR_TRUNCATE_LEN);
-
-    if (exitCode !== 0) {
-      updateJob(jobId, {
-        status: 'error',
-        error: stderr.trim() || `gh issue create failed (exit ${exitCode})`,
-      });
-      return;
-    }
-
-    const urlMatch = stdout.match(/https:\/\/github\.com\/[^\s]+/);
-    const issueUrl = urlMatch ? urlMatch[0] : undefined;
-    const numberMatch = issueUrl ? issueUrl.match(/\/issues\/(\d+)/) : null;
-    const issueNumber = numberMatch ? Number.parseInt(numberMatch[1], 10) : undefined;
-
-    if (!issueUrl) {
-      updateJob(jobId, {
-        status: 'error',
-        error: 'gh exited 0 but no github.com URL appeared in stdout',
-      });
-      return;
-    }
-
-    updateJob(jobId, { status: 'done', issueUrl, issueNumber });
-  } catch (err) {
-    const msg = (err as Error)?.message ?? String(err);
-    if (msg && msg.toLowerCase().includes('aborted')) {
-      updateJob(jobId, { status: 'error', error: `gh timed out after ${SPAWN_TIMEOUT_MS}ms` });
-      return;
-    }
-    updateJob(jobId, { status: 'error', error: `gh spawn failed: ${msg.slice(0, STDERR_TRUNCATE_LEN)}` });
+  if (!result.ok) {
+    updateJob(jobId, { status: 'error', error: result.error.slice(0, ERROR_TRUNCATE_LEN) });
+    return;
   }
+
+  updateJob(jobId, {
+    status: 'done',
+    issueUrl: result.issueUrl,
+    issueNumber: result.issueNumber,
+  });
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -329,70 +246,6 @@ export function buildBody(summary: string, diagnosticsJson: string): string {
     '</details>',
     '',
   ].join('\n');
-}
-
-/**
- * Resolve which `gh` binary to use. Default is the literal "gh" — relying on
- * PATH like the rest of the system. The test seam env var lets tests stub the
- * CLI without touching PATH.
- */
-export function resolveGhBin(): string {
-  if (process.env.NODE_ENV === 'production') return 'gh';
-  return process.env.__PRIVACY_SCREEN_TEST_GH_BIN ?? 'gh';
-}
-
-/**
- * Presence check for the resolved gh binary. Mirrors the shape of
- * checkClaudeBinary() in the previous design — short timeout, no exceptions
- * escape.
- */
-export function checkGhBinary(bin: string): { found: boolean; version: string | null } {
-  try {
-    // Pass `env: process.env` explicitly — under bun, spawnSync does NOT
-    // inherit the parent environment by default. Without this, the child
-    // shell sees a stripped env, which masks PATH-dependent test seams.
-    const r = spawnSync(bin, ['--version'], {
-      encoding: 'utf-8',
-      timeout: 1500,
-      env: process.env,
-    });
-    if (r && r.status === 0) return { found: true, version: (r.stdout ?? '').trim() };
-    return { found: false, version: null };
-  } catch (err) {
-    process.stderr.write('[privacy-screen] feedback.binary.check.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
-    return { found: false, version: null };
-  }
-}
-
-/**
- * Authentication check for the resolved gh binary (issue #42).
- *
- * `gh auth status` exits 0 when the CLI has a valid stored credential or
- * picks up GITHUB_TOKEN from the environment. Any non-zero exit (no auth
- * configured, expired token, rate limited) means the subsequent
- * `gh issue create` will fail with the same HTTP 401 the user saw. We
- * surface that synchronously instead.
- *
- * `detail` is a one-line stderr/stdout excerpt suitable for the dialog —
- * truncated to keep the response payload small.
- */
-export function checkGhAuth(bin: string): { ok: boolean; detail: string | null } {
-  try {
-    // Pass `env: process.env` explicitly so gh sees the user's GITHUB_TOKEN
-    // (and any test seams). Bun's spawnSync does not inherit by default.
-    const r = spawnSync(bin, ['auth', 'status'], {
-      encoding: 'utf-8',
-      timeout: 3000,
-      env: process.env,
-    });
-    if (r && r.status === 0) return { ok: true, detail: null };
-    const combined = `${r?.stderr ?? ''}${r?.stdout ?? ''}`.trim();
-    const firstLine = combined.split(/\r?\n/).find((line) => line.trim().length > 0) ?? '';
-    return { ok: false, detail: firstLine.slice(0, 200) || null };
-  } catch (err) {
-    process.stderr.write('[privacy-screen] feedback.auth.check.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
-    return { ok: false, detail: null };
-  }
 }
 
 /**

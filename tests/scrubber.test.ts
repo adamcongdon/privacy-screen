@@ -213,6 +213,7 @@ const baseCfg: PrivacyConfig = {
   update_channel: 'off',
   update_manifest_url:
     'https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json',
+  feedback_relay_url: 'https://privacy-screen-feedback.example.workers.dev',
   llm_validate: {
     enabled: false,
     model_path: null,

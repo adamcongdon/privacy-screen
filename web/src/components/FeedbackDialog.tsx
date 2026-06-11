@@ -24,6 +24,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { Loader2 } from 'lucide-react';
 import { useStore } from '../store';
 import { cn } from '../lib/cn';
+import { api, ApiError, type FeedbackType } from '../api';
 import { DialogHeader, ScrollableDialogBody, DialogFooter } from './ui/DialogScroll';
 
 const MAX_SUMMARY_LEN = 8_000;
@@ -107,49 +108,68 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
   const trimmed = summary.trim();
   const canSend = trimmed.length > 0 && !sending && preview.kind !== 'loading';
 
-  // Handoff spec: segmented type + prefilled GitHub URL (the recommended no-PAT path).
+  // Segmented type → GitHub label. Primary path posts through the relay; the
+  // secondary "Open on GitHub instead" link uses the same type for its prefill.
   const [fbKind, setFbKind] = useState<'bug' | 'idea' | 'question'>('bug');
-  const fbTypes = [
-    { id: 'bug' as const, label: 'Bug', tag: 'bug' },
-    { id: 'idea' as const, label: 'Idea', tag: 'enhancement' },
-    { id: 'question' as const, label: 'Question', tag: 'question' },
+  const fbTypes: { id: 'bug' | 'idea' | 'question'; label: string; tag: FeedbackType }[] = [
+    { id: 'bug', label: 'Bug', tag: 'bug' },
+    { id: 'idea', label: 'Idea', tag: 'enhancement' },
+    { id: 'question', label: 'Question', tag: 'question' },
   ];
   const currentType = fbTypes.find((t) => t.id === fbKind)!;
 
+  /**
+   * Primary path: POST to the relay-backed pipeline. On 202 we hand the jobId
+   * to the FeedbackJobPill (via startFeedbackJob) which polls to "Filed as #N".
+   * On failure we keep the dialog open and tell the user they can open GitHub
+   * instead (the secondary path below).
+   */
   const onSend = async (): Promise<void> => {
     if (!canSend) return;
-    // Per ADDENDUM handoff: the realistic path is a prefilled GitHub new-issue URL (no client auth/PAT).
-    // We still support the existing job path if the server responds with jobId, but default to the URL open.
+    setSending(true);
+    try {
+      const { jobId } = await api.submitFeedback(
+        trimmed.slice(0, MAX_SUMMARY_LEN),
+        currentType.tag,
+      );
+      startFeedbackJob(jobId);
+      pushToast('success', 'Sending your feedback…');
+      setSummary('');
+      onOpenChange(false);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError || err instanceof Error ? err.message : String(err);
+      pushToast('error', `Couldn't send feedback: ${msg}. Try "Open on GitHub instead".`);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  /**
+   * Secondary path (escape hatch): open a prefilled GitHub new-issue URL. Only
+   * useful for users who have their own GitHub account and prefer to file it
+   * themselves. Diagnostics aren't attached here (URL length limits) — that's
+   * why the relay is the primary path.
+   */
+  const onOpenGithub = (): void => {
+    if (trimmed.length === 0) return;
     const lines = [trimmed];
-    lines.push('', '---', `Screen: ${window.location.hash || 'app'}`, `App: Privacy Screen (Flow)`, `Type: ${currentType.label}`);
+    lines.push(
+      '',
+      '---',
+      `Screen: ${window.location.hash || 'app'}`,
+      `App: Privacy Screen (Flow)`,
+      `Type: ${currentType.label}`,
+    );
     const url =
       `https://github.com/adamcongdon/privacy-screen/issues/new` +
       `?labels=${encodeURIComponent(currentType.tag + ',feedback')}` +
       `&title=${encodeURIComponent(`[${currentType.label}] ${trimmed.slice(0, 80)}`)}` +
       `&body=${encodeURIComponent(lines.join('\n'))}`;
-
     window.open(url, '_blank', 'noopener');
     pushToast('success', 'Opening GitHub to file your feedback…');
     setSummary('');
     onOpenChange(false);
-
-    // Fire-and-forget the server job path if desired (keeps the pill system working for advanced use).
-    try {
-      const res = await fetch('/api/feedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ summary: trimmed.slice(0, MAX_SUMMARY_LEN) }),
-      });
-      const raw = await res.text();
-      let parsed: unknown = null;
-      if (raw) { try { parsed = JSON.parse(raw); } catch {} }
-      const body = (parsed ?? {}) as { ok?: boolean; jobId?: string };
-      if (res.status === 202 && body.ok && body.jobId) {
-        startFeedbackJob(body.jobId);
-      }
-    } catch {
-      /* best effort; the prefilled URL already satisfied the handoff */
-    }
   };
 
   return (
@@ -166,10 +186,11 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
             title="Send feedback"
             description={
               <>
-                Files a GitHub issue at <code className="font-mono">adamcongdon/privacy-screen</code>{' '}
-                via your local <code className="font-mono">claude</code> +{' '}
-                <code className="font-mono">gh</code> CLIs. The diagnostics below have already
-                been scrubbed — that's exactly what gets attached to the issue.
+                Posts your report to{' '}
+                <code className="font-mono">adamcongdon/privacy-screen</code> on GitHub — no
+                GitHub account or CLI needed. The diagnostics below have already been scrubbed;
+                that's exactly what gets attached, and nothing leaves your machine until you
+                click Send.
               </>
             }
           />
@@ -252,6 +273,18 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
                 Cancel
               </button>
             </Dialog.Close>
+            <button
+              type="button"
+              disabled={!canSend}
+              onClick={onOpenGithub}
+              title="File it yourself on GitHub (requires a GitHub account; diagnostics not attached)"
+              className={cn(
+                'mr-auto rounded-md border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800',
+                !canSend && 'cursor-not-allowed opacity-60',
+              )}
+            >
+              Open on GitHub instead
+            </button>
             <button
               type="button"
               disabled={!canSend}
