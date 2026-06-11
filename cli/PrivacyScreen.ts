@@ -3,14 +3,14 @@
  * PrivacyScreen CLI — vocabulary and review-queue management
  *
  * Usage:
- *   bun PAI/TOOLS/PrivacyScreen.ts review              — triage pending review items
- *   bun PAI/TOOLS/PrivacyScreen.ts vocab list           — list all vocab
- *   bun PAI/TOOLS/PrivacyScreen.ts vocab list -c CUSTOMER
- *   bun PAI/TOOLS/PrivacyScreen.ts vocab forget <real>  — remove vocab entry
- *   bun PAI/TOOLS/PrivacyScreen.ts allowlist add <pat>  — never tokenize pattern
- *   bun PAI/TOOLS/PrivacyScreen.ts allowlist add <pat> --regex
- *   bun PAI/TOOLS/PrivacyScreen.ts scrub                — pipe-in scrubber test
- *   bun PAI/TOOLS/PrivacyScreen.ts stats                — daily redaction stats
+ *   bun cli/PrivacyScreen.ts review              — triage pending review items
+ *   bun cli/PrivacyScreen.ts vocab list           — list all vocab
+ *   bun cli/PrivacyScreen.ts vocab list -c CUSTOMER
+ *   bun cli/PrivacyScreen.ts vocab forget <real>  — remove vocab entry
+ *   bun cli/PrivacyScreen.ts allowlist add <pat>  — never tokenize pattern
+ *   bun cli/PrivacyScreen.ts allowlist add <pat> --regex
+ *   bun cli/PrivacyScreen.ts scrub                — pipe-in scrubber test (echo "txt" | …)
+ *   bun cli/PrivacyScreen.ts stats                — daily redaction stats
  */
 
 import { homedir } from 'os';

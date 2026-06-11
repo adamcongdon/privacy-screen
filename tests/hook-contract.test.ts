@@ -494,4 +494,14 @@ describe('cli scrub pipe', () => {
     expect(out.stderr).toContain('echo "my text" | bun cli/PrivacyScreen.ts scrub');
     expect(out.stdout).not.toContain('── Scrubbed output ──────────────────────────────');
   });
+
+  // HOOK-08 (#100): the usage header documented the wrong invocation path
+  // (PAI/TOOLS/PrivacyScreen.ts). It must reference the real cli/ path.
+  test('usage header documents the correct cli/ invocation path', async () => {
+    const { readFileSync } = await import('fs');
+    const src = readFileSync(CLI_PATH, 'utf8');
+    const header = src.slice(0, src.indexOf('*/'));
+    expect(header).toContain('cli/PrivacyScreen.ts');
+    expect(header).not.toContain('PAI/TOOLS/PrivacyScreen.ts');
+  });
 });
