@@ -135,11 +135,10 @@ describe('runJudge — no raw judge output on stderr by default (JDG-01 / #65)',
 
     const orig = process.stderr.write.bind(process.stderr);
     let captured = '';
-    // @ts-expect-error narrow override for the test
-    process.stderr.write = (chunk: unknown) => {
+    process.stderr.write = ((chunk: unknown) => {
       captured += String(chunk);
       return true;
-    };
+    }) as typeof process.stderr.write;
     const prevDebug = process.env.PRIVACY_SCREEN_DEBUG_JUDGE;
     delete process.env.PRIVACY_SCREEN_DEBUG_JUDGE;
     try {
