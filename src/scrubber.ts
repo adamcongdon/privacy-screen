@@ -69,6 +69,11 @@ export interface ScrubContext {
   sessionId?: string;
   /** Optional config — falls back to loadConfig() if absent. */
   config?: PrivacyConfig;
+  /**
+   * Self-service user literal patterns (from UI "Tokenize selection").
+   * Matched literally (case-insensitive, partial, no word boundaries), high priority.
+   */
+  userPatterns?: Array<{ text: string; cat: string }>;
 }
 
 /**
@@ -96,6 +101,25 @@ export function scrubText(
   // can permanently silence a previously-minted name.
   preMintCustomers(map, vocab, cfg);
   preMintPersons(map, vocab, cfg);
+
+  // ── User literal patterns (self-service "Tokenize selection", high priority 1.2) ──
+  // Match literally (escaped, case-insensitive, partial ok — no \b), before heuristics.
+  // This makes explicit user choices always win over customer names and detectors.
+  if (ctx.userPatterns && ctx.userPatterns.length > 0) {
+    for (const p of ctx.userPatterns) {
+      if (!p.text || !p.cat) continue;
+      const escaped = p.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(escaped, 'gi');
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text)) !== null) {
+        const matchText = m[0];
+        // Use the provided cat for the token type/prefix (upper for token, lower for category).
+        const type = p.cat.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+        const cat = p.cat.toLowerCase();
+        maybeRecordMint(map, vocab, type, matchText, cat, 1.2, minted);
+      }
+    }
+  }
 
   // ── Step 1: Credential check — BLOCK ALWAYS ──────────────────────────────
   const credMatches = [...text.matchAll(mkCredential())];

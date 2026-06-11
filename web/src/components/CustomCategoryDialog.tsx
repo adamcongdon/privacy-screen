@@ -1,11 +1,12 @@
 /**
- * Modal dialog for the "Custom…" menu item — user types a category name
- * (e.g. PRODUCT, REGION) and we mint the selected span under it.
+ * NewCategoryModal (handoff feature 3 + entry from TokenizeMenu).
  *
- * Validation matches the server: /^[A-Z][A-Z0-9_]{1,15}$/ (uppercase letters,
- * digits, underscores, must start with a letter, 2–16 chars). The category we
- * send to the API is lowercased so it matches the server's category regex
- * /^[a-z][a-z0-9_]{0,15}$/.
+ * Name input + case-insensitive dup validation, curated color swatches (first unused default),
+ * live preview pill {NAME_1}, Create disabled until valid+unique.
+ * If opened with seedSelection (from "New category…" in tokenize menu), it pre-seeds
+ * and will also tokenize that text under the new category on create.
+ *
+ * Persists via store.createCustomCategory → /api/settings + custom_categories in config.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -14,39 +15,50 @@ import { useStore } from '../store';
 import { cn } from '../lib/cn';
 import { truncate } from '../lib/truncate';
 
-const VALID = /^[A-Z][A-Z0-9_]{1,15}$/;
+const CAT_SWATCHES = [
+  '#e879f9', '#38bdf8', '#34d399', '#a3e635', '#fbbf24',
+  '#fb7185', '#f472b6', '#c084fc', '#5eead4', '#fca5a5',
+];
 
 export function CustomCategoryDialog(): JSX.Element | null {
   const open = useContextMenu((s) => s.customDialogOpen);
   const selectedText = useContextMenu((s) => s.selectedText);
   const close = useContextMenu((s) => s.closeCustomDialog);
-  const mintSelection = useStore((s) => s.mintSelection);
+  const createCustomCategory = useStore((s) => s.createCustomCategory);
+  const customCategories = useStore((s) => s.customCategories);
 
-  const [value, setValue] = useState('');
+  const [label, setLabel] = useState('');
+  const [color, setColor] = useState(CAT_SWATCHES[0]);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Reset value each time the dialog opens.
+  // Reset + pick first unused color on open. Seed from selectedText if present.
   useEffect(() => {
-    if (open) {
-      setValue('');
-      // autoFocus prop sometimes loses to other components; do it explicitly.
-      requestAnimationFrame(() => inputRef.current?.focus());
-    }
-  }, [open]);
+    if (!open) return;
+    setLabel('');
+    const used = new Set(customCategories.map((c) => c.color));
+    const firstFree = CAT_SWATCHES.find((s) => !used.has(s)) || CAT_SWATCHES[0];
+    setColor(firstFree);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [open, customCategories]);
 
   if (!open) return null;
 
-  const trimmed = value.trim();
-  const valid = VALID.test(trimmed);
+  const trimmed = label.trim();
+  const exists = customCategories.some(
+    (c) => c.label.toLowerCase() === trimmed.toLowerCase(),
+  );
+  const valid = trimmed.length > 0 && !exists;
 
-  function submit(e?: React.FormEvent): void {
+  const previewToken = '{' + (trimmed || 'CATEGORY').toUpperCase().replace(/\s+/g, '') + '_1}';
+
+  function submit(e?: React.FormEvent) {
     if (e) e.preventDefault();
     if (!valid) return;
-    void mintSelection(selectedText, trimmed.toLowerCase());
+    void createCustomCategory(trimmed, color, selectedText || undefined);
     close();
   }
 
-  function onKey(e: React.KeyboardEvent<HTMLInputElement>): void {
+  function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') {
       e.preventDefault();
       close();
@@ -60,66 +72,114 @@ export function CustomCategoryDialog(): JSX.Element | null {
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Mint as custom category"
-      className="fixed inset-0 z-[70] flex items-start justify-center bg-black/40 pt-32"
+      aria-label="New token category"
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/55 backdrop-blur-[2px]"
       onMouseDown={(e) => {
-        // Click on backdrop closes; click in panel doesn't bubble here.
         if (e.target === e.currentTarget) close();
       }}
     >
-      <form
-        onSubmit={submit}
-        className="w-[420px] rounded-lg border border-zinc-700 bg-zinc-900 p-4 shadow-2xl"
+      <div
+        className="ps-panel w-[min(440px,calc(100%-32px))]"
+        style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)' }}
+        onMouseDown={(e) => e.stopPropagation()}
       >
-        <h3 className="text-sm font-semibold text-zinc-100">Mint as custom category</h3>
-        <p className="mt-1 text-xs text-zinc-400">
-          Selected: <span className="font-mono text-zinc-200">{truncate(selectedText, 60)}</span>
-        </p>
-        <label className="mt-3 block text-[11px] uppercase tracking-wider text-zinc-500">
-          Category (UPPER_SNAKE)
-        </label>
-        <input
-          ref={inputRef}
-          type="text"
-          value={value}
-          onChange={(e) => setValue(e.target.value.toUpperCase())}
-          onKeyDown={onKey}
-          placeholder="e.g. PRODUCT, REGION"
-          className={cn(
-            'mt-1 w-full rounded-md border bg-zinc-950 px-2 py-1.5 font-mono text-sm focus:outline-none focus:ring-2',
-            trimmed.length === 0 || valid
-              ? 'border-zinc-700 focus:ring-indigo-500/40'
-              : 'border-red-700 focus:ring-red-500/40',
+        {/* Header */}
+        <div className="flex items-start justify-between border-b border-border px-4 py-3">
+          <div className="flex items-center gap-3">
+            <div
+              className="grid h-8 w-8 place-items-center rounded-lg"
+              style={{ background: 'var(--acc-tint)' }}
+            >
+              <span style={{ color: 'var(--acc)' }}>🏷︎</span>
+            </div>
+            <div>
+              <div className="text-[15px] font-semibold">New token category</div>
+              <div className="text-[11.5px] text-text-faint">A named class for values you want scrubbed.</div>
+            </div>
+          </div>
+          <button onClick={close} aria-label="Close" className="px-2 text-text-faint hover:text-text">✕</button>
+        </div>
+
+        <div className="space-y-4 p-4">
+          {selectedText && (
+            <div className="rounded-lg border border-border bg-surface-2 p-2.5 text-[12px] text-text-faint">
+              Will tokenize <span className="ps-mono text-text">“{truncate(selectedText, 48)}”</span> with this category.
+            </div>
           )}
-          spellCheck={false}
-          autoComplete="off"
-          maxLength={16}
-        />
-        <p className="mt-1 text-[11px] text-zinc-500">
-          2–16 chars · starts with a letter · A–Z, 0–9, _ only
-        </p>
-        <div className="mt-4 flex justify-end gap-2">
+
+          {/* Name */}
+          <div>
+            <div className="ps-eyebrow mb-1.5">Name</div>
+            <input
+              ref={inputRef}
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              onKeyDown={onKey}
+              placeholder="e.g. Project codename, Asset tag, Case ID"
+              className="w-full rounded-[10px] border border-border bg-surface-2 px-3 py-2 text-[13px] focus:outline-none focus:ring-1 focus:ring-[var(--acc)]"
+            />
+            {exists && <div className="mt-1 text-[11.5px] text-danger">A category with that name already exists.</div>}
+          </div>
+
+          {/* Colors */}
+          <div>
+            <div className="ps-eyebrow mb-1.5">Color</div>
+            <div className="flex flex-wrap gap-2">
+              {CAT_SWATCHES.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  aria-label={`Color ${s}`}
+                  onClick={() => setColor(s)}
+                  className="h-6 w-6 rounded-md border"
+                  style={{
+                    background: s,
+                    borderColor: color === s ? 'var(--text)' : 'transparent',
+                    outline: color === s ? '1px solid var(--text)' : 'none',
+                    outlineOffset: 1,
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* Live preview */}
+          <div>
+            <div className="ps-eyebrow mb-1.5">Preview</div>
+            <div className="flex items-center gap-3 rounded-lg border border-border bg-surface-2 p-3">
+              <span
+                className="ps-pill"
+                style={{ '--cat': color } as React.CSSProperties}
+              >
+                <span className="ps-pilldot" />
+                {previewToken}
+              </span>
+              <span className="text-[11.5px] text-text-faint">
+                Tokens in this class render with this dot &amp; color.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
           <button
             type="button"
             onClick={close}
-            className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+            className="rounded-md border border-border bg-transparent px-3 py-1.5 text-[12px] text-text-dim hover:bg-surface-2"
           >
             Cancel
           </button>
           <button
-            type="submit"
+            type="button"
             disabled={!valid}
-            className={cn(
-              'rounded-md border px-3 py-1.5 text-xs font-semibold',
-              valid
-                ? 'border-indigo-700 bg-indigo-600 text-white hover:bg-indigo-500'
-                : 'cursor-not-allowed border-zinc-800 bg-zinc-800 text-zinc-500',
-            )}
+            onClick={submit}
+            className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+            style={{ background: valid ? 'var(--acc)' : 'var(--surface-2)', color: valid ? 'var(--acc-ink)' : 'var(--text-faint)' }}
           >
-            Mint
+            + Create category
           </button>
         </div>
-      </form>
+      </div>
     </div>
   );
 }

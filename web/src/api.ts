@@ -59,6 +59,10 @@ export type SettingsView = {
   update_channel: 'off' | 'stable' | 'beta';
   /** Manifest URL used when channel is not 'off' */
   update_manifest_url: string;
+  /** Self-service literal patterns from "Tokenize selection" (text + cat). */
+  user_patterns?: Array<{ text: string; cat: string }>;
+  /** Self-service custom token categories (for pills, menus, vocab). */
+  custom_categories?: Array<{ id: string; label: string; color: string }>;
   claude_code: {
     found: boolean;
     version: string | null;
@@ -72,7 +76,15 @@ export type SettingsPatch = Partial<{
   mode: 'observe' | 'enforce' | 'disabled';
   update_channel: 'off' | 'stable' | 'beta';
   update_manifest_url: string;
+  user_patterns?: Array<{ text: string; cat: string }>;
+  custom_categories?: Array<{ id: string; label: string; color: string }>;
 }>;
+
+/** Canonical manifest URLs (must stay in sync with src/config.ts). */
+export const UPDATE_CANONICAL_URLS = {
+  stable: 'https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json',
+  beta: 'https://raw.githubusercontent.com/adamcongdon/privacy-screen/beta/release-manifest-beta.json',
+} as const;
 
 export type UploadedFile = {
   name: string;
@@ -256,11 +268,11 @@ export const api = {
     return json(res);
   },
 
-  async scrub(text: string, persist = false): Promise<ScrubResponse> {
+  async scrub(text: string, persist = false, patterns?: Array<{ text: string; cat: string }>): Promise<ScrubResponse> {
     const res = await fetch('/api/scrub', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, persist }),
+      body: JSON.stringify({ text, persist, patterns }),
     });
     return json<ScrubResponse>(res);
   },

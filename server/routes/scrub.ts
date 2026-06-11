@@ -19,6 +19,9 @@ scrubRoute.post('/', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const text = typeof body.text === 'string' ? body.text : '';
   const persist = body.persist !== false; // default true
+  const userPatterns: Array<{ text: string; cat: string }> = Array.isArray(body.patterns)
+    ? body.patterns.filter((p: any) => p && typeof p.text === 'string' && typeof p.cat === 'string')
+    : [];
 
   if (!text) {
     return c.json({
@@ -38,6 +41,7 @@ scrubRoute.post('/', async (c) => {
   const result = scrubText(text, map, vocab, {
     sourceEvent: 'app:preview',
     config: cfg,
+    userPatterns,
   });
 
   // Enrich: scan scrubbed output for {TOKEN} patterns not captured by mintedTokens
