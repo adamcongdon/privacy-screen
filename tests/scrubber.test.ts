@@ -830,3 +830,36 @@ describe('scrubText — unicode person names and internationalized emails (SCR-0
     expect(r.hasCredentials).toBe(false);
   });
 });
+
+// ── SCR-02 (#55): fail-closed depth guard + key scrubbing ──────────────────────
+describe('scrubToolInput — deep nesting fails closed (SCR-02 #55)', () => {
+  function nest(depth: number, leaf: unknown): Record<string, unknown> {
+    let cur: unknown = leaf;
+    for (let i = 0; i < depth; i++) cur = { child: cur };
+    return cur as Record<string, unknown>;
+  }
+
+  test('a 20-deep subtree with an email is NOT returned in cleartext, and signals truncation', () => {
+    const map = new ScrubMap();
+    const input = nest(20, { note: 'reach me at deep@secret.example' });
+    const { input: out, result } = scrubToolInput(input, map, null, { sourceEvent: 'test', config: baseCfg }, 'Bash');
+    // The raw email must not survive anywhere in the serialized output.
+    expect(JSON.stringify(out)).not.toContain('deep@secret.example');
+    // And the caller is told the scan was truncated.
+    expect((result as { truncatedScan?: boolean }).truncatedScan).toBe(true);
+  });
+
+  test('object KEYS containing PII are scrubbed, not passed through raw', () => {
+    const map = new ScrubMap();
+    const input = { 'contact admin@corp.example now': 'value' };
+    const { input: out } = scrubToolInput(input, map, null, { sourceEvent: 'test', config: baseCfg }, 'Bash');
+    expect(JSON.stringify(Object.keys(out))).not.toContain('admin@corp.example');
+  });
+
+  test('shallow objects are unaffected (no false truncation)', () => {
+    const map = new ScrubMap();
+    const input = { a: { b: { c: 'server 10.1.2.3' } } };
+    const { result } = scrubToolInput(input, map, null, { sourceEvent: 'test', config: baseCfg }, 'Bash');
+    expect((result as { truncatedScan?: boolean }).truncatedScan).toBeFalsy();
+  });
+});

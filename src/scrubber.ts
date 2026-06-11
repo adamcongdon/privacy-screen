@@ -61,6 +61,12 @@ export interface ScrubResult {
   mintedTokens: MintedToken[];
   unsureSpans: UnsureSpan[];
   modified: boolean;
+  /**
+   * SCR-02 (#55): set when scrubObject hit the depth guard and could not
+   * fully scan a subtree. The hook treats this as uncertainty (warn always;
+   * block in enforce mode) instead of silently passing a partial scan.
+   */
+  truncatedScan?: boolean;
 }
 
 /** Context for a scrub operation — one per hook invocation. */
@@ -321,6 +327,7 @@ function emptyResult(text: string): ScrubResult {
     mintedTokens: [],
     unsureSpans: [],
     modified: false,
+    truncatedScan: false,
   };
 }
 
@@ -436,7 +443,16 @@ function scrubObject(
   skipFields: Set<string>,
   depth: number,
 ): unknown {
-  if (depth > 16) return obj; // pathological-nesting guard
+  if (depth > 16) {
+    // SCR-02 (#55): FAIL CLOSED on the pathological-nesting guard. Previously
+    // this returned the subtree completely unscrubbed with no signal — a
+    // fail-open that let deeply nested tool inputs bypass the scrubber. Now we
+    // redact the whole subtree and flag the partial scan so the hook can treat
+    // it as uncertainty (warn always; block in enforce mode).
+    combined.truncatedScan = true;
+    combined.modified = true;
+    return '[DEPTH-LIMIT-REDACTED]';
+  }
 
   if (typeof obj === 'string') {
     const r = scrubText(obj, map, vocab, ctx);
@@ -449,6 +465,13 @@ function scrubObject(
   if (obj !== null && typeof obj === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(obj)) {
+      // SCR-02 (#55): object KEYS can themselves carry PII (e.g. an email used
+      // as a map key) and were never scrubbed. Scrub the key text; fall back to
+      // the original key if scrubbing produced nothing meaningful.
+      const keyResult = scrubText(k, map, vocab, ctx);
+      mergeResult(combined, keyResult);
+      const outKey = keyResult.scrubbed;
+
       if (skipFields.has(k)) {
         // Still scan for credentials so we don't leak secrets via "skipped" fields,
         // but pass the value through unmodified.
@@ -459,10 +482,10 @@ function scrubObject(
             combined.credentialSnippets.push(...creds.map((m) => redactCredential(m[0])));
           }
         }
-        out[k] = v;
+        out[outKey] = v;
         continue;
       }
-      out[k] = scrubObject(v, map, vocab, ctx, combined, skipFields, depth + 1);
+      out[outKey] = scrubObject(v, map, vocab, ctx, combined, skipFields, depth + 1);
     }
     return out;
   }
@@ -475,4 +498,5 @@ function mergeResult(target: ScrubResult, source: ScrubResult): void {
   target.mintedTokens.push(...source.mintedTokens);
   target.unsureSpans.push(...source.unsureSpans);
   target.modified = target.modified || source.modified;
+  target.truncatedScan = target.truncatedScan || source.truncatedScan;
 }
