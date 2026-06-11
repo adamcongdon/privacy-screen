@@ -317,6 +317,10 @@ type State = {
   judgeStatus: JudgeStatus | null;
   isJudging: boolean;
 
+  // Self-service from handoff addendum
+  userPatterns: Array<{ text: string; cat: string }>;
+  customCategories: Array<{ id: string; label: string; color: string }>;
+
   // Update (beta/stable channel + download/apply)
   versionInfo: Awaited<ReturnType<typeof api.version>> | null;
   updateStatus: Awaited<ReturnType<typeof api.updateStatus>> | null;
@@ -384,6 +388,10 @@ type State = {
   refreshJudgeStatus: () => Promise<void>;
   setJudgeEnabled: (enabled: boolean) => Promise<void>;
   installJudgeModel: (model: string) => Promise<void>;
+
+  /** Self-service literal patterns (feature 1) and custom categories (feature 3). */
+  addUserPattern: (value: string, cat: string) => Promise<void>;
+  createCustomCategory: (label: string, color: string, seedText?: string) => Promise<void>;
 
   refreshVersion: () => Promise<void>;
   refreshUpdateStatus: () => Promise<void>;
@@ -558,6 +566,9 @@ export const useStore = create<State>((set, get) => {
   health: null,
   judgeStatus: null,
   isJudging: false,
+
+  userPatterns: [],
+  customCategories: [],
 
   versionInfo: null,
   updateStatus: null,
@@ -798,7 +809,8 @@ export const useStore = create<State>((set, get) => {
     }
     set({ isScrubbing: true, scrubError: null });
     try {
-      const r = await api.scrub(payload, false);
+      const patterns = get().userPatterns;
+      const r = await api.scrub(payload, false, patterns.length ? patterns : undefined);
       set((s) => ({
         scrubbed: r.scrubbed,
         tokens: r.tokens,
@@ -906,7 +918,12 @@ export const useStore = create<State>((set, get) => {
   refreshSettings: async () => {
     try {
       const s = await api.settings();
-      set({ settings: s, mode: s.mode });
+      set({
+        settings: s,
+        mode: s.mode,
+        userPatterns: s.user_patterns ?? [],
+        customCategories: s.custom_categories ?? [],
+      });
     } catch (err) {
       get().pushToast('error', `settings fetch failed: ${err instanceof Error ? err.message : err}`);
     }
@@ -954,6 +971,58 @@ export const useStore = create<State>((set, get) => {
       get().pushToast('error', `install failed: ${msg}`);
       throw err;
     }
+  },
+
+  addUserPattern: async (value, cat) => {
+    const trimmed = value.trim();
+    if (!trimmed || !cat) return;
+    const c = cat.toLowerCase();
+    // Optimistic + persist the patterns list (self-service, like updates).
+    const current = get().userPatterns;
+    const next = [...current, { text: trimmed, cat: c }];
+    set({ userPatterns: next });
+    try {
+      await api.saveSettings({ user_patterns: next });
+      // Also mint a vocab entry so it appears in Vocabulary and gets a stable token.
+      // Use a synthetic "pattern" category or the provided cat for display.
+      await api.addVocab(trimmed, c);
+      get().pushToast('success', `Pattern added for “${trimmed}”`);
+    } catch (err) {
+      // rollback on failure
+      set({ userPatterns: current });
+      get().pushToast('error', `Failed to save pattern: ${err instanceof Error ? err.message : err}`);
+      throw err;
+    }
+    // Re-scrub so the new literal pattern applies immediately.
+    void get().refreshScrub();
+    void get().refreshVocab();
+  },
+
+  createCustomCategory: async (label, color, seedText) => {
+    const trimmed = label.trim();
+    if (!trimmed) return;
+    // Slug: lower, non-alnum to _, deduped id.
+    const id = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'custom';
+    const existing = get().customCategories.some((c) => c.id === id || c.label.toLowerCase() === trimmed.toLowerCase());
+    if (existing) {
+      get().pushToast('error', 'A category with that name already exists.');
+      return;
+    }
+    const next = [...get().customCategories, { id, label: trimmed, color }];
+    set({ customCategories: next });
+    try {
+      await api.saveSettings({ custom_categories: next });
+      get().pushToast('success', `Category “${trimmed}” created`);
+      if (seedText && seedText.trim()) {
+        // If created from tokenize menu with selection, also add the pattern under the new cat.
+        await get().addUserPattern(seedText.trim(), id);
+      }
+    } catch (err) {
+      set({ customCategories: get().customCategories.filter((c) => c.id !== id) });
+      get().pushToast('error', `Failed to save category: ${err instanceof Error ? err.message : err}`);
+      throw err;
+    }
+    void get().refreshVocab();
   },
 
   refreshVersion: async () => {
@@ -1042,9 +1111,13 @@ export const useStore = create<State>((set, get) => {
   saveSettings: async (partial) => {
     try {
       const s = await api.saveSettings(partial);
-      // Sync `mode` back from the server's canonical view so the store and
-      // PRIVACY_CONFIG.yaml never drift.
-      set({ settings: s, mode: s.mode });
+      // Sync key fields (including new self-service ones) from server's canonical view.
+      set({
+        settings: s,
+        mode: s.mode,
+        userPatterns: s.user_patterns ?? [],
+        customCategories: s.custom_categories ?? [],
+      });
       get().pushToast('success', 'settings saved');
     } catch (err) {
       get().pushToast('error', `settings save failed: ${err instanceof Error ? err.message : err}`);

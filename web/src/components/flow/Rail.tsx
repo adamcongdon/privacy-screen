@@ -26,6 +26,7 @@ import {
   Settings as SettingsIcon,
   Sun,
   Moon,
+  MessageCircle,
   type LucideProps,
 } from 'lucide-react';
 import { useStore, type Route } from '../../store';
@@ -55,6 +56,7 @@ export function Rail(): JSX.Element {
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
   const reviewCount = useStore((s) => s.reviewItems.length);
+  const setFeedbackOpen = useStore((s) => s.setFeedbackOpen);
 
   return (
     <nav
@@ -81,6 +83,15 @@ export function Rail(): JSX.Element {
 
       {/* Pushes the bottom cluster to the foot of the rail. */}
       <div className="flex-1" />
+
+      {/* Feedback — matches handoff spec (bottom group above theme). */}
+      <RailButton
+        label="Send feedback"
+        caption="Feedback"
+        onClick={() => setFeedbackOpen(true)}
+      >
+        <MessageCircle size={20} />
+      </RailButton>
 
       {/* Theme toggle — sun when light, moon when dark. */}
       <RailButton

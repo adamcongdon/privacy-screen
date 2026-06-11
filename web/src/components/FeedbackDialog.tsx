@@ -107,9 +107,33 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
   const trimmed = summary.trim();
   const canSend = trimmed.length > 0 && !sending && preview.kind !== 'loading';
 
+  // Handoff spec: segmented type + prefilled GitHub URL (the recommended no-PAT path).
+  const [fbKind, setFbKind] = useState<'bug' | 'idea' | 'question'>('bug');
+  const fbTypes = [
+    { id: 'bug' as const, label: 'Bug', tag: 'bug' },
+    { id: 'idea' as const, label: 'Idea', tag: 'enhancement' },
+    { id: 'question' as const, label: 'Question', tag: 'question' },
+  ];
+  const currentType = fbTypes.find((t) => t.id === fbKind)!;
+
   const onSend = async (): Promise<void> => {
     if (!canSend) return;
-    setSending(true);
+    // Per ADDENDUM handoff: the realistic path is a prefilled GitHub new-issue URL (no client auth/PAT).
+    // We still support the existing job path if the server responds with jobId, but default to the URL open.
+    const lines = [trimmed];
+    lines.push('', '---', `Screen: ${window.location.hash || 'app'}`, `App: Privacy Screen (Flow)`, `Type: ${currentType.label}`);
+    const url =
+      `https://github.com/adamcongdon/privacy-screen/issues/new` +
+      `?labels=${encodeURIComponent(currentType.tag + ',feedback')}` +
+      `&title=${encodeURIComponent(`[${currentType.label}] ${trimmed.slice(0, 80)}`)}` +
+      `&body=${encodeURIComponent(lines.join('\n'))}`;
+
+    window.open(url, '_blank', 'noopener');
+    pushToast('success', 'Opening GitHub to file your feedback…');
+    setSummary('');
+    onOpenChange(false);
+
+    // Fire-and-forget the server job path if desired (keeps the pill system working for advanced use).
     try {
       const res = await fetch('/api/feedback', {
         method: 'POST',
@@ -118,30 +142,13 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
       });
       const raw = await res.text();
       let parsed: unknown = null;
-      if (raw) {
-        try { parsed = JSON.parse(raw); } catch { /* ignore */ }
+      if (raw) { try { parsed = JSON.parse(raw); } catch {} }
+      const body = (parsed ?? {}) as { ok?: boolean; jobId?: string };
+      if (res.status === 202 && body.ok && body.jobId) {
+        startFeedbackJob(body.jobId);
       }
-      const body = (parsed ?? {}) as { ok?: boolean; error?: string; jobId?: string };
-
-      // Expect 202 + { ok: true, jobId }
-      if (res.status === 202 && body.ok === true) {
-        if (typeof body.jobId === 'string' && body.jobId.length > 0) {
-          startFeedbackJob(body.jobId);
-          setSummary('');
-          onOpenChange(false);
-        } else {
-          pushToast('error', 'feedback submitted but no jobId returned');
-        }
-        return;
-      }
-
-      // Non-202 or explicit server error
-      const msg = body.error || `feedback failed: HTTP ${res.status}`;
-      pushToast('error', msg);
-    } catch (err) {
-      pushToast('error', `feedback failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setSending(false);
+    } catch {
+      /* best effort; the prefilled URL already satisfied the handoff */
     }
   };
 
@@ -192,6 +199,24 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
                 )}
               </div>
             </details>
+
+            {/* Type segmented (handoff spec) */}
+            <div className="mb-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Type</span>
+              <div className="mt-1.5 inline-flex rounded-lg border border-zinc-800 bg-zinc-900/60 p-0.5 text-xs">
+                {fbTypes.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    aria-pressed={fbKind === t.id}
+                    onClick={() => setFbKind(t.id)}
+                    className={`rounded-md px-3 py-1 ${fbKind === t.id ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
             {/* Free-text summary. */}
             <label className="flex flex-col gap-1.5">

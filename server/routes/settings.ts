@@ -12,7 +12,13 @@ import { Hono } from 'hono';
 import { publicSettings, saveSettings } from '../secrets';
 import { checkClaudeCode } from '../lib/claude-code-check';
 import { loadConfig, type Mode } from '../../src/config';
-import { patchUpdateConfig, patchScreeningMode, type UpdateConfigPatch } from '../lib/config-writer';
+import {
+  patchUpdateConfig,
+  patchScreeningMode,
+  patchSelfService,
+  type UpdateConfigPatch,
+  type SelfServicePatch,
+} from '../lib/config-writer';
 
 export const settingsRoute = new Hono();
 
@@ -30,6 +36,8 @@ settingsRoute.get('/', (c) => {
     mode: cfg.mode,
     update_channel: cfg.update_channel,
     update_manifest_url: cfg.update_manifest_url,
+    user_patterns: cfg.user_patterns ?? [],
+    custom_categories: cfg.custom_categories ?? [],
     claude_code: {
       found: cc.found,
       version: cc.version,
@@ -72,6 +80,18 @@ settingsRoute.post('/', async (c) => {
     patchUpdateConfig(updatePatch);
   }
 
+  // Self-service: user_patterns (literal tokenize selections) and custom_categories.
+  const selfServicePatch: SelfServicePatch = {};
+  if (Array.isArray(body.user_patterns)) {
+    selfServicePatch.user_patterns = body.user_patterns;
+  }
+  if (Array.isArray(body.custom_categories)) {
+    selfServicePatch.custom_categories = body.custom_categories;
+  }
+  if (Object.keys(selfServicePatch).length > 0) {
+    patchSelfService(selfServicePatch);
+  }
+
   const s = publicSettings();
   const cc = checkClaudeCode();
   const cfg = loadConfig();
@@ -80,6 +100,8 @@ settingsRoute.post('/', async (c) => {
     mode: cfg.mode,
     update_channel: cfg.update_channel,
     update_manifest_url: cfg.update_manifest_url,
+    user_patterns: cfg.user_patterns ?? [],
+    custom_categories: cfg.custom_categories ?? [],
     claude_code: {
       found: cc.found,
       version: cc.version,
