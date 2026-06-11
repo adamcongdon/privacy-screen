@@ -37,6 +37,17 @@ function loadGetActivePatterns(): (() => Array<{ id: number; category: string; c
   return _getActivePatterns;
 }
 
+/**
+ * Test seam (SCR-09 #62): inject the active induced-pattern provider so the
+ * Step 3b path can be exercised without the server process. Pass null to
+ * reset to the lazy loader.
+ */
+export function __setActivePatternsForTest(
+  fn: (() => Array<{ id: number; category: string; confidence: number; rx: RegExp }>) | null,
+): void {
+  _getActivePatterns = fn;
+}
+
 export interface MintedToken {
   type: string;
   realValue: string;
@@ -257,11 +268,15 @@ export function scrubText(
       for (const m of text.matchAll(p.rx)) {
         const span = m[0];
         if (map.tokenFor(span) !== undefined) continue;
-        if (vocab?.isAllowlisted(span)) continue;
-        const r = map.mint(p.category.toUpperCase(), span);
-        if (vocab) vocab.persistMint(span, r.token, p.category, p.confidence);
-        minted.push({ type: p.category.toUpperCase(), realValue: span, token: r.token, isNew: r.isNew, category: p.category, confidence: p.confidence });
-        hitIds.add(p.id);
+        // SCR-09 (#62): route induced-pattern mints through maybeRecordMint so
+        // they get the same allowlist check, token-shape guard, isNew check and
+        // dedup as every other mint path — instead of duplicating (a subset of)
+        // that logic and pushing token-shaped spans with token===realValue.
+        const before = minted.length;
+        maybeRecordMint(map, vocab, p.category.toUpperCase(), span, p.category, p.confidence, minted);
+        // Count an induced hit only when a token was actually minted (the guard
+        // may have rejected a token-shaped or allowlisted span).
+        if (minted.length > before) hitIds.add(p.id);
       }
     }
     if (vocab) {

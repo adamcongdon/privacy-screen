@@ -884,3 +884,41 @@ describe('scrubToolInput — sensitive KV in skipped fields (SCR-06 #59)', () =>
     expect(result.hasCredentials).toBe(true);
   });
 });
+
+// ── SCR-09 (#62): induced-pattern mints go through the recordMint guards ───────
+import { __setActivePatternsForTest } from '../src/scrubber';
+
+describe('scrubText — induced patterns routed through guards (SCR-09 #62)', () => {
+  test('a token-shaped induced match produces no mintedTokens entry and no vocab row', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ps-scr09-'));
+    const vocab = new VocabStore(join(dir, 'vocab.db'));
+    try {
+      // Induced pattern that matches a bare token-shaped span (e.g. {IP}) AND
+      // a normal word. The token-shaped match must be rejected by the guard.
+      __setActivePatternsForTest(() => [
+        { id: 1, category: 'secret', confidence: 0.9, rx: /\{[A-Z][A-Z0-9_]*\}|realword/g },
+      ]);
+      const map = new ScrubMap();
+      const r = scrubText('here is {IP} and realword', map, vocab, {
+        sourceEvent: 'test',
+        config: baseCfg,
+      });
+
+      // No minted entry may have token===realValue (the {IP} adversarial span).
+      for (const t of r.mintedTokens) {
+        expect(t.token).not.toBe(t.realValue);
+      }
+      // The {IP} token-shaped span specifically must not appear as a mint.
+      expect(r.mintedTokens.some((t) => t.realValue === '{IP}')).toBe(false);
+      // No vocab row whose token equals its real_value (the adversarial shape).
+      const rows = vocab.allVocab();
+      for (const row of rows) {
+        expect(row.token).not.toBe(row.real_value);
+      }
+    } finally {
+      __setActivePatternsForTest(null);
+      vocab.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
