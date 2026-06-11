@@ -95,6 +95,22 @@ describe('scrubText — FQDN', () => {
     scrub('backup01.acme.internal is unreachable', map);
     expect(map.tokenFor('backup01.acme.internal')).toBeDefined();
   });
+
+  // SCR-01 (#54): all-uppercase FQDNs (the normal AD/Windows display form)
+  // were left in cleartext because looksLikeIdentifier treated the uppercase
+  // last segment as code. They must mint a token.
+  test('tokenizes all-uppercase FQDN DC01.CORP.ACME.COM', () => {
+    const map = new ScrubMap();
+    const r = scrub('Login to DC01.CORP.ACME.COM now', map);
+    expect(map.tokenFor('DC01.CORP.ACME.COM')).toBeDefined();
+    expect(r.scrubbed).not.toContain('DC01.CORP.ACME.COM');
+  });
+  test('tokenizes all-uppercase internal FQDN BACKUP01.CONTOSO.LOCAL', () => {
+    const map = new ScrubMap();
+    const r = scrub('Reach BACKUP01.CONTOSO.LOCAL tonight', map);
+    expect(map.tokenFor('BACKUP01.CONTOSO.LOCAL')).toBeDefined();
+    expect(r.scrubbed).not.toContain('BACKUP01.CONTOSO.LOCAL');
+  });
 });
 
 describe('scrubText — UNC path', () => {

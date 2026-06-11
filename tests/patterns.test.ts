@@ -316,6 +316,21 @@ describe('looksLikeIdentifier', () => {
   test('returns false for "host.acme.com"', () => {
     expect(looksLikeIdentifier('host.acme.com')).toBe(false);
   });
+  // SCR-01 (#54): all-uppercase FQDNs are the normal AD/Windows display form
+  // and must NOT be treated as code identifiers, so the scrubber tokenizes them.
+  test('returns false for all-uppercase FQDN "DC01.CORP.ACME.COM"', () => {
+    expect(looksLikeIdentifier('DC01.CORP.ACME.COM')).toBe(false);
+  });
+  test('returns false for all-uppercase internal FQDN "BACKUP01.CONTOSO.LOCAL"', () => {
+    expect(looksLikeIdentifier('BACKUP01.CONTOSO.LOCAL')).toBe(false);
+  });
+  // Regression guard: genuine PascalCase code chains still skipped.
+  test('returns true for PascalCase tail "System.Net.Http"', () => {
+    expect(looksLikeIdentifier('System.Net.Http')).toBe(true);
+  });
+  test('returns true for "Array.prototype.indexOf" (camelCase tail)', () => {
+    expect(looksLikeIdentifier('Array.prototype.indexOf')).toBe(true);
+  });
 });
 
 // Unicode SCR-07 TDD cases (red demonstrated earlier in session before src edits)

@@ -266,9 +266,12 @@ export function looksLikeIdentifier(s: string): boolean {
   // Common DOM property/method names as the *last* segment.
   const last = parts[parts.length - 1];
   if (DOM_TAILS.has(last)) return true;
-  // PascalCase last segment (TLDs are always lowercase 2+ chars, so a
-  // capitalized tail rules out a real domain).
-  if (/^[A-Z]/.test(last)) return true;
+  // True PascalCase last segment (uppercase followed by lowercase, e.g.
+  // "System.Net.Http") signals a code/type chain. We deliberately do NOT
+  // skip a uniformly UPPER-CASE tail: all-caps hostnames like
+  // DC01.CORP.ACME.COM are the normal AD/Windows display form and must be
+  // tokenized, not passed through as cleartext (issue #54 / SCR-01).
+  if (/^[A-Z][a-z]/.test(last)) return true;
   return false;
 }
 
