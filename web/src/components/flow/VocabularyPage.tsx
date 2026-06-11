@@ -5,11 +5,13 @@
  * Reused logic (do not reinvent):
  *   - row union (current tokens + cross-session tokenUnion + persisted vocab) →
  *     ported from TokenMapBody (components/TokenMap.tsx).
- *   - forget action → store.forgetVocab(realValue) → api.forgetVocab DELETE.
+ *   - forget action → gated by confirm step (#88); store.forgetVocab(realValue, toastLabel?)
+ *     where toastLabel=token when the row is masked (so toast + aria-label never leak
+ *     real via a11y tree). Direct single-click no longer deletes (deferred until confirm).
  *
  * Store surface (verified against store.ts):
  *   tokens (Token[]), tokenUnion (Map<string,Token>), vocab (VocabRow[]),
- *   refreshVocab, forgetVocab(realValue).
+ *   refreshVocab, forgetVocab(realValue, toastLabel?).
  *
  * VocabRow shape (api.ts): { real_value, token, category, confidence, first_seen,
  *   last_seen, hit_count, confirmed_by }. Use count = hit_count (persisted rows);
@@ -26,6 +28,7 @@ import { useContextMenu } from '../../lib/useContextMenu';
 import { getCategoryHue } from '../../lib/colors';
 import { categoryLabel, CATS } from '../../lib/categories';
 import type { Token, VocabRow } from '../../api';
+import { mergeTokenSources } from '../../lib/tokens';
 
 /** A unified vocab row for the table — merges the session token streams with the
  * persisted vocab list so the page shows everything the user has tokenized. */
@@ -61,8 +64,10 @@ function buildRows(
     });
   };
 
-  for (const t of tokens) push(t.token, t.realValue, t.category);
-  for (const [tok, t] of tokenUnion) push(tok, t.realValue, t.category);
+  // Use shared merge for the token sources (current + union) — dedup + order preserved.
+  for (const t of mergeTokenSources(tokens, tokenUnion)) {
+    push(t.token, t.realValue, t.category);
+  }
   for (const v of vocab) push(v.token, v.real_value, v.category);
   return out;
 }
@@ -113,6 +118,12 @@ export function VocabularyPage({ query }: { query: string }): JSX.Element {
 
   const [category, setCategory] = useState<string>('all');
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+
+  // #88: confirm step (deferred delete) so single-click never permanently forgets.
+  // confirmToken identifies the *token* (safe, never holds realValue). When set,
+  // the row shows inline confirm/cancel instead of direct trash. This also lets
+  // us choose token vs real for the aria-label and the toastLabel passed to store.
+  const [confirmToken, setConfirmToken] = useState<string | null>(null);
 
   // Pull the persisted vocab once on mount so the page is populated even on a
   // cold route (boot already fetches, but a direct deep-link to #/vocab might
@@ -252,14 +263,42 @@ export function VocabularyPage({ query }: { query: string }): JSX.Element {
                       >
                         {rev ? <EyeOff size={13} aria-hidden="true" /> : <Eye size={13} aria-hidden="true" />}
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => void forgetVocab(r.realValue)}
-                        aria-label={`Forget ${r.realValue}`}
-                        className="rounded-md px-1.5 py-1 text-text-faint hover:bg-surface-2 hover:text-danger"
-                      >
-                        <Trash2 size={13} aria-hidden="true" />
-                      </button>
+                      {confirmToken === r.token ? (
+                        // #88 confirm step (deferred): no single click deletes. Inline confirm
+                        // uses displayLabel (token when masked) so a11y + confirm UI never leak real.
+                        <span className="flex items-center gap-1 text-[11px]">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const displayLabel = rev ? r.realValue : r.token;
+                              void forgetVocab(r.realValue, displayLabel);
+                              setConfirmToken(null);
+                            }}
+                            aria-label={`Confirm forget for ${rev ? r.realValue : r.token}`}
+                            className="rounded-md px-1 py-0.5 text-danger hover:bg-surface-2"
+                            title="Confirm forget (deferred delete)"
+                          >
+                            confirm
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmToken(null)}
+                            aria-label="Cancel forget"
+                            className="rounded-md px-1 py-0.5 text-text-faint hover:bg-surface-2"
+                          >
+                            cancel
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmToken(r.token)}
+                          aria-label={`Forget ${rev ? r.realValue : r.token}`}
+                          className="rounded-md px-1.5 py-1 text-text-faint hover:bg-surface-2 hover:text-danger"
+                        >
+                          <Trash2 size={13} aria-hidden="true" />
+                        </button>
+                      )}
                     </span>
                   </li>
                 );

@@ -18,9 +18,11 @@
  *
  * Test seam: when `PRIVACY_SCREEN_LLM_MOCK === '1'`, the route bypasses
  * `getLlmClient` and uses a `MockLlmClient` seeded from
- * `PRIVACY_SCREEN_LLM_MOCK_RESPONSE` (a single JSON string scripted for the
- * whole test run). This lets us assert end-to-end behavior — including the
- * review_queue write — without spawning a real model.
+ * `PRIVACY_SCREEN_LLM_MOCK_RESPONSE` (a JSON string or JSON array of strings
+ * for multi-chunk scripted responses). This makes the seam multi-chunk capable
+ * and lets us assert end-to-end behavior — including the review_queue write —
+ * without spawning a real model. Array form supports testing chunked runJudge
+ * paths (accumulation, maxSpans, dedup).
  */
 
 import { Hono } from 'hono';
@@ -192,11 +194,13 @@ judgeRoute.post('/sync', async (c) => {
     });
 
     if (result.errorReason) {
+      const cTotal = (result as any).chunksTotal ?? '?';
+      const cFailed = (result as any).chunksFailed ?? '?';
       process.stderr.write(
-        `[privacy-screen] judge.sync.error: ${result.errorReason}\n`,
+        `[privacy-screen] judge.sync.error: ${result.errorReason} (chunks ${cTotal}/${cFailed} failed)\n`,
       );
-      // Fail-CLOSED: any judge-internal error denies the precheck, even if
-      // spans.length is 0. The hook will not auto-approve on a 503.
+      // Fail-CLOSED: any judge-internal error (incl. partial chunk failures) denies the
+      // precheck, even if spans.length >0 from other chunks. (JDG-05 contract test)
       return c.json({ error: result.errorReason }, 503);
     }
 
@@ -241,7 +245,12 @@ async function runJudgeAndPersist(
     }
 
     if (result.errorReason) {
-      process.stderr.write(`[privacy-screen] judge.error: ${result.errorReason}\n`);
+      // JDG-05: log partial failures explicitly even when some chunks succeeded and produced spans.
+      const cTotal = (result as any).chunksTotal ?? '?';
+      const cFailed = (result as any).chunksFailed ?? '?';
+      process.stderr.write(
+        `[privacy-screen] judge.error: ${result.errorReason} (chunks ${cTotal}/${cFailed} failed)\n`,
+      );
     }
     process.stderr.write(
       `[privacy-screen] judge.completed: ${result.spans.length} spans\n`,
@@ -257,16 +266,28 @@ async function runJudgeAndPersist(
 
 /**
  * Pick the LLM client. Test seam: `PRIVACY_SCREEN_LLM_MOCK=1` returns a
- * `MockLlmClient` scripted from `PRIVACY_SCREEN_LLM_MOCK_RESPONSE` (one JSON
- * string used for the whole test run). Otherwise delegates to `getLlmClient`,
- * which lazy-starts the real subprocess.
+ * `MockLlmClient` scripted from `PRIVACY_SCREEN_LLM_MOCK_RESPONSE`.
+ * The value may be:
+ *  - a plain JSON object string (single response, for 1-chunk or repeated use)
+ *  - a JSON-encoded *array* of response strings (for multi-chunk inputs; each
+ *    element is the raw string one `complete()` call will return). This makes
+ *    the seam multi-chunk capable for testing accumulation / maxSpans saturation
+ *    / dedup in runJudge without hitting "queue empty".
+ * Falls back to single-element array for backward compat.
  */
 async function acquireClient(
   llmCfg: import('../../src/config').LlmValidateConfig,
 ): Promise<LlmClient | null> {
   if (process.env.PRIVACY_SCREEN_LLM_MOCK === '1') {
     const scripted = process.env.PRIVACY_SCREEN_LLM_MOCK_RESPONSE ?? '{}';
-    return new MockLlmClient([scripted]);
+    let responses: string[];
+    try {
+      const parsed = JSON.parse(scripted);
+      responses = Array.isArray(parsed) ? parsed : [scripted];
+    } catch {
+      responses = [scripted];
+    }
+    return new MockLlmClient(responses);
   }
   return getLlmClient(llmCfg);
 }

@@ -13,12 +13,10 @@
  */
 
 import { Hono } from 'hono';
-import { existsSync, statSync } from 'fs';
+import { existsSync, statSync, createWriteStream, renameSync, unlinkSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import { homedir } from 'os';
 import { join } from 'path';
-import { mkdirSync, writeFileSync } from 'fs';
-import { createHash } from 'crypto';
 
 import { loadConfig } from '../../src/config';
 import { patchLlmValidate } from '../lib/config-writer';
@@ -169,12 +167,13 @@ judgeControlRoute.post('/install', async (c) => {
   };
 
   // Fire-and-forget. Status endpoint reports progress.
-  void runInstall(entry.url, destPath);
+  void runInstall(modelName, entry.url, destPath);
 
   return c.json({ ok: true, install: installState }, 202);
 });
 
-async function runInstall(url: string, destPath: string): Promise<void> {
+async function runInstall(modelName: string, url: string, destPath: string): Promise<void> {
+  const partPath = destPath + '.partial';
   try {
     const res = await fetch(url);
     if (!res.ok || !res.body) {
@@ -191,27 +190,65 @@ async function runInstall(url: string, destPath: string): Promise<void> {
       installState = { ...installState, totalBytes: contentLength };
     }
 
+    const hasher = new Bun.CryptoHasher('sha256');
+    const ws = createWriteStream(partPath);
     const reader = res.body.getReader();
-    const chunks: Uint8Array[] = [];
     let received = 0;
+
+    // eslint-disable-next-line no-constant-condition
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
       if (value) {
-        chunks.push(value);
+        hasher.update(value);
+        ws.write(Buffer.from(value));
         received += value.byteLength;
         installState = { ...installState, bytesDownloaded: received };
       }
     }
-    const totalSize = chunks.reduce((n, c) => n + c.byteLength, 0);
-    const merged = new Uint8Array(totalSize);
-    let off = 0;
-    for (const c of chunks) {
-      merged.set(c, off);
-      off += c.byteLength;
+
+    await new Promise<void>((resolve, reject) => {
+      ws.on('finish', resolve);
+      ws.on('error', reject);
+      ws.end();
+    });
+
+    const sha = hasher.digest('hex').toLowerCase();
+
+    // JDG-04: verify against pinned in MODELS (size band + sha) BEFORE rename/patch.
+    // Tampered never lands at final destPath and is never wired to config.
+    const entry = MODELS[modelName];
+    if (entry) {
+      const expectedSize = entry.expectedSizeBytes;
+      const sizeTolerance = Math.floor(expectedSize * 0.05);
+      if (Math.abs(received - expectedSize) > sizeTolerance) {
+        try { unlinkSync(partPath); } catch {}
+        installState = {
+          ...installState,
+          active: false,
+          finishedAt: Date.now(),
+          bytesDownloaded: received,
+          error: `size sanity band violation — refusing to write model file (expected ~${expectedSize} ±5%, got ${received})`,
+        };
+        return;
+      }
+      if (sha !== entry.expectedSha256.toLowerCase()) {
+        try { unlinkSync(partPath); } catch {}
+        installState = {
+          ...installState,
+          active: false,
+          finishedAt: Date.now(),
+          bytesDownloaded: received,
+          error: `SHA-256 mismatch — refusing to write model file. expected: ${entry.expectedSha256} actual: ${sha}`,
+        };
+        return;
+      }
     }
-    writeFileSync(destPath, merged);
-    const sha = createHash('sha256').update(merged).digest('hex');
+
+    if (existsSync(destPath)) {
+      try { unlinkSync(destPath); } catch {}
+    }
+    renameSync(partPath, destPath);
 
     // Auto-set model_path in the config so the user doesn't have to. We do
     // NOT auto-enable — that's a separate user click in the UI.
@@ -225,13 +262,14 @@ async function runInstall(url: string, destPath: string): Promise<void> {
       ...installState,
       active: false,
       finishedAt: Date.now(),
-      bytesDownloaded: totalSize,
+      bytesDownloaded: received,
       error: null,
     };
     process.stderr.write(
-      `[privacy-screen] judge model installed: ${destPath} (${totalSize}B, sha256=${sha})\n`,
+      `[privacy-screen] judge model installed: ${destPath} (${received}B, sha256=${sha})\n`,
     );
   } catch (err) {
+    try { unlinkSync(partPath); } catch {}
     installState = {
       ...installState,
       active: false,

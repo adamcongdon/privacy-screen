@@ -120,6 +120,10 @@ CREATE INDEX IF NOT EXISTS idx_induced_category ON induced_patterns(category, st
 export class VocabStore {
   private db: Database;
 
+  // #63 cache: precomputed allowlist for fast isAllowlisted (literals Set + precompiled regexes).
+  // Invalidated on addAllowlist. Avoids repeated full SELECT + on-the-fly RegExp per lookup.
+  private _allowlistCache: { literals: Set<string>; regexes: RegExp[] } | null = null;
+
   constructor(dbPath: string) {
     const dir = dirname(dbPath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -217,20 +221,31 @@ export class VocabStore {
 
   /** Check if a string matches any allowlist entry. */
   isAllowlisted(value: string): boolean {
-    const rows = this.db
-      .query<AllowlistRow, []>(`SELECT pattern, is_regex FROM allowlist`)
-      .all();
-    const lower = value.toLowerCase();
-    for (const { pattern, is_regex } of rows) {
-      if (is_regex) {
-        try {
-          if (new RegExp(pattern, 'i').test(value)) return true;
-        } catch {
-          // malformed regex in DB — skip
+    if (!this._allowlistCache) {
+      // #63: build cache once (literals as Set for O(1), regexes precompiled).
+      const rows = this.db
+        .query<AllowlistRow, []>(`SELECT pattern, is_regex FROM allowlist`)
+        .all();
+      const literals = new Set<string>();
+      const regexes: RegExp[] = [];
+      for (const { pattern, is_regex } of rows) {
+        if (is_regex) {
+          try {
+            regexes.push(new RegExp(pattern, 'i'));
+          } catch {
+            // malformed regex in DB — skip
+          }
+        } else {
+          literals.add(pattern.toLowerCase());
         }
-      } else {
-        if (lower === pattern.toLowerCase()) return true;
       }
+      this._allowlistCache = { literals, regexes };
+    }
+
+    const lower = value.toLowerCase();
+    if (this._allowlistCache.literals.has(lower)) return true;
+    for (const rx of this._allowlistCache.regexes) {
+      if (rx.test(value)) return true;
     }
     return false;
   }
@@ -243,6 +258,7 @@ export class VocabStore {
          VALUES (?, ?, 'user', ?, ?)`,
       )
       .run(pattern, isRegex ? 1 : 0, Date.now(), reason ?? null);
+    this._allowlistCache = null; // #63: invalidate allowlist cache on mutation
   }
 
   /** Remove a vocab entry (for the CLI forget command). */
@@ -251,6 +267,16 @@ export class VocabStore {
       .query(`DELETE FROM vocab WHERE real_value = ? COLLATE NOCASE`)
       .run(realValue);
     return (r as { changes: number }).changes > 0;
+  }
+
+  /**
+   * Bulk clear the entire vocab table (for Settings "Clear vocab" / #87).
+   * Single-statement DELETE is atomic. Returns #rows deleted.
+   * Guarantees 1 request / 1 refresh pair / 1 toast no matter how many rows.
+   */
+  clearAll(): number {
+    const r = this.db.query(`DELETE FROM vocab`).run();
+    return (r as { changes: number }).changes;
   }
 
   /**

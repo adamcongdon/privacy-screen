@@ -29,6 +29,7 @@ import { useStore } from '../../store';
 import { getCategoryHue } from '../../lib/colors';
 import { categoryLabel } from '../../lib/categories';
 import type { ReviewItem } from '../../api';
+import { Segmented } from '../ui/Segmented';
 
 const POLL_MS = 8000; // matches the existing ReviewQueue poll cadence
 
