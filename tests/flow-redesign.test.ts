@@ -203,3 +203,46 @@ test('onboarding gate: setOnboarded(true) flips the flag and persists', () => {
     /* ignore */
   }
 });
+
+// ── #83: scrub failure / in-flight state must be surfaced ─────────────────────
+test('refreshScrub sets scrubError on failure and clears isScrubbing', async () => {
+  // Fail the /api/scrub call; settings GET returns a benign payload.
+  const failingFetch: typeof fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    if (url.includes('/api/scrub')) {
+      throw new Error('network down');
+    }
+    return new Response(
+      JSON.stringify({
+        model: 'm', system_prompt: '', mode: 'observe',
+        update_channel: 'off', update_manifest_url: '',
+        claude_code: { found: false, version: null },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  }) as unknown as typeof fetch;
+  globalThis.fetch = failingFetch;
+
+  useStore.setState({ composerText: 'email me at a@b.com', files: [], scrubError: null, isScrubbing: false });
+  await useStore.getState().refreshScrub();
+
+  expect(useStore.getState().isScrubbing).toBe(false);
+  expect(useStore.getState().scrubError).not.toBeNull();
+});
+
+test('successful scrub clears scrubError', async () => {
+  const okFetch: typeof fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    const body = url.includes('/api/scrub')
+      ? { scrubbed: 'hello {EMAIL_1}', tokens: [], unsureSpans: [], hasCredentials: false, credentialSnippets: [] }
+      : { model: 'm', system_prompt: '', mode: 'observe', update_channel: 'off', update_manifest_url: '', claude_code: { found: false, version: null } };
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  globalThis.fetch = okFetch;
+
+  useStore.setState({ composerText: 'email me at a@b.com', files: [], scrubError: 'prior error' });
+  await useStore.getState().refreshScrub({ skipJudge: true });
+
+  expect(useStore.getState().scrubError).toBeNull();
+  expect(useStore.getState().isScrubbing).toBe(false);
+});
