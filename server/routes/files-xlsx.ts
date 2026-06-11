@@ -198,6 +198,23 @@ filesXlsxRoute.post('/commit', async (c) => {
     return c.json({ ok: false, error: `failed to scrub: ${msg}` }, 500);
   }
 
+  // SCR-05 (#58): BLOCK-ALWAYS on credentials. If the workbook contained a
+  // credential, refuse to return the scrubbed buffer at all — the operator must
+  // remove the secret from the source, exactly like the text/tool paths.
+  if (result.summary.hasCredentials) {
+    dropUpload(uploadId);
+    return c.json(
+      {
+        ok: false,
+        error: 'credential detected',
+        credentialSnippets: result.summary.credentialSnippets,
+        message:
+          'A credential was detected in the workbook. Remove it from the source file before scrubbing.',
+      },
+      400,
+    );
+  }
+
   // Privacy: drop the staged buffer the instant we've successfully produced a
   // scrubbed copy. The frontend has the bytes; we no longer need the original.
   dropUpload(uploadId);

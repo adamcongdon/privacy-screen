@@ -549,3 +549,73 @@ describe('SCR-10 xlsx 5k-vocab + 200-cell sheet TDD', () => {
     console.log(`[TDD #63] 5k-vocab 200-cell xlsx scrub dur=${dur.toFixed(2)}ms (budget<400)`);
   });
 });
+
+// ── SCR-04 / SCR-05 (#57 / #58): rich-text, hyperlink, header, metadata, creds ──
+describe('xlsx scrub — non-plain cells, header, metadata, credentials', () => {
+  async function loadBack(buf: Buffer): Promise<ExcelJS.Workbook> {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buf as unknown as ArrayBuffer);
+    return wb;
+  }
+
+  test('SCR-04: rich-text, hyperlink, header PII, sheet name and creator are all tokenized', async () => {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Adam Congdon';
+    wb.lastModifiedBy = 'Adam Congdon';
+    const s = wb.addWorksheet('Acme Corp Sheet');
+    // Header row with a PII email as a column title + a normal title.
+    s.getCell('A1').value = { richText: [{ text: 'mail ' }, { text: 'header@invented-domain.test' }] };
+    s.getCell('B1').value = 'Notes';
+    // Rich-text data cell with an email.
+    s.getCell('A2').value = { richText: [{ text: 'reach ' }, { text: 'rich@invented-domain.test' }] };
+    // Hyperlink cell: display text + mailto target both carry an email.
+    s.getCell('B2').value = { text: 'email link@invented-domain.test', hyperlink: 'mailto:link@invented-domain.test' };
+    const buf = Buffer.from(await wb.xlsx.writeBuffer() as ArrayBuffer);
+
+    const { summary } = await scrubXlsx(buf, new ScrubMap(), null, { xlsx: defaultXlsxCfg, baseConfig: baseCfg });
+    const out = await scrubXlsxToBuffer(buf);
+
+    const flat = out;
+    expect(flat).not.toContain('header@invented-domain.test');
+    expect(flat).not.toContain('rich@invented-domain.test');
+    expect(flat).not.toContain('link@invented-domain.test');
+    expect(flat).not.toContain('Adam Congdon'); // creator/lastModifiedBy scrubbed
+    expect(summary.hasCredentials).toBe(false);
+  });
+
+  test('SCR-05: a credential in an Email-force-minted column is redacted, not minted, and flagged', async () => {
+    const wb = new ExcelJS.Workbook();
+    const s = wb.addWorksheet('Sheet1');
+    s.addRow(['Email']);
+    s.addRow(['ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa12']);
+    const buf = Buffer.from(await wb.xlsx.writeBuffer() as ArrayBuffer);
+
+    const map = new ScrubMap();
+    const { summary } = await scrubXlsx(buf, map, null, { xlsx: defaultXlsxCfg, baseConfig: baseCfg });
+    const out = await scrubXlsxToBuffer(buf, map);
+
+    expect(summary.hasCredentials).toBe(true);
+    expect(out).toContain('[CREDENTIAL-REDACTED]');
+    expect(out).not.toContain('ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa12');
+    // No vocab row would have been minted for the credential (map has no token for it).
+    expect(map.tokenFor('ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa12')).toBeUndefined();
+  });
+});
+
+/** Helper: scrub a workbook buffer and return the re-serialized bytes as a UTF-8-ish string for substring assertions. */
+async function scrubXlsxToBuffer(buf: Buffer, map?: ScrubMap): Promise<string> {
+  const m = map ?? new ScrubMap();
+  const { scrubbedBuffer } = await scrubXlsx(buf, m, null, { xlsx: defaultXlsxCfg, baseConfig: baseCfg });
+  // xlsx is a zip; load it back and stringify all cell values + metadata so
+  // substring assertions are reliable regardless of zip compression.
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(scrubbedBuffer as unknown as ArrayBuffer);
+  const parts: string[] = [String(wb.creator ?? ''), String(wb.lastModifiedBy ?? ''), String((wb as unknown as Record<string, unknown>).company ?? '')];
+  wb.eachSheet((sheet) => {
+    parts.push(sheet.name);
+    sheet.eachRow((row) => {
+      row.eachCell((cell) => { parts.push(cell.text ?? ''); });
+    });
+  });
+  return parts.join('');
+}
