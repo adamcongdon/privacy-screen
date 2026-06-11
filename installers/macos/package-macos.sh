@@ -113,11 +113,22 @@ cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 
 echo "→ building $DMG_PATH"
+# Size the image explicitly with headroom rather than relying on hdiutil's
+# auto-size from -srcfolder, which is too tight for the larger x64 .app and
+# fails inside the mounted volume with "No space left on device". Create a
+# sized read-write image, then convert to the final compressed UDZO.
+SIZE_KB=$(du -sk "$STAGE" | cut -f1)
+IMG_SIZE=$(( SIZE_KB + 51200 ))   # +50MB headroom for filesystem overhead
+RW_DMG="$WORK/rw.dmg"
 hdiutil create \
   -volname "privacy-screen" \
   -srcfolder "$STAGE" \
+  -fs HFS+ \
+  -format UDRW \
+  -size "${IMG_SIZE}k" \
   -ov \
-  -format UDZO \
-  "$DMG_PATH"
+  "$RW_DMG"
+hdiutil convert "$RW_DMG" -format UDZO -ov -o "$DMG_PATH"
+rm -f "$RW_DMG"
 
 echo "✅ wrote $DMG_PATH"

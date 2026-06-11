@@ -231,7 +231,10 @@ jobs:
         shell: bash
         run: |
           ISCC="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
-          "$ISCC" "/DMyAppVersion=${{ steps.vars.outputs.version }}" installers/windows/privacy-screen.iss
+          # MSYS_NO_PATHCONV stops Git Bash from rewriting the /D define into a
+          # Windows path, which would make ISCC see it as a second script file
+          # ("You may not specify more than one script filename").
+          MSYS_NO_PATHCONV=1 "$ISCC" "/DMyAppVersion=${{ steps.vars.outputs.version }}" installers/windows/privacy-screen.iss
           ls -l dist/
 
       - name: Upload installer artifact
