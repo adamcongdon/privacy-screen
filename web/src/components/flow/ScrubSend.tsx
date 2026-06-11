@@ -36,6 +36,7 @@ import {
   Fragment,
 } from 'react';
 import { useContextMenu } from '../../lib/useContextMenu';
+import { Segmented } from '../ui/Segmented';
 import {
   FileText,
   Shield,
@@ -59,32 +60,9 @@ import { categoryLabel } from '../../lib/categories';
 import { deanonymize, type TokenLike } from '../../lib/deanon';
 import type { Token } from '../../api';
 import type { ScreenMode } from '../../store';
+import { tokenizeForRender, mergeTokenSources, type Run } from '../../lib/tokens';
 
 const DEBOUNCE_MS = 200; // matches Composer.tsx
-
-// ── run splitting (ported verbatim from PreviewPane.tsx) ─────────────────────
-type Run =
-  | { type: 'text'; text: string }
-  | { type: 'token'; raw: string; meta: Token | null };
-
-const TOKEN_RE = /\{[A-Z][A-Z0-9_]*\}/g;
-
-function tokenizeForRender(scrubbed: string, tokens: Token[]): Run[] {
-  if (!scrubbed) return [];
-  const byToken = new Map<string, Token>();
-  for (const t of tokens) byToken.set(t.token, t);
-  const out: Run[] = [];
-  let lastIdx = 0;
-  for (const m of scrubbed.matchAll(TOKEN_RE)) {
-    const i = m.index ?? 0;
-    if (i > lastIdx) out.push({ type: 'text', text: scrubbed.slice(lastIdx, i) });
-    const raw = m[0];
-    out.push({ type: 'token', raw, meta: byToken.get(raw) ?? null });
-    lastIdx = i + raw.length;
-  }
-  if (lastIdx < scrubbed.length) out.push({ type: 'text', text: scrubbed.slice(lastIdx) });
-  return out;
-}
 
 /** A `.ps-pill` token chip. Category is carried by the token TEXT (WCAG 1.4.1);
  * color is redundant reinforcement only. */
@@ -128,51 +106,6 @@ function BlockedChip(): JSX.Element {
     >
       <AlertTriangle size={12} aria-hidden="true" /> blocked
     </span>
-  );
-}
-
-/** Segmented control. WCAG: role="radiogroup" with role="radio"/aria-checked per
- * option (aria-pressed is for toggle buttons, not radios — omitted here); the
- * label text carries meaning (no color-alone). */
-function Segmented<T extends string>({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: T;
-  options: ReadonlyArray<{ value: T; label: string; icon?: JSX.Element }>;
-  onChange: (v: T) => void;
-}): JSX.Element {
-  return (
-    <div
-      role="radiogroup"
-      aria-label={label}
-      className="inline-flex items-center gap-0.5 rounded-lg border border-border bg-surface-2 p-0.5"
-    >
-      {options.map((opt) => {
-        const active = opt.value === value;
-        return (
-          <button
-            key={opt.value}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            onClick={() => onChange(opt.value)}
-            className="flex items-center gap-1 rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors"
-            style={
-              active
-                ? { background: 'var(--acc-tint)', color: 'var(--acc)' }
-                : { color: 'var(--text-dim)' }
-            }
-          >
-            {opt.icon}
-            {opt.label}
-          </button>
-        );
-      })}
-    </div>
   );
 }
 
@@ -316,17 +249,9 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
   const protectedCount = tokens.length;
 
   const replyTokens = useMemo(() => {
-    // Merge current tokens with the cross-session union so deanon resolves
-    // tokens minted on prior turns.
-    const seen = new Set<string>();
-    const merged: Token[] = [];
-    for (const t of tokens) {
-      if (!seen.has(t.token)) { seen.add(t.token); merged.push(t); }
-    }
-    for (const [, t] of tokenUnion) {
-      if (!seen.has(t.token)) { seen.add(t.token); merged.push(t); }
-    }
-    return merged;
+    // Merge via shared utility (current + cross-session union) so deanon resolves
+    // tokens minted on prior turns. Single impl for #92.
+    return mergeTokenSources(tokens, tokenUnion);
   }, [tokens, tokenUnion]);
 
   const [copied, setCopied] = useState(false);

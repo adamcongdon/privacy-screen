@@ -101,6 +101,7 @@ export function scrubText(
   // can permanently silence a previously-minted name.
   preMintCustomers(map, vocab, cfg);
   preMintPersons(map, vocab, cfg);
+  preMintUserPatterns(map, vocab, cfg);
 
   // ── User literal patterns (self-service "Tokenize selection", high priority 1.2) ──
   // Match literally (escaped, case-insensitive, partial ok — no \b), before heuristics.
@@ -349,6 +350,26 @@ function preMintPersons(
     const r = map.mint('PERSON', name);
     if (r.isNew && vocab) {
       vocab.persistMint(name, r.token, 'person', 1.0);
+    }
+  }
+}
+
+function preMintUserPatterns(
+  map: ScrubMap,
+  vocab: VocabStore | null,
+  cfg: PrivacyConfig,
+): void {
+  const patterns = cfg.user_patterns ?? [];
+  for (const p of patterns) {
+    if (!p || !p.text || !p.cat) continue;
+    if (vocab?.isAllowlisted(p.text)) continue;
+    if (map.tokenFor(p.text) !== undefined) continue;
+    // Sanitize cat the same way the ctx.userPatterns literal path does (high-prio 1.2).
+    const type = p.cat.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+    const cat = p.cat.toLowerCase();
+    const r = map.mint(type, p.text);
+    if (r.isNew && vocab) {
+      vocab.persistMint(p.text, r.token, cat, 1.2);
     }
   }
 }

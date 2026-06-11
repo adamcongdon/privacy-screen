@@ -493,3 +493,71 @@ describe('staged-buffer lifecycle', () => {
     expect(second.status).toBe(404);
   });
 });
+
+// ── CSV column policy support via the xlsx scrub path (#35) ─────────────────
+// TDD: this test is added FIRST to demonstrate the desired behavior (CSV
+// uploads should get the per-column ignore/individual UI + scrub options
+// instead of being treated as opaque text). It will FAIL (red) until the
+// dispatch in files.ts + csv load/write support in xlsx-scrubber.ts +
+// relaxed ext handling in files-xlsx.ts are implemented.
+
+async function buildFixtureCsv(): Promise<Buffer> {
+  const csv =
+    'Email,Phone,Notes\n' +
+    'alpha@invented-domain.test,(555) 010-4001,open ticket\n' +
+    'bravo@invented-domain.test,(555) 010-4002,in review\n';
+  return Buffer.from(csv, 'utf8');
+}
+
+describe('CSV column-aware parsing (#35) — TDD red phase', () => {
+  test('csv upload via /api/files returns xlsx-inspection (column UI) not text scrub', async () => {
+    const buf = await buildFixtureCsv();
+    const app = makeApp();
+    const file = bufferToFile(buf, 'records.csv', 'text/csv');
+
+    const res = await app.fetch(makeMultipartRequest('http://127.0.0.1/api/files', [file]));
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as { files: Array<Record<string, unknown>> };
+    expect(j.files).toHaveLength(1);
+
+    const f = j.files[0];
+    // DESIRED: now gets the column review path so user can ignore/allow whole columns
+    expect(f.kind).toBe('xlsx-inspection');
+    expect(f.name).toBe('records.csv');
+    expect(typeof f.uploadId).toBe('string');
+
+    const sheets = f.sheets as Array<{ name: string; columns: Array<{ header: string }> }>;
+    expect(sheets.length).toBe(1);
+    expect(sheets[0].columns.map((c) => c.header)).toEqual(['Email', 'Phone', 'Notes']);
+  });
+
+  test('csv commit with skip override on Email column leaves raw PII (ignore entire column)', async () => {
+    const buf = await buildFixtureCsv();
+    const app = makeApp();
+    const file = bufferToFile(buf, 'records.csv', 'text/csv');
+    const inspectRes = await app.fetch(
+      makeMultipartRequest('http://127.0.0.1/api/files', [file]),
+    );
+    const { uploadId } = (await inspectRes.json()) as { uploadId: string };
+
+    const commitRes = await app.fetch(
+      makeJsonRequest('http://127.0.0.1/api/files/xlsx/commit', {
+        uploadId,
+        overrides: {
+          Sheet1: { Email: { pattern: 'skip' } },
+        },
+      }),
+    );
+    expect(commitRes.status).toBe(200);
+    const j = (await commitRes.json()) as { ok: boolean; fileName: string; base64: string };
+    expect(j.ok).toBe(true);
+    expect(j.fileName).toBe('records.scrubbed.csv');
+
+    const outCsv = Buffer.from(j.base64, 'base64').toString('utf8');
+    // Because we skipped the column, raw email addresses must still be present
+    expect(outCsv).toContain('alpha@invented-domain.test');
+    expect(outCsv).toContain('bravo@invented-domain.test');
+    // Other columns still scrubbed
+    expect(outCsv).not.toContain('(555) 010-4001');
+  });
+});

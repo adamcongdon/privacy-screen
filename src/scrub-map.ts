@@ -39,6 +39,9 @@ export class ScrubMap {
   // counts per TYPE so we know what the next N is
   private counters = new Map<string, number>();
 
+  // #63 cache: compiled alternation regex for apply(); invalidated on any mint or load.
+  private _applyRegex: RegExp | null = null;
+
   get size(): number {
     return this.realToToken.size;
   }
@@ -69,6 +72,7 @@ export class ScrubMap {
 
     this.realToToken.set(key, token);
     this.tokenToReal.set(token, realValue); // preserve original casing
+    this._applyRegex = null; // #63: invalidate compiled apply regex on map mutation
     return { token, isNew: true };
   }
 
@@ -106,6 +110,7 @@ export class ScrubMap {
       const cur = this.counters.get(type) ?? 0;
       if (n > cur) this.counters.set(type, n);
     }
+    this._applyRegex = null; // #63: invalidate compiled apply regex on load (repopulates map)
   }
 
   /**
@@ -115,17 +120,22 @@ export class ScrubMap {
   apply(text: string): string {
     if (this.realToToken.size === 0) return text;
 
-    // Sort entries longest-first so "Acme Corp" wins over "Acme"
-    const entries = [...this.realToToken.entries()].sort(
-      (a, b) => b[0].length - a[0].length,
-    );
+    if (!this._applyRegex) {
+      // #63: build once, memoized until next mint/loadFromRows.
+      // Sort entries longest-first so "Acme Corp" wins over "Acme"
+      const entries = [...this.realToToken.entries()].sort(
+        (a, b) => b[0].length - a[0].length,
+      );
 
-    // Build alternation regex from escaped real values (case-insensitive)
-    const pattern = entries
-      .map(([k]) => `(?<![\\w])${escapeRegex(k)}(?![\\w])`)
-      .join('|');
+      // Build alternation regex from escaped real values (case-insensitive)
+      const pattern = entries
+        .map(([k]) => `(?<![\\p{L}\\p{N}_])${escapeRegex(k)}(?![\\p{L}\\p{N}_])`)
+        .join('|');
 
-    const rx = new RegExp(pattern, 'gi');
+      this._applyRegex = new RegExp(pattern, 'giu');
+    }
+
+    const rx = this._applyRegex;
     return text.replace(rx, (match) => {
       const token = this.realToToken.get(match.toLowerCase());
       return token ?? match;

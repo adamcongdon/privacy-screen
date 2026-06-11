@@ -350,3 +350,56 @@ describe('hook contract — error handling', () => {
     expect(out.stderr).toContain('exceeds');
   });
 });
+
+// ── CLI scrub pipe (issue #100 / HOOK-08) ─────────────────────────────────────
+
+/**
+ * CLI pipe test for scrub command (TDD for HOOK-08).
+ * Self-contained: fresh $HOME temp per call (using imported mkdtempSync etc)
+ * so defaultDbPath resolves isolated inside child. No dep on hook workDir.
+ * Spawns exactly `bun cli/PrivacyScreen.ts scrub`, pipes raw text, asserts
+ * tokenized (not silent empty from the readFileSync bug).
+ */
+const CLI_PATH = new URL('../cli/PrivacyScreen.ts', import.meta.url).pathname;
+
+async function runCliScrub(inputText: string): Promise<{exitCode: number; stdout: string; stderr: string}> {
+  const home = mkdtempSync(join(tmpdir(), 'ps-cli-100-'));
+  try {
+    const proc = Bun.spawn(['bun', CLI_PATH, 'scrub'], {
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: { ...process.env, HOME: home },
+    });
+    proc.stdin.write(inputText);
+    await proc.stdin.end();
+    const stdout = await new Response(proc.stdout).text();
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
+    return { exitCode, stdout, stderr };
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+describe('cli scrub pipe', () => {
+  test('piped PII produces tokenized output (not silent empty result)', async () => {
+    const out = await runCliScrub('Contact alice@example.com at 10.0.0.1');
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain('── Scrubbed output ──────────────────────────────');
+    const scrubbedBody = out.stdout.split('── Token map')[0] ?? out.stdout;
+    expect(scrubbedBody).not.toContain('alice@example.com');
+    expect(scrubbedBody).not.toContain('10.0.0.1');
+    expect(scrubbedBody).toMatch(/\{EMAIL\}/);
+    expect(scrubbedBody).toMatch(/\{IP\}/);
+    expect(out.stdout).toContain('── Token map ────────────────────────────────────');
+  });
+
+  test('empty/no-input to cli scrub → explicit error + exit 1 (covers the silent-empty bug)', async () => {
+    const out = await runCliScrub('');
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain('No input received');
+    expect(out.stderr).toContain('echo "my text" | bun cli/PrivacyScreen.ts scrub');
+    expect(out.stdout).not.toContain('── Scrubbed output ──────────────────────────────');
+  });
+});

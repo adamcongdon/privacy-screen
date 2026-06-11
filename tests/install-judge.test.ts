@@ -44,6 +44,43 @@ function deps(hooks: DepHooks = {}): InstallJudgeDeps {
     fsWrite: (p, data) => {
       writes.set(p, data);
     },
+    fsCreateWriteStream: (p) => {
+      if (!p.endsWith('.partial')) {
+        return {
+          write: (d: Uint8Array | Buffer) => { writes.set(p, d instanceof Uint8Array ? d : new Uint8Array(d)); },
+          end: (cb?: () => void) => { if (cb) cb(); },
+          on: (_e: string, _cb: (e?: Error) => void) => {},
+        };
+      }
+      const partials = (globalThis as any).__fable72_partials || ((globalThis as any).__fable72_partials = new Map<string, Uint8Array>());
+      partials.set(p, new Uint8Array(0));
+      return {
+        write: (d: Uint8Array | Buffer) => {
+          const cur = partials.get(p) || new Uint8Array(0);
+          const add = d instanceof Uint8Array ? d : new Uint8Array(d);
+          const next = new Uint8Array(cur.length + add.length);
+          next.set(cur); next.set(add, cur.length);
+          partials.set(p, next);
+        },
+        end: (cb?: () => void) => { if (cb) cb(); },
+        on: (_e: string, _cb: (e?: Error) => void) => {},
+      };
+    },
+    fsRename: (oldPath, newPath) => {
+      const partials = (globalThis as any).__fable72_partials;
+      if (oldPath.endsWith('.partial') && partials && partials.has(oldPath)) {
+        writes.set(newPath, partials.get(oldPath)!);
+        partials.delete(oldPath);
+      } else if (writes.has(oldPath)) {
+        writes.set(newPath, writes.get(oldPath)!);
+        writes.delete(oldPath);
+      }
+    },
+    fsUnlink: (p) => {
+      writes.delete(p);
+      const partials = (globalThis as any).__fable72_partials;
+      if (partials) partials.delete(p);
+    },
     whichLlamaServer: () => hooks.whichResult ?? null,
     platform: () => hooks.platform ?? 'darwin',
   };
@@ -184,7 +221,7 @@ describe('install-judge — model download', () => {
     const mkdirs = new Set<string>();
 
     const r = await runInstallJudge(
-      ['--model', 'qwen2.5-1.5b', '--allow-network'],
+      ['--model', 'qwen2.5-1.5b', '--allow-network', '--expected-sha256', sha256(fakeBody)],
       deps({
         fetchResponse: async () => asResponse(fakeBody, 200),
         writes,
@@ -273,7 +310,7 @@ describe('install-judge — model download', () => {
     const fakeBody = new TextEncoder().encode('fake');
     const mkdirs = new Set<string>();
     const r = await runInstallJudge(
-      ['--model', 'qwen2.5-1.5b', '--allow-network'],
+      ['--model', 'qwen2.5-1.5b', '--allow-network', '--expected-sha256', sha256(fakeBody)],
       deps({
         fetchResponse: async () => asResponse(fakeBody, 200),
         fsExistsResult: (p) => p === MODEL_DIR,
@@ -287,7 +324,7 @@ describe('install-judge — model download', () => {
   test('success message tells user what YAML to add', async () => {
     const fakeBody = new TextEncoder().encode('fake');
     const r = await runInstallJudge(
-      ['--model', 'qwen2.5-1.5b', '--allow-network'],
+      ['--model', 'qwen2.5-1.5b', '--allow-network', '--expected-sha256', sha256(fakeBody)],
       deps({
         fetchResponse: async () => asResponse(fakeBody, 200),
       }),
@@ -296,5 +333,42 @@ describe('install-judge — model download', () => {
     expect(r.message).toContain('llm_validate:');
     expect(r.message).toContain('enabled: true');
     expect(r.message).toContain(`model_path: ${DEFAULT_MODEL_DEST}`);
+  });
+
+  // #72 (JDG-08) streaming TDD tests (inside describe so collected). Written in RED phase.
+  // TDD for ONLY #68 (pre any edit to cli/install-judge.ts): size out-of-band and default (no flag) tamper both refuse write.
+  test('size out-of-band (far from expectedSizeBytes) refuses to write (default path, no flag)', async () => {
+    const fakeBody = new TextEncoder().encode('tiny-tampered-payload');
+    const writes = new Map<string, Uint8Array>();
+
+    const r = await runInstallJudge(
+      ['--model', 'qwen2.5-1.5b', '--allow-network'],
+      deps({
+        fetchResponse: async () => asResponse(fakeBody, 200),
+        writes,
+      }),
+    );
+
+    expect(r.ok).toBe(false);
+    expect((r.stderrMessage || '').toLowerCase()).toMatch(/size|sanity|band|out.of.band/);
+    expect(writes.size).toBe(0);
+  });
+
+  test('byte-flipped/tampered payload (default verify, no --expected-sha256 flag) refuses to write, no model_path wired (for CLI: success only prints snippet)', async () => {
+    const fakeBody = new TextEncoder().encode('tampered-bytes-that-will-never-match-the-pinned-sha');
+    const writes = new Map<string, Uint8Array>();
+
+    const r = await runInstallJudge(
+      ['--model', 'qwen2.5-1.5b', '--allow-network'],
+      deps({
+        fetchResponse: async () => asResponse(fakeBody, 200),
+        writes,
+      }),
+    );
+
+    expect(r.ok).toBe(false);
+    const msg = (r.stderrMessage || '').toLowerCase();
+    expect(msg).toMatch(/sha-256 mismatch|size sanity band/);
+    expect(writes.size).toBe(0);
   });
 });

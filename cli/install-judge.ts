@@ -41,6 +41,14 @@ export interface InstallJudgeDeps {
   fsExists: (path: string) => boolean;
   fsMkdir: (path: string) => void;
   fsWrite: (path: string, data: Uint8Array) => void;
+  /** Streaming + atomic install support (for #72: no full-RAM buffer, .partial + rename after hash). */
+  fsCreateWriteStream: (path: string) => {
+    write: (data: Uint8Array | Buffer) => void;
+    end: (cb?: () => void) => void;
+    on: (event: 'finish' | 'error', cb: (err?: Error) => void) => void;
+  };
+  fsRename: (oldPath: string, newPath: string) => void;
+  fsUnlink: (path: string) => void;
   /** Returns `which llama-server` output or null if not on PATH. */
   whichLlamaServer: () => string | null;
   /** OS for runtime-install hints. */
@@ -51,6 +59,7 @@ export interface InstallJudgeDeps {
 export interface ModelEntry {
   url: string;
   expectedSizeBytes: number; // approximate, used for sanity check + UI
+  expectedSha256: string; // JDG-04: pinned; verified by default (flag overrides)
   description: string;
 }
 
@@ -58,6 +67,8 @@ export const MODELS: Record<string, ModelEntry> = {
   'qwen2.5-1.5b': {
     url: 'https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf',
     expectedSizeBytes: 986_000_000,
+    expectedSha256:
+      '1adf0b11065d8ad2e8123ea110d1ec956dab4ab038eab665614adba04b6c3370',
     description:
       'Qwen2.5-1.5B-Instruct Q4_K_M — Apache 2.0, 29 languages, ~1 GB on disk',
   },
@@ -251,19 +262,34 @@ async function runModel(
     };
   }
 
-  const actualSha = sha256Hex(body);
-  if (parsed.expectedSha256) {
-    if (actualSha.toLowerCase() !== parsed.expectedSha256.toLowerCase()) {
+  // JDG-04: size sanity band + default sha verify from manifest (flag is override).
+  if (!parsed.expectedSha256) {
+    const expectedSize = entry.expectedSizeBytes;
+    const sizeTolerance = Math.floor(expectedSize * 0.05);
+    if (Math.abs(body.byteLength - expectedSize) > sizeTolerance) {
       return {
         ok: false,
         stderrMessage:
-          'install-judge: SHA-256 mismatch — refusing to write file.\n' +
-          `  expected: ${parsed.expectedSha256}\n` +
-          `  actual:   ${actualSha}\n` +
-          '  If you trust the source, drop --expected-sha256 to accept on first use.\n',
+          'install-judge: size sanity band violation — refusing to write file.\n' +
+          `  expected: ~${expectedSize} (±5%)\n` +
+          `  actual:   ${body.byteLength}\n`,
         message: '',
       };
     }
+  }
+
+  const actualSha = sha256Hex(body);
+  const expectedSha = parsed.expectedSha256 ?? entry.expectedSha256;
+  if (expectedSha && actualSha.toLowerCase() !== expectedSha.toLowerCase()) {
+    return {
+      ok: false,
+      stderrMessage:
+        'install-judge: SHA-256 mismatch — refusing to write file.\n' +
+        `  expected: ${expectedSha}\n` +
+        `  actual:   ${actualSha}\n` +
+        '  (pinned in manifest; pass --expected-sha256 to override for testing/custom)\n',
+      message: '',
+    };
   }
 
   try {
@@ -288,13 +314,14 @@ function planMessage(
   destPath: string,
   parsed: ParsedArgs,
 ): string {
+  const shownSha = parsed.expectedSha256 ?? entry.expectedSha256;
   return (
     `── Dry run: install-judge --model ${name} ──\n` +
     `  Source:   ${entry.url}\n` +
     `  Size:     ~${Math.round(entry.expectedSizeBytes / 1_000_000)} MB\n` +
     `  Dest:     ${destPath}\n` +
     `  Network:  ${parsed.allowNetwork ? 'allowed' : '⚠️  requires --allow-network'}\n` +
-    `  SHA-256:  ${parsed.expectedSha256 ?? '(will be printed after download for manual verification)'}\n` +
+    `  SHA-256:  ${shownSha} ${parsed.expectedSha256 ? '(override)' : '(pinned in manifest)'}\n` +
     `\nRe-run without --dry-run when ready.\n`
   );
 }
