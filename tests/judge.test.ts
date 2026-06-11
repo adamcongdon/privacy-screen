@@ -718,3 +718,36 @@ describe('runJudge — multi-chunk happy paths (accumulation, maxSpans saturatio
     expect(res.spans[0].reason).toBe('seen in chunk1'); // first one wins
   });
 });
+
+describe('chunkText — no dropped tail (JDG-02 / #66)', () => {
+  const MAX = 1800;
+
+  test('single-pass short input is returned whole', () => {
+    const text = 'a'.repeat(50);
+    expect(judgeInternals.chunkText(text, MAX)).toEqual([text]);
+  });
+
+  test('a sub-MIN_INPUT_LENGTH trailing remainder is NOT dropped', () => {
+    // Build word-separated input (so the word-boundary cut works) that splits
+    // into one full chunk plus a short tail (< 24 chars) holding a full email.
+    // The tail was previously silently dropped (JDG-02).
+    const head = ('word '.repeat(380)).trim(); // ~1899 chars, well over MAX
+    const tail = 'joe@acme.com'; // 12 chars, < MIN_INPUT_LENGTH (24)
+    const text = `${head} ${tail}`;
+
+    const chunks = judgeInternals.chunkText(text, MAX);
+    expect(chunks.length).toBeGreaterThan(1);
+    // Every character of the tail must appear in some chunk.
+    expect(chunks.some((c) => c.includes(tail))).toBe(true);
+  });
+
+  test('concatenated chunk content covers the whole input (no gaps from a short tail)', () => {
+    const head = ('alpha '.repeat(320)).trim(); // ~1919 chars
+    const tail = 'TAILMARKER'; // 10-char short tail
+    const text = `${head} ${tail}`;
+    const chunks = judgeInternals.chunkText(text, MAX);
+    expect(chunks.length).toBeGreaterThan(1);
+    // The entire short tail survives chunking.
+    expect(chunks.join(' ')).toContain(tail);
+  });
+});

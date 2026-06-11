@@ -239,7 +239,7 @@ export function validateAndShape(
  * spans across the overlap are suppressed by the existing `seen` Set
  * in the caller (no behavior change for non-boundary cases).
  */
-function chunkText(text: string, maxChars: number): string[] {
+export function chunkText(text: string, maxChars: number): string[] {
   if (text.length <= maxChars) return [text];
   const chunks: string[] = [];
   let remaining = text;
@@ -255,7 +255,20 @@ function chunkText(text: string, maxChars: number): string[] {
     const nextStart = Math.max(0, cut - CHUNK_OVERLAP_CHARS);
     remaining = remaining.slice(nextStart).trim();
   }
-  if (remaining.length >= MIN_INPUT_LENGTH) chunks.push(remaining);
+  // JDG-02 (#66): never silently drop a trailing remainder. A tail shorter
+  // than MIN_INPUT_LENGTH (up to 23 chars) is still enough to hold a full
+  // email / phone / name; dropping it left that text unjudged and let the
+  // sync auto-approve path call the input "clean". Emit every remaining
+  // character: merge a short tail back onto the previous chunk (so it is
+  // still scanned and the overlap context is preserved), or push it as its
+  // own chunk when there is no previous chunk.
+  if (remaining.length > 0) {
+    if (remaining.length >= MIN_INPUT_LENGTH || chunks.length === 0) {
+      chunks.push(remaining);
+    } else {
+      chunks[chunks.length - 1] = `${chunks[chunks.length - 1]} ${remaining}`.trim();
+    }
+  }
   return chunks;
 }
 
