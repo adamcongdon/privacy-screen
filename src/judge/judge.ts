@@ -22,6 +22,24 @@ import {
 import { looksLikeCodeIdentifier } from '../patterns';
 import type { LlmClient } from './llm-client';
 
+/**
+ * Redact a raw judge response down to a non-reversible shape summary for
+ * debug logging (JDG-01 / #65). Emits only the total length and a coarse
+ * character-class histogram — never any substring of the original text, so
+ * residual PII in the model's spans can never leak through logs.
+ */
+export function summarizeJudgeRaw(raw: string): string {
+  let alpha = 0;
+  let digit = 0;
+  let other = 0;
+  for (const ch of raw) {
+    if (/[A-Za-z]/.test(ch)) alpha++;
+    else if (/[0-9]/.test(ch)) digit++;
+    else other++;
+  }
+  return `len=${raw.length} alpha=${alpha} digit=${digit} other=${other}`;
+}
+
 /** A single span the judge wants the operator to triage. */
 export interface SuspiciousSpan {
   text: string;
@@ -135,7 +153,14 @@ async function runChunk(
   }
 
   const cleaned = stripMarkdownFences(raw);
-  process.stderr.write(`[privacy-screen] judge.raw: ${cleaned}\n`);
+  // JDG-01 (#65): NEVER log the verbatim model response by default — the
+  // suspicious spans are residual PII the scrubber missed, and stderr is
+  // captured into hook transcripts, launchd logs, and CI in cleartext.
+  // Behind PRIVACY_SCREEN_DEBUG_JUDGE=1 we emit only a redacted shape summary
+  // (length + character class), never the raw text.
+  if (process.env.PRIVACY_SCREEN_DEBUG_JUDGE === '1') {
+    process.stderr.write(`[privacy-screen] judge.debug: ${summarizeJudgeRaw(cleaned)}\n`);
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(cleaned);
