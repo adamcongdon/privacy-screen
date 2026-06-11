@@ -28,6 +28,7 @@ const baseCfg: PrivacyConfig = {
   skip_scrub_fields: {},
   update_channel: 'off',
   update_manifest_url: 'https://example.invalid/manifest.json',
+  feedback_relay_url: 'https://privacy-screen-feedback.example.workers.dev',
   llm_validate: {
     enabled: false,
     model_path: null,
