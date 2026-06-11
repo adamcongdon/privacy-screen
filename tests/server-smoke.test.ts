@@ -366,6 +366,37 @@ describe('server smoke — /api/settings', () => {
     expect('key_source' in j).toBe(false);
     expect('anthropic_api_key' in j).toBe(false);
   });
+
+  // SRV-01 (#74): a cross-origin state-mutating POST (even text/plain, no
+  // preflight) must be rejected with 403 and must NOT change the mode.
+  test('cross-origin POST to /api/settings is forbidden (403) and does not mutate mode', async () => {
+    const before = (await (await fetch(api('/api/settings'))).json()) as { mode?: string };
+
+    const forged = await fetch(api('/api/settings'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain', // "simple" request: no CORS preflight
+        Origin: 'http://evil.example.com',
+      },
+      body: JSON.stringify({ mode: 'disabled' }),
+    });
+    expect(forged.status).toBe(403);
+
+    const after = (await (await fetch(api('/api/settings'))).json()) as { mode?: string };
+    expect(after.mode).toBe(before.mode);
+  });
+
+  // SRV-01 (#74): a same-origin POST is still accepted (guard doesn't break
+  // the real UI). 5173 is allowed here because the smoke server runs from a
+  // source checkout (dev web mode).
+  test('same-origin POST to /api/settings is accepted', async () => {
+    const ok = await fetch(api('/api/settings'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: `http://127.0.0.1:${PORT}` },
+      body: JSON.stringify({ model: 'sonnet' }),
+    });
+    expect(ok.status).toBe(200);
+  });
 });
 
 describe('server smoke — /api/files', () => {
