@@ -262,6 +262,16 @@ async function handlePreTool(
     process.exit(2);
   }
 
+  // SCR-02 (#55): a truncated (depth-limited) scan is uncertainty, not safety.
+  // Warn always; in enforce mode block so an unscanned deep subtree can't pass.
+  if (result.truncatedScan) {
+    process.stderr.write(
+      `[PrivacyScreen] ⚠️  ${toolName} input nested too deep to fully scan — ` +
+        `deep subtree redacted.${cfg.mode === 'enforce' ? ' Blocked.' : ''}\n`,
+    );
+    if (cfg.mode === 'enforce') process.exit(2);
+  }
+
   if (!result.modified) return;
 
   const minted = result.mintedTokens.filter((t) => t.isNew).length;
