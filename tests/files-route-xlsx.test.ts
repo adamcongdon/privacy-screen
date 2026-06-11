@@ -223,7 +223,9 @@ describe('POST /api/files/xlsx/inspect', () => {
   test('returns 400 when the extension is wrong', async () => {
     const buf = await buildFixtureXlsx();
     const app = makeApp();
-    const file = bufferToFile(buf, 'records.csv'); // wrong extension
+    // .csv is now a supported columnar format (#35), so use a genuinely
+    // unsupported extension to exercise the wrong-extension rejection path.
+    const file = bufferToFile(buf, 'records.pdf'); // wrong extension
     const res = await app.fetch(
       makeMultipartRequest('http://127.0.0.1/api/files/xlsx/inspect', [file]),
     );
@@ -538,13 +540,21 @@ describe('CSV column-aware parsing (#35) — TDD red phase', () => {
     const inspectRes = await app.fetch(
       makeMultipartRequest('http://127.0.0.1/api/files', [file]),
     );
-    const { uploadId } = (await inspectRes.json()) as { uploadId: string };
+    // /api/files returns { files: [...] }; the uploadId lives on the file entry
+    // (matches the sibling inspection test above), not at the top level.
+    const { files } = (await inspectRes.json()) as {
+      files: Array<{ uploadId: string; sheets: Array<{ name: string }> }>;
+    };
+    const uploadId = files[0].uploadId;
+    // Key the override by the actual sheet name the inspection reported (the UI
+    // does the same) — ExcelJS names a CSV-derived sheet 'sheet1', not 'Sheet1'.
+    const sheetName = files[0].sheets[0].name;
 
     const commitRes = await app.fetch(
       makeJsonRequest('http://127.0.0.1/api/files/xlsx/commit', {
         uploadId,
         overrides: {
-          Sheet1: { Email: { pattern: 'skip' } },
+          [sheetName]: { Email: { pattern: 'skip' } },
         },
       }),
     );

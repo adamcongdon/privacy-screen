@@ -191,17 +191,19 @@ filesXlsxRoute.post('/commit', async (c) => {
         baseConfig: cfg,
       },
       overrides,
+      staged.fileName,
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return c.json({ ok: false, error: `failed to scrub xlsx: ${msg}` }, 500);
+    return c.json({ ok: false, error: `failed to scrub: ${msg}` }, 500);
   }
 
   // Privacy: drop the staged buffer the instant we've successfully produced a
   // scrubbed copy. The frontend has the bytes; we no longer need the original.
   dropUpload(uploadId);
 
-  const scrubbedName = staged.fileName.replace(/\.xlsx$/i, '.scrubbed.xlsx');
+  const isCsvOut = /\.csv$/i.test(staged.fileName);
+  const scrubbedName = staged.fileName.replace(/\.(xlsx|csv)$/i, `.scrubbed.${isCsvOut ? 'csv' : 'xlsx'}`);
   return c.json(
     {
       ok: true,

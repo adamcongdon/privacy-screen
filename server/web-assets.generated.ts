@@ -10,18 +10,5 @@
 // `tsc`. build-release.ts populates it right before the compile step, then
 // resets it to empty (`--empty`) so the working tree stays clean.
 
-import _a0 from "../web/dist/assets/index-B7kBhUNi.js" with { type: 'file' };
-import _a1 from "../web/dist/assets/index-Boppht66.css" with { type: 'file' };
-import _a2 from "../web/dist/index.html" with { type: 'file' };
-import _a3 from "../web/dist/manifest.webmanifest" with { type: 'file' };
-import _a4 from "../web/dist/sw.js" with { type: 'file' };
-
 export interface EmbeddedAsset { route: string; file: string }
-
-export const embeddedAssets: EmbeddedAsset[] = [
-  { route: "/assets/index-B7kBhUNi.js", file: _a0 },
-  { route: "/assets/index-Boppht66.css", file: _a1 },
-  { route: "/index.html", file: _a2 },
-  { route: "/manifest.webmanifest", file: _a3 },
-  { route: "/sw.js", file: _a4 },
-];
+export const embeddedAssets: EmbeddedAsset[] = [];
