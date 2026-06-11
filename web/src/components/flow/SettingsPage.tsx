@@ -409,6 +409,8 @@ function UpdatesCard(): JSX.Element {
   const refreshUpdateStatus = useStore((s) => s.refreshUpdateStatus);
   const pushToast = useStore((s) => s.pushToast);
   const downloadUpdate = useStore((s) => s.downloadUpdate);
+  const applyUpdate = useStore((s) => s.applyUpdate);
+  const updateStatus = useStore((s) => s.updateStatus);
 
   const channel: Channel = (settings?.update_channel ?? 'off') as Channel;
   const currentUrl = settings?.update_manifest_url ?? '';
@@ -433,6 +435,14 @@ function UpdatesCard(): JSX.Element {
     }
   }, [channel]);
 
+  // Pull the latest download/apply state on mount so a download that finished in
+  // a previous session (or is still in flight) surfaces its progress / "ready to
+  // install" state without the user re-checking. The store's download poller
+  // keeps updateStatus fresh while a download is active.
+  useEffect(() => {
+    void refreshUpdateStatus();
+  }, [refreshUpdateStatus]);
+
   const off = channel === 'off';
   const canon = channel === 'off' ? '' : UPDATE_CANONICAL_URLS[channel];
   const draftValid = /^https:\/\/\S+$/i.test(draft.trim());
@@ -440,6 +450,22 @@ function UpdatesCard(): JSX.Element {
   const isCanon = draft.trim() === canon;
 
   const installed = versionInfo?.version ?? '…';
+
+  // ── Download / apply lifecycle (server truth via store.updateStatus) ────────
+  // The redesign shipped only a "Download" button and never rendered what
+  // happens after: the staged-and-verified "ready to install" state. These
+  // derive the three action states (download → downloading → ready) so the UI
+  // reflects the backend's download.active / readyToApply / canAutoApply.
+  const dl = updateStatus?.download;
+  const downloading = dl?.active === true;
+  const downloadedReady = updateStatus?.readyToApply === true;
+  const canAutoApply = updateStatus?.canAutoApply === true;
+  const dlPct =
+    dl && dl.totalBytes > 0
+      ? Math.min(100, Math.round((dl.bytesDownloaded / dl.totalBytes) * 100))
+      : 0;
+  const fmtMb = (n: number): string => `${(n / 1024 / 1024).toFixed(1)} MB`;
+  const stagedVersion = dl?.version ?? versionInfo?.updateInfo?.version ?? '';
 
   const onChannel = (c: Channel) => {
     if (c === channel) return;
@@ -603,6 +629,15 @@ function UpdatesCard(): JSX.Element {
   if (status === 'notfound' && channel === 'beta') {
     displayDesc = 'No release manifest found at this URL — use the recommended beta URL or check your custom source.';
   }
+  // Reflect download/apply progress in the panel copy so "available" doesn't read
+  // as if nothing happened after the user already downloaded.
+  if (status === 'available') {
+    if (downloadedReady) {
+      displayDesc = `Downloaded ${stagedVersion} — verified and ready to install. Nothing changes until you click Install.`;
+    } else if (downloading) {
+      displayDesc = `Downloading ${stagedVersion}… ${dlPct}%`;
+    }
+  }
 
   const StatusIcon = cfg.ic;
 
@@ -762,29 +797,71 @@ function UpdatesCard(): JSX.Element {
             <div className="mt-0.5 break-all font-mono text-[10px] text-text-faint">{triedUrl}</div>
           )}
 
-          {/* Inline actions for terminal states */}
+          {/* Inline actions for terminal states. Primary action is download-state
+              aware: Download → Downloading (progress) → Install & restart. */}
           {cfg.showActions === 'available' && v?.updateInfo && (
-            <div className="mt-2 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => void downloadUpdate()}
-                className="flex items-center gap-1.5 rounded-[8px] bg-[var(--acc)] px-2.5 py-1 text-[12px] font-semibold text-[var(--acc-ink)]"
-              >
-                <Download size={13} aria-hidden="true" /> Download {v.updateInfo.version}
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  window.open(
-                    v.updateInfo?.notesUrl || 'https://github.com/adamcongdon/privacy-screen/releases',
-                    '_blank',
-                    'noopener',
+            <div className="mt-2 flex flex-col gap-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                {downloadedReady ? (
+                  canAutoApply ? (
+                    <button
+                      type="button"
+                      onClick={() => void applyUpdate()}
+                      className="flex items-center gap-1.5 rounded-[8px] bg-[var(--acc)] px-2.5 py-1 text-[12px] font-semibold text-[var(--acc-ink)]"
+                    >
+                      <RefreshCw size={13} aria-hidden="true" /> Install &amp; restart{' '}
+                      {stagedVersion}
+                    </button>
+                  ) : (
+                    <span className="text-[11.5px] text-text-dim">
+                      Downloaded to{' '}
+                      <span className="break-all font-mono">{dl?.stagedPath}</span> — replace
+                      the app manually to finish installing.
+                    </span>
                   )
-                }
-                className="flex items-center gap-1.5 rounded-[8px] border border-border bg-transparent px-2.5 py-1 text-[12px] font-medium text-text-dim hover:bg-surface-2"
-              >
-                Release notes
-              </button>
+                ) : downloading ? (
+                  <button
+                    type="button"
+                    disabled
+                    className="flex items-center gap-1.5 rounded-[8px] bg-[var(--acc)] px-2.5 py-1 text-[12px] font-semibold text-[var(--acc-ink)] opacity-70"
+                  >
+                    <RefreshCw size={13} aria-hidden="true" className="animate-spin" />
+                    Downloading… {dlPct}%
+                    {dl && dl.totalBytes > 0 ? ` (${fmtMb(dl.bytesDownloaded)} / ${fmtMb(dl.totalBytes)})` : ''}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void downloadUpdate()}
+                    className="flex items-center gap-1.5 rounded-[8px] bg-[var(--acc)] px-2.5 py-1 text-[12px] font-semibold text-[var(--acc-ink)]"
+                  >
+                    <Download size={13} aria-hidden="true" /> Download {v.updateInfo.version}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() =>
+                    window.open(
+                      v.updateInfo?.notesUrl || 'https://github.com/adamcongdon/privacy-screen/releases',
+                      '_blank',
+                      'noopener',
+                    )
+                  }
+                  className="flex items-center gap-1.5 rounded-[8px] border border-border bg-transparent px-2.5 py-1 text-[12px] font-medium text-text-dim hover:bg-surface-2"
+                >
+                  Release notes
+                </button>
+              </div>
+              {downloadedReady && canAutoApply && (
+                <span className="text-[11px] text-text-faint">
+                  Verified (SHA-256). The app swaps the binary and relaunches.
+                </span>
+              )}
+              {dl?.error && (
+                <span className="text-[11px]" style={{ color: 'var(--danger)' }}>
+                  Download failed: {dl.error}
+                </span>
+              )}
             </div>
           )}
           {cfg.showActions === 'notfound' && channel === 'stable' && (
