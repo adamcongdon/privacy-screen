@@ -130,6 +130,39 @@ describe('VocabStore', () => {
     expect(store.pendingReview().length).toBe(0);
   });
 
+  // #116 — review queue dedup + drop already-approved values.
+  test('pendingReview drops a span already approved in Vocabulary', () => {
+    // Already confirmed → has a vocab token.
+    store.persistMint('my.host.lab.local', '{FQDN}', 'fqdn', 1.0);
+    store.addReviewItem({
+      span: 'my.host.lab.local',
+      surrounding: 'Go to my.host.lab.local Thanks,',
+      suggested_cat: 'fqdn',
+      confidence: 0.8,
+      source_event: 'judge:userPromptSubmit',
+    });
+    const pending = store.pendingReview();
+    expect(pending.some((p) => p.span === 'my.host.lab.local')).toBe(false);
+  });
+
+  test('pendingReview deduplicates overlapping/substring spans to one canonical entry', () => {
+    const full = 'my.host.lab.local';
+    for (const span of [full, full, 'my.host.l', 'my.host.', full]) {
+      store.addReviewItem({
+        span,
+        surrounding: `Go to ${span}`,
+        suggested_cat: 'fqdn',
+        confidence: 0.8,
+        source_event: 'judge:userPromptSubmit',
+      });
+    }
+    const pending = store.pendingReview();
+    // Exactly one canonical entry for the family, and it's the full value.
+    const family = pending.filter((p) => full.startsWith(p.span) || p.span.startsWith(full.slice(0, 3)));
+    expect(family.length).toBe(1);
+    expect(family[0].span).toBe(full);
+  });
+
   test('addReviewItem returns true and persists when no allowlist match', () => {
     const inserted = store.addReviewItem({
       span: 'NewCustomer Ltd',
