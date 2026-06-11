@@ -4,9 +4,10 @@
  * section that has working API wiring.
  *
  * Reused logic / store surface (verified against store.ts + api.ts):
- *   - Screening mode  → store.mode / store.setMode  (CLIENT-SIDE ONLY — there is
- *       no /api/settings mode field; setMode re-runs refreshScrub. See store.ts
- *       ScreenMode docs. We do NOT fabricate an API call.)
+ *   - Screening mode  → store.mode / store.setMode  (persists to
+ *       PRIVACY_CONFIG.yaml via saveSettings({ mode }) → POST /api/settings, then
+ *       re-runs refreshScrub. GET /api/settings returns `mode`. See store.ts
+ *       ScreenMode docs.)
  *   - Customer names  → store.addCustomerName(name)  (api.addVocab as 'customer')
  *                       + store.forgetVocab(realValue) for removal. The chip list
  *                       is derived from vocab rows whose category === 'customer'.
