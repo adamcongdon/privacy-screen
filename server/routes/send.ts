@@ -19,11 +19,36 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { scrubText } from '../../src/scrubber';
+import type { ScrubMap } from '../../src/scrub-map';
+import type { VocabStore } from '../../src/vocab';
+import type { PrivacyConfig } from '../../src/config';
 import { getMap, getVocab } from '../lib/vocab-store';
 import { loadConfig } from '../../src/config';
+import { publicSettings } from '../secrets';
 import { streamChat, type ChatMessage } from '../providers/claude-code';
 
 export const sendRoute = new Hono();
+
+/**
+ * SRV-04 (#77): resolve the system prompt for the send path. The saved
+ * settings.system_prompt can itself contain PII, so it MUST be scrubbed with
+ * the same credential gate as message content before it reaches the provider.
+ * Returns the scrubbed prompt, or a credential signal so the caller can refuse
+ * to relay. An empty/whitespace prompt resolves to undefined (no system arg).
+ */
+export function resolveSystemPrompt(
+  raw: string | undefined,
+  map: ScrubMap,
+  vocab: VocabStore | null,
+  cfg: PrivacyConfig,
+): { system?: string; hasCredentials: boolean; credentialSnippets: string[] } {
+  if (!raw || !raw.trim()) return { hasCredentials: false, credentialSnippets: [] };
+  const result = scrubText(raw, map, vocab, { sourceEvent: 'app:send:system', config: cfg });
+  if (result.hasCredentials) {
+    return { hasCredentials: true, credentialSnippets: result.credentialSnippets };
+  }
+  return { system: result.scrubbed, hasCredentials: false, credentialSnippets: [] };
+}
 
 sendRoute.post('/', async (c) => {
   const body = await c.req.json().catch(() => ({}));
@@ -61,6 +86,20 @@ sendRoute.post('/', async (c) => {
     });
   }
 
+  // SRV-04 (#77): wire the saved system prompt into the send path — scrubbed,
+  // behind the same credential gate. Previously it was persisted but ignored.
+  const sys = resolveSystemPrompt(publicSettings().system_prompt, map, vocab, cfg);
+  if (sys.hasCredentials) {
+    return c.json(
+      {
+        error: 'credential detected',
+        credentialSnippets: sys.credentialSnippets,
+        message: 'A credential was detected in the saved system prompt. Remove it in Settings before sending.',
+      },
+      400,
+    );
+  }
+
   return streamSSE(c, async (stream) => {
     let closed = false;
     const safeWrite = async (event: string, data: unknown): Promise<void> => {
@@ -71,7 +110,7 @@ sendRoute.post('/', async (c) => {
     await new Promise<void>((resolve) => {
       streamChat(
         scrubbedMessages,
-        { model: body.model, maxTokens: body.maxTokens },
+        { model: body.model, maxTokens: body.maxTokens, system: sys.system },
         {
           onText: (delta) => {
             void safeWrite('text', { delta });
