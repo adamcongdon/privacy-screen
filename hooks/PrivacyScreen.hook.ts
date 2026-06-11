@@ -280,9 +280,19 @@ async function handlePreTool(
     `[PrivacyScreen] 🔒 Anonymized ${result.mintedTokens.length} PII token(s) in ${toolName} input.\n`,
   );
 
+  // HOOK-05 (#97): emit the FULL PreToolUse hookSpecificOutput envelope per
+  // the documented Claude Code schema. Previously hookEventName and
+  // permissionDecision were omitted; if a CC version validates the envelope
+  // and ignores a partial one, the original un-scrubbed input would run and
+  // persist while the hook believed it mutated — an invisible fail-open on
+  // contract drift.
   console.log(
     JSON.stringify({
-      hookSpecificOutput: { updatedInput: scrubbedInput },
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        updatedInput: scrubbedInput,
+      },
     }),
   );
 

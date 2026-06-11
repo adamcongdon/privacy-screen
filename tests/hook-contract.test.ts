@@ -162,6 +162,26 @@ describe('hook contract — PreToolUse', () => {
     expect(JSON.stringify(out.parsed)).not.toContain('10.55.44.33');
   });
 
+  // HOOK-05 (#97): the mutation envelope must carry the full documented schema
+  // fields (hookEventName + permissionDecision), not just updatedInput, so a
+  // schema-validating CC version applies the scrubbed input instead of
+  // silently running the original (invisible fail-open on contract drift).
+  test('PreToolUse mutation envelope carries full documented schema', async () => {
+    writeFile('enforce');
+    const out = await runHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'ping 10.55.44.33' },
+    });
+    expect(out.parsed).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        updatedInput: { command: expect.stringContaining('{IP') },
+      },
+    });
+  });
+
   test('Bash with credential → exit 2 (block)', async () => {
     writeFile('enforce');
     const out = await runHook({
