@@ -330,3 +330,48 @@ describe('SCR-10 allowlist cache TDD', () => {
     expect(store.isAllowlisted('re-bar-99')).toBe(false);
   });
 });
+
+describe('VocabStore — concurrent minting (SCR-03 #56)', () => {
+  const DB = '/tmp/pai-privacy-vocab-concurrent.db';
+  beforeEach(() => { if (existsSync(DB)) unlinkSync(DB); });
+  afterEach(() => { if (existsSync(DB)) unlinkSync(DB); });
+
+  test('two stores minting the SAME token for DIFFERENT values produce zero dup tokens and zero throws', () => {
+    const a = new VocabStore(DB);
+    const b = new VocabStore(DB);
+    try {
+      // Both independently compute "{CUSTOMER}" for different real values
+      // (the cross-process collision scenario). One must get re-tokenized.
+      const tokA = a.persistMint('Alpha Co', '{CUSTOMER}', 'customer', 1.0);
+      const tokB = b.persistMint('Beta Co', '{CUSTOMER}', 'customer', 1.0);
+      expect(tokA).not.toBe(tokB); // distinct tokens, no collision
+
+      // Interleave many more.
+      for (let i = 0; i < 20; i++) {
+        a.persistMint(`Gamma ${i}`, '{CUSTOMER}', 'customer', 1.0);
+        b.persistMint(`Delta ${i}`, '{CUSTOMER}', 'customer', 1.0);
+      }
+
+      const rows = a.allVocab();
+      const tokens = rows.map((r) => r.token);
+      // Zero duplicate tokens in the DB.
+      expect(new Set(tokens).size).toBe(tokens.length);
+      // Every real value persisted (42 distinct).
+      expect(new Set(rows.map((r) => r.real_value)).size).toBe(42);
+    } finally {
+      a.close();
+      b.close();
+    }
+  });
+
+  test('idempotent re-mint of the same value keeps its token (no churn)', () => {
+    const a = new VocabStore(DB);
+    try {
+      const t1 = a.persistMint('Repeat Co', '{CUSTOMER}', 'customer', 1.0);
+      const t2 = a.persistMint('Repeat Co', '{CUSTOMER}', 'customer', 1.0);
+      expect(t2).toBe(t1);
+    } finally {
+      a.close();
+    }
+  });
+});
