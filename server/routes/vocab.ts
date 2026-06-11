@@ -54,6 +54,18 @@ vocabRoute.post('/', async (c) => {
   return c.json({ realValue: real, token: r.token, isNew: r.isNew });
 });
 
+// Bulk clear (issue #87 WEB-05) registered early so it takes precedence for the exact root path.
+vocabRoute.delete('/', (c) => {
+  if (rateLimited(getClientIp(c))) return c.json({ error: 'rate limited' }, 429);
+  const vs = getVocab();
+  const deleted = vs.clearAll();
+  // Capture remaining from *this* instance (post-delete, pre-reset) to avoid reload races.
+  // Bulk purge does not auto-allowlist values (user intent is "delete my data", not "never tokenize these again").
+  const remaining = vs.allVocab().length;
+  resetVocab();
+  return c.json({ deleted, remaining });
+});
+
 const ALLOWLIST_MIN_LEN = 4;
 
 vocabRoute.delete('/:realValue', (c) => {

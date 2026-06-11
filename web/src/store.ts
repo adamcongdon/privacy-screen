@@ -415,7 +415,11 @@ type State = {
     type?: string,
   ) => Promise<void>;
   addCustomerName: (name: string) => Promise<void>;
-  forgetVocab: (realValue: string) => Promise<void>;
+  /** #88: support optional toastLabel so callers (masked rows in VocabularyPage) can
+   * reference by *token* in the success toast instead of realValue. Legacy callers
+   * (Settings chips, DataPrivacy clear) continue to pass 1 arg and see the real (as
+   * those surfaces intentionally display the value). */
+  forgetVocab: (realValue: string, toastLabel?: string) => Promise<void>;
   /** Mint a selected span as a specific category — drives the context-menu UX. */
   mintSelection: (value: string, category: string) => Promise<void>;
 
@@ -1156,11 +1160,15 @@ export const useStore = create<State>((set, get) => {
     }
   },
 
-  forgetVocab: async (realValue) => {
+  forgetVocab: async (realValue, toastLabel) => {
     try {
       await api.forgetVocab(realValue);
       await Promise.all([get().refreshVocab(), get().refreshScrub()]);
-      get().pushToast('success', `forgot "${realValue}"`);
+      // #88: when masked row triggers, pass token as toastLabel so toast never
+      // leaks the real value. When omitted (or falsy), fall back to realValue
+      // for legacy callers where the value is visible.
+      const label = toastLabel || realValue;
+      get().pushToast('success', `forgot "${label}"`);
     } catch (err) {
       get().pushToast(
         'error',

@@ -1,26 +1,22 @@
 /**
- * /api/files/xlsx — direct endpoints for the two-step xlsx flow (#23, Segment 3C2).
+ * /api/files/xlsx — direct endpoints for the two-step columnar flow (#23 + #35).
+ *
+ * The path name is historical ("xlsx") but the endpoints now serve both .xlsx
+ * *and* .csv uploads. This is the "xlsx or csv scrub path" that delivers the
+ * per-column ignore / allow / individual options for CSV parsing.
  *
  * Two endpoints:
  *
- *   POST /inspect — multipart upload. Validates extension + size, parses the
- *     workbook via `inspectXlsx`, stages the raw bytes in
- *     `server/lib/xlsx-uploads.ts`, and returns sheet/header inventory + an
- *     `uploadId` the frontend will pass back to /commit.
+ *   POST /inspect — multipart upload. Accepts .xlsx or .csv, parses via
+ *     `inspectXlsx` (which now branches on ext for load), stages bytes, returns
+ *     inspection + uploadId.
  *
- *   POST /commit  — JSON body `{ uploadId, overrides? }`. Resolves the staged
- *     buffer, validates the overrides shape (PatternName | 'skip' | 'regex'
- *     per column), runs `scrubXlsx` with the merged config, drops the staged
- *     buffer, and returns the scrubbed bytes as base64 + a summary.
+ *   POST /commit  — JSON body `{ uploadId, overrides? }`. ... runs `scrubXlsx`
+ *     (which writes back in the original format), returns base64 + scrubbedName
+ *     (e.g. records.scrubbed.csv).
  *
- * The dispatch from `POST /api/files` (multipart, legacy text-only entry
- * point) also stages xlsx uploads here — see `server/routes/files.ts`. Both
- * paths converge on the same `stageUpload` / `getUpload` store, so a
- * front-end can use either entry point to start the flow.
- *
- * Privacy contract: the staged buffer never touches disk. On a successful
- * commit, `dropUpload(uploadId)` is called immediately after the scrub so
- * the raw bytes don't linger in memory beyond the explicit consent step.
+ * `POST /api/files` dispatch (see files.ts) funnels csv/xlsx here for staging.
+ * Same privacy contract: raw bytes never hit disk; dropped right after commit.
  */
 
 import { Hono } from 'hono';
@@ -67,9 +63,11 @@ filesXlsxRoute.post('/inspect', async (c) => {
   }
 
   const name = entry.name || 'unnamed.xlsx';
-  if (!/\.xlsx$/i.test(name)) {
+  const isXlsx = /\.xlsx$/i.test(name);
+  const isCsv = /\.csv$/i.test(name);
+  if (!isXlsx && !isCsv) {
     return c.json(
-      { ok: false, error: `expected .xlsx extension, got '${name}'` },
+      { ok: false, error: `expected .xlsx or .csv extension, got '${name}'` },
       400,
     );
   }
@@ -85,10 +83,11 @@ filesXlsxRoute.post('/inspect', async (c) => {
 
   let inspection;
   try {
-    inspection = await inspectXlsx(buffer);
+    inspection = await inspectXlsx(buffer, undefined, name);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return c.json({ ok: false, error: `failed to parse xlsx: ${msg}` }, 400);
+    const label = isCsv ? 'csv' : 'xlsx';
+    return c.json({ ok: false, error: `failed to parse ${label}: ${msg}` }, 400);
   }
 
   const staged = stageUpload(buffer, name);
@@ -192,17 +191,19 @@ filesXlsxRoute.post('/commit', async (c) => {
         baseConfig: cfg,
       },
       overrides,
+      staged.fileName,
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return c.json({ ok: false, error: `failed to scrub xlsx: ${msg}` }, 500);
+    return c.json({ ok: false, error: `failed to scrub: ${msg}` }, 500);
   }
 
   // Privacy: drop the staged buffer the instant we've successfully produced a
   // scrubbed copy. The frontend has the bytes; we no longer need the original.
   dropUpload(uploadId);
 
-  const scrubbedName = staged.fileName.replace(/\.xlsx$/i, '.scrubbed.xlsx');
+  const isCsvOut = /\.csv$/i.test(staged.fileName);
+  const scrubbedName = staged.fileName.replace(/\.(xlsx|csv)$/i, `.scrubbed.${isCsvOut ? 'csv' : 'xlsx'}`);
   return c.json(
     {
       ok: true,

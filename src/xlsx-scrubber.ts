@@ -331,26 +331,71 @@ function asBuffer(buffer: Buffer | ArrayBuffer): any {
   return Buffer.from(buffer);
 }
 
+/**
+ * Load either an .xlsx buffer (binary) or a .csv buffer (utf8 text) into an
+ * ExcelJS Workbook using the appropriate reader. This lets the *same*
+ * column-resolution + per-cell scrub logic in inspectXlsx/scrubXlsx serve
+ * both file types (#35: CSV now gets the ignore / individual column options
+ * via the existing xlsx scrub path and UI).
+ *
+ * CSV path: synthesizes an in-memory stream (no disk) and uses wb.csv.read.
+ * The resulting workbook has a single worksheet (default name "Sheet1").
+ */
+async function loadWorkbook(
+  buffer: Buffer | ArrayBuffer,
+  fileName = '',
+): Promise<ExcelJS.Workbook> {
+  const wb = new ExcelJS.Workbook();
+  if (/\.csv$/i.test(fileName)) {
+    const { Readable } = await import('stream');
+    const text = asBuffer(buffer).toString('utf8');
+    const stream = Readable.from([text]);
+    await wb.csv.read(stream);
+  } else {
+    await wb.xlsx.load(asBuffer(buffer));
+  }
+  return wb;
+}
+
+/**
+ * Write the (possibly mutated) workbook back to bytes.
+ * Chooses xlsx.writeBuffer or csv.writeBuffer based on original fileName.
+ * Mirrors loadWorkbook so round-tripping a .csv upload produces valid .csv.
+ */
+async function writeWorkbook(
+  wb: ExcelJS.Workbook,
+  fileName = '',
+): Promise<Buffer> {
+  if (/\.csv$/i.test(fileName)) {
+    const arr = await wb.csv.writeBuffer();
+    return Buffer.from(arr as ArrayBuffer);
+  }
+  const arr = await wb.xlsx.writeBuffer();
+  return Buffer.from(arr as ArrayBuffer);
+}
+
 // ── Public: inspectXlsx ──────────────────────────────────────────────────────
 
 /**
  * Inspect a workbook and propose per-column patterns. NO side effects, NO
  * mutation, NO scrubbing. Safe to call on the raw upload buffer.
  *
- * Returns sheets in workbook order. Each sheet lists every column that has
- * a header cell, with the resolved pattern (rule / heuristic / unresolved)
- * and a sample cell value for the UI preview.
+ * Supports both .xlsx and .csv (the latter via the shared exceljs workbook
+ * model so CSV gets the exact same per-column "skip"/"regex"/Pattern options
+ * and UI as xlsx — this is the CSV parse option requested in #35).
  *
- * @param buffer  xlsx file bytes
- * @param config  Optional XlsxConfig (rules + autoDetect). Defaults to
- *                `{ columnRules: [], autoDetect: true }`.
+ * @param buffer   file bytes (xlsx binary or csv utf8 text)
+ * @param config   Optional XlsxConfig (rules + autoDetect). Defaults to
+ *                 `{ columnRules: [], autoDetect: true }`.
+ * @param fileName Optional original name; if it ends in .csv we load via
+ *                 the csv reader instead of xlsx.load.
  */
 export async function inspectXlsx(
   buffer: Buffer | ArrayBuffer,
   config?: XlsxConfig,
+  fileName?: string,
 ): Promise<XlsxInspectResult> {
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(asBuffer(buffer));
+  const wb = await loadWorkbook(buffer, fileName ?? '');
 
   const rules = config?.columnRules ?? [];
   const autoDetect = config?.autoDetect ?? true;
@@ -444,7 +489,7 @@ function applyForceMint(
  * `skip` they're preserved, for `regex` they're left alone (numbers aren't
  * PII surface in the regex layer).
  *
- * @param buffer    xlsx file bytes
+ * @param buffer    file bytes (xlsx or csv)
  * @param map       Shared scrub map (token namespace + counter state)
  * @param vocab     Vocab store for persistence; null = preview (no DB writes)
  * @param config    `{ xlsx, baseConfig }` — xlsx config drives column
@@ -452,6 +497,9 @@ function applyForceMint(
  *                  fallback so it sees the same allowlists / customer names
  *                  the rest of the system uses.
  * @param overrides Optional per-sheet, per-header overrides from the UI.
+ * @param fileName  Optional original filename; determines csv vs xlsx
+ *                  load + write format so CSV uploads get column policies
+ *                  (#35) and round-trip as .scrubbed.csv .
  */
 export async function scrubXlsx(
   buffer: Buffer | ArrayBuffer,
@@ -459,9 +507,9 @@ export async function scrubXlsx(
   vocab: VocabStore | null,
   config: { xlsx: XlsxConfig; baseConfig: PrivacyConfig },
   overrides?: CommitOverrides,
+  fileName?: string,
 ): Promise<XlsxScrubResult> {
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(asBuffer(buffer));
+  const wb = await loadWorkbook(buffer, fileName ?? '');
 
   const rules = config.xlsx.columnRules ?? [];
   const autoDetect = config.xlsx.autoDetect ?? true;
@@ -604,7 +652,6 @@ export async function scrubXlsx(
     }
   });
 
-  const arr = await wb.xlsx.writeBuffer();
-  const out = Buffer.from(arr as ArrayBuffer);
+  const out = await writeWorkbook(wb, fileName ?? '');
   return { scrubbedBuffer: out, summary };
 }

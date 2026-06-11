@@ -47,6 +47,7 @@ import {
 import { useStore } from '../../store';
 import type { ScreenMode } from '../../store';
 import { UPDATE_CANONICAL_URLS } from '../../api';
+import { Segmented, useRovingRadio } from '../ui/Segmented';
 
 /** Section card — 30px rounded icon tile + title + optional description + body. */
 function Card({
@@ -108,9 +109,18 @@ const MODE_ROWS: ReadonlyArray<{
 function ScreeningModeCard(): JSX.Element {
   const mode = useStore((s) => s.mode);
   const setMode = useStore((s) => s.setMode);
+  // Shared roving for vertical mode radiogroup (arrow up/down + Home/End to change mode).
+  // This satisfies "keyboard-only users change mode with arrows".
+  const modeRows = MODE_ROWS.map((r) => ({ value: r.id }));
+  const { getTabIndex, onKeyDown } = useRovingRadio(modeRows, mode, setMode, 'vertical');
   return (
     <Card icon={Zap} title="Screening mode" accent>
-      <div role="radiogroup" aria-label="Screening mode" className="flex flex-col gap-2">
+      <div
+        role="radiogroup"
+        aria-label="Screening mode"
+        className="flex flex-col gap-2"
+        onKeyDown={onKeyDown}
+      >
         {MODE_ROWS.map((row) => {
           const on = mode === row.id;
           return (
@@ -119,6 +129,7 @@ function ScreeningModeCard(): JSX.Element {
               type="button"
               role="radio"
               aria-checked={on}
+              tabIndex={getTabIndex(row.id)}
               onClick={() => setMode(row.id)}
               className="flex w-full items-start gap-2.5 text-left"
               style={{
@@ -626,29 +637,12 @@ function UpdatesCard(): JSX.Element {
       {/* Channel segmented control + description */}
       <div className="mb-3 flex flex-col gap-1.5">
         <span className="text-[11px] font-semibold uppercase tracking-[0.09em] text-text-faint">Channel</span>
-        <div
-          role="radiogroup"
-          aria-label="Update channel"
-          className="inline-flex items-center gap-0.5 rounded-lg border border-border bg-surface-2 p-0.5"
-          style={{ width: 'fit-content' }}
-        >
-          {CHANNELS.map((c) => {
-            const active = channel === c;
-            return (
-              <button
-                key={c}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                onClick={() => onChannel(c)}
-                className="rounded-md px-2.5 py-1 text-[12px] font-medium capitalize transition-colors"
-                style={active ? { background: 'var(--acc-tint)', color: 'var(--acc)' } : { color: 'var(--text-dim)' }}
-              >
-                {c}
-              </button>
-            );
-          })}
-        </div>
+        <Segmented<Channel>
+          label="Update channel"
+          value={channel}
+          onChange={onChannel}
+          options={CHANNELS.map((c) => ({ value: c, label: c }))}
+        />
         <span className="text-[11.5px] leading-[1.45] text-text-faint">
           {channel === 'off' && 'No update checks. Privacy Screen never contacts the network for updates.'}
           {channel === 'stable' && 'Vetted releases from the main branch. Rare, well-tested builds.'}

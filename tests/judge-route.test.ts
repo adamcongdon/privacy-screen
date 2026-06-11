@@ -232,4 +232,87 @@ describe('POST /api/judge', () => {
     expect(hit).toBeDefined();
     expect(hit?.suggested_cat).toBe('person');
   });
+
+  test('multi-chunk via array in PRIVACY_SCREEN_LLM_MOCK_RESPONSE (TDD RED until seam supports it) — accumulation across >1800 char input', async () => {
+    process.env.PRIVACY_SCREEN_LLM_MOCK = '1';
+    // The seam must parse this as *array of response strings* (one per chunk), not wrap the JSON literally.
+    // Each element is the raw string that MockLlmClient.complete() will return for that chunk (what LLM would emit).
+    const respChunk1 = JSON.stringify({
+      suspicious_spans: [{ text: 'Aanya', category: 'person', confidence: 0.92, reason: 'from chunk 1' }],
+    });
+    const respChunk2 = JSON.stringify({
+      suspicious_spans: [{ text: 'Bob', category: 'person', confidence: 0.88, reason: 'from chunk 2' }],
+    });
+    process.env.PRIVACY_SCREEN_LLM_MOCK_RESPONSE = JSON.stringify([respChunk1, respChunk2]);
+
+    // Build >1800 char scrubbed input (two ~950 char parts joined by blank line forces 2 chunks)
+    const longScrubbed =
+      'Customer {CUSTOMER} called and Aanya answered about project. ' + 'X'.repeat(900) +
+      '\n\n' +
+      'Later Bob confirmed the details for follow up. ' + 'Y'.repeat(900);
+
+    // Reset to pick up fresh config.
+    resetVocab();
+    const app = makeApp();
+    const res = await app.fetch(
+      makeRequest({
+        scrubbed: longScrubbed,
+        tokenMap: makeTokenMap(),
+        sourceEvent: 'judge-multi-chunk',
+      }),
+    );
+    expect(res.status).toBe(202);
+
+    // Let microtask + judge run complete.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const pending = getVocab().pendingReview();
+    const aanya = pending.find((r) => r.span === 'Aanya' && r.source_event === 'judge:judge-multi-chunk');
+    const bob = pending.find((r) => r.span === 'Bob' && r.source_event === 'judge:judge-multi-chunk');
+    // Before seam fix this fails because acquireClient([ wholeArrayString ]) causes first complete to return the array-json literal,
+    // which either parses wrong or only one "chunk" effectively runs; second chunk would have hit empty queue error.
+    expect(aanya).toBeDefined();
+    expect(aanya?.suggested_cat).toBe('person');
+    expect(bob).toBeDefined();
+    expect(bob?.suggested_cat).toBe('person');
+  });
+
+  test('TDD for #43 (route): judge code-like false positives (Repository_2, Server_3) do not grow review_queue even when LLM emits them', async () => {
+    // TDD RED before the judge filter edit (fable template). Demonstrates that
+    // without additional false-positive filtering in judge path, these would
+    // have been written (via addReviewItem which already does allowlist gate
+    // from #41, but these are not allowlisted; they are noise from LLM).
+    process.env.PRIVACY_SCREEN_LLM_MOCK = '1';
+    process.env.PRIVACY_SCREEN_LLM_MOCK_RESPONSE = JSON.stringify({
+      suspicious_spans: [
+        { text: 'Repository_2', category: 'other', confidence: 0.7, reason: 'repo id' },
+        { text: 'Server_3', category: 'other', confidence: 0.75, reason: 'server id' },
+        { text: 'Priya', category: 'person', confidence: 0.85, reason: 'name' },
+      ],
+    });
+
+    resetVocab();
+    const app = makeApp();
+    const res = await app.fetch(
+      makeRequest({
+        scrubbed:
+          'The migration touched Repository_2 on Server_3 and Priya reviewed it. Plenty of text here.',
+        tokenMap: makeTokenMap(),
+        sourceEvent: 'test-jdg43',
+      }),
+    );
+    expect(res.status).toBe(202);
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const pending = getVocab().pendingReview();
+    const badRepo = pending.find((r) => r.span === 'Repository_2' && r.source_event === 'judge:test-jdg43');
+    const badServer = pending.find((r) => r.span === 'Server_3' && r.source_event === 'judge:test-jdg43');
+    const good = pending.find((r) => r.span === 'Priya' && r.source_event === 'judge:test-jdg43');
+
+    expect(badRepo).toBeUndefined();
+    expect(badServer).toBeUndefined();
+    expect(good).toBeDefined();
+    expect(good?.suggested_cat).toBe('person');
+  });
 });

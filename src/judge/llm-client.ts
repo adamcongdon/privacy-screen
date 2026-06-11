@@ -8,6 +8,8 @@
  * production path.
  */
 
+import { JUDGE_SCHEMA } from './prompt';
+
 /** Single completion request — system prompt, user prompt, and budgets. */
 export interface LlmCompletionRequest {
   system: string;
@@ -78,7 +80,8 @@ export class LlamaServerClient implements LlmClient {
   async complete(req: LlmCompletionRequest): Promise<string> {
     this.assertLoopback(this.endpoint);
 
-    const body = {
+    const url = `${this.endpoint}/v1/chat/completions`;
+    const base = {
       messages: [
         { role: 'system', content: req.system },
         { role: 'user', content: req.user },
@@ -86,16 +89,40 @@ export class LlamaServerClient implements LlmClient {
       max_tokens: req.maxTokens,
       temperature: 0,
       frequency_penalty: 0.3,
-      response_format: { type: 'json_object' },
     };
 
-    const url = `${this.endpoint}/v1/chat/completions`;
-    const res = await this.fetchImpl(url, {
+    // JDG-06: wire JUDGE_SCHEMA as strict json_schema for structural enforcement at llama decode time.
+    // Fallback to json_object on 400/422 for older llama.cpp builds that lack json_schema support.
+    let attemptBody: any = {
+      ...base,
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'suspicious_spans',
+          strict: true,
+          schema: JUDGE_SCHEMA,
+        },
+      },
+    };
+    let res = await this.fetchImpl(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(attemptBody),
       signal: AbortSignal.timeout(req.timeoutMs),
     });
+
+    if (!res.ok && (res.status === 400 || res.status === 422)) {
+      attemptBody = {
+        ...base,
+        response_format: { type: 'json_object' },
+      };
+      res = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(attemptBody),
+        signal: AbortSignal.timeout(req.timeoutMs),
+      });
+    }
 
     if (!res.ok) {
       throw new Error(`llm-client: HTTP ${res.status} from llama-server`);

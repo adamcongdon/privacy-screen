@@ -264,3 +264,69 @@ describe('induced_patterns', () => {
     expect(cats.some((c) => c.category === 'ip')).toBe(false); // only 1 ip entry
   });
 });
+
+// TDD for #63 (SCR-10): perf + correctness for isAllowlisted allowlist cache (literals Set + precompiled regexes).
+// Exercises full SELECT + per-row RegExp in hot path (called from scrubText per detection + preMint + pendingReview etc).
+// 5k-row simulation for literals + regexes. RED now. Behavior must stay identical after caching + invalidation on add.
+describe('SCR-10 allowlist cache TDD', () => {
+  let store: VocabStore;
+
+  beforeEach(() => { store = freshStore(); });
+  afterEach(() => { try { store.close(); } catch {} if (existsSync(TEST_DB)) unlinkSync(TEST_DB); });
+
+  test('large allowlist isAllowlisted produces identical results and meets perf budget (5k rows exercised)', () => {
+    const N = 5000;
+    // Mix literals (most) + some regexes to exercise both cache arms.
+    for (let i = 0; i < N; i++) {
+      if (i % 23 === 0) {
+        // regex: e.g. literal host with varying suffix
+        store.addAllowlist(`^host-${i % 200}-.*\\.internal$`, true);
+      } else {
+        const lit = i % 11 === 0 ? `Acme Vendor ${i} LLC` : `safe-literal-${i}`;
+        store.addAllowlist(lit, false);
+      }
+    }
+
+    // 200 "lookups" simulating per-cell / per-span checks in xlsx-scrub + scrubText.
+    const probes: string[] = [];
+    for (let p = 0; p < 200; p++) {
+      const idx = (p * 31) % N;
+      if (p % 5 === 0 && idx % 23 === 0) {
+        probes.push(`host-${idx % 200}-foo.internal`); // will match a regex
+      } else if (p % 7 === 0) {
+        probes.push(`Acme Vendor ${idx} LLC`);
+      } else {
+        probes.push(`safe-literal-${idx}`);
+      }
+    }
+
+    // Goldens via current impl.
+    const goldens = probes.map((v) => store.isAllowlisted(v));
+
+    const start = performance.now();
+    const results = probes.map((v) => store.isAllowlisted(v));
+    const dur = performance.now() - start;
+
+    // Correctness: identical (including after adds).
+    for (let i = 0; i < results.length; i++) {
+      expect(results[i]).toBe(goldens[i]);
+    }
+    // Some must have matched to exercise the paths.
+    expect(results.filter((r) => r).length).toBeGreaterThan(10);
+
+    // Stated budget: 200 lookups against ~5k allowlist rows < 3 ms (tight to force cache).
+    expect(dur).toBeLessThan(3);
+    console.log(`[TDD #63] 5k-allowlist 200-lookup dur=${dur.toFixed(2)}ms (budget<3)`);
+  });
+
+  test('allowlist cache invalidates on addAllowlist (new literal and regex visible immediately)', () => {
+    expect(store.isAllowlisted('never-before')).toBe(false);
+    store.addAllowlist('never-before');
+    expect(store.isAllowlisted('never-before')).toBe(true);
+    expect(store.isAllowlisted('NEVER-BEFORE')).toBe(true);
+
+    store.addAllowlist('^re-.*-42$', true);
+    expect(store.isAllowlisted('re-foo-42')).toBe(true);
+    expect(store.isAllowlisted('re-bar-99')).toBe(false);
+  });
+});
