@@ -19,6 +19,9 @@ scrubRoute.post('/', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const text = typeof body.text === 'string' ? body.text : '';
   const persist = body.persist !== false; // default true
+  const userPatterns: Array<{ text: string; cat: string }> = Array.isArray(body.patterns)
+    ? body.patterns.filter((p: any) => p && typeof p.text === 'string' && typeof p.cat === 'string')
+    : [];
 
   if (!text) {
     return c.json({
@@ -38,10 +41,12 @@ scrubRoute.post('/', async (c) => {
   const result = scrubText(text, map, vocab, {
     sourceEvent: 'app:preview',
     config: cfg,
+    userPatterns,
   });
 
   // Enrich: scan scrubbed output for {TOKEN} patterns not captured by mintedTokens
-  // (pre-minted customer/person names go through map.mint() directly, bypassing recordMint).
+  // (pre-minted customer/person names use mintAndPersist for guards but intentionally do not
+  // appear in the per-scrub mintedTokens list returned to caller).
   // Guard: only enrich tokens that were NOT present in the original input — tokens already
   // in the caller's text must not be resolved to realValues (vocab enumeration oracle).
   const tokensInOriginal = new Set([...result.original.matchAll(/\{[A-Z][A-Z0-9_]*\}/g)].map((m) => m[0]));

@@ -313,7 +313,36 @@ describe('looksLikeIdentifier', () => {
   test('returns false for "www.google.com"', () => {
     expect(looksLikeIdentifier('www.google.com')).toBe(false);
   });
-  test('returns false for "host.example.com"', () => {
-    expect(looksLikeIdentifier('host.example.com')).toBe(false);
+  test('returns false for "host.acme.com"', () => {
+    expect(looksLikeIdentifier('host.acme.com')).toBe(false);
+  });
+});
+
+// Unicode SCR-07 TDD cases (red demonstrated earlier in session before src edits)
+import { mkEmail } from '../src/patterns';
+
+describe('unicode person names and internationalized emails (SCR-07)', () => {
+  test('mkPersonFromHeader extracts accented unicode name from header', () => {
+    const captures = captureGroups('From: José García <jose@muenchen.example>', mkPersonFromHeader());
+    expect(captures).toContain('José García');
+  });
+  test('mkPersonAdjacentToEmail extracts unicode name near email', () => {
+    const captures = captureGroups('ping José García — jose@muenchen.example', mkPersonAdjacentToEmail());
+    expect(captures).toContain('José García');
+  });
+  test('mkSignOffName extracts unicode sign-off name', () => {
+    const captures = captureGroups('Long body.\n\nBest,\nJosé García\n', mkSignOffName());
+    expect(captures).toContain('José García');
+  });
+  test('isValidPersonName accepts unicode letters (Lu + L)', () => {
+    expect(isValidPersonName('José García', [])).toBe(true);
+    expect(isValidPersonName('Müller Schmidt', [])).toBe(true);
+  });
+  test('mkEmail matches RFC-6531 unicode local part + IDN domain', () => {
+    expect(findAll('contact josé@münchen.example now', mkEmail())).toContain('josé@münchen.example');
+    expect(findAll('user@xn--mnchen-3ya.example', mkEmail())).toContain('user@xn--mnchen-3ya.example');
+  });
+  test('mkEmail matches the acceptance example form', () => {
+    expect(findAll('Jose Garcia <jose@muenchen.example>', mkEmail())).toContain('jose@muenchen.example');
   });
 });

@@ -11,10 +11,10 @@ version: "1.0"
 mode: observe
 
 # FQDNs to never tokenize (public vendor infrastructure).
-# Built-in: example.com, microsoft.com, amazonaws.com, azure.com, github.com,
+# Built-in: microsoft.com, amazonaws.com, azure.com, github.com,
 # nuget.org, anthropic.com, cloudflare.com, openai.com, googleapis.com.
 fqdn_allowlist_extra:
-  - .helios.example.com
+  - .internal.example.com
   - .chocolatey.org
 
 # Known customer names — always tokenized as {CUSTOMER}/{CUSTOMER_N}.
@@ -37,7 +37,7 @@ person_names: []
 # Comparison is case-insensitive.
 name_allowlist: []
 # Example:
-#   - "Adam Congdon"
+#   - "Your Name"
 #   - "Linus Torvalds"
 
 # Confidence threshold — detections below this go to the review queue.
@@ -95,6 +95,14 @@ update_channel: off
 # Branch flow: ac-build (daily) → PR to beta (deploys beta) → PR from beta to main (deploys stable)
 update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
 
+# Self-service user patterns (right-click "Tokenize selection as..." in Scrub).
+# These are literal high-priority matches. Do not edit by hand — use the UI.
+user_patterns: []
+
+# Self-service custom token categories (name + color) created from Vocab or the tokenize menu.
+# Merged with built-ins for rendering and scrubbing. UI only.
+custom_categories: []
+
 # ---------------------------------------------------------------------------
 # Opt-in LLM secondary validator (JUDGE, not editor).
 #
@@ -113,6 +121,35 @@ update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-scree
 #   bun cli/PrivacyScreen.ts install-judge --model qwen2.5-1.5b --allow-network
 # See Plans/LLM_RESEARCH.md and the "LLM secondary validation" section of
 # SAFETY_CHECKLIST.md.
+# ---------------------------------------------------------------------------
+# xlsx scrubber (Issue #23).
+#
+# When you upload an .xlsx file in the web UI, privacy-screen reads the
+# header row of each sheet and proposes a pattern for each column. The
+# commit UI lets you override any proposal before scrubbing runs.
+#
+# Resolution precedence (highest → lowest):
+#   1. UI-time column override (per-upload)
+#   2. columnRules below (config-level)
+#   3. Heuristic header→pattern match (when autoDetect: true)
+#   4. Unresolved → fall back to whole-cell regex scrub
+#
+# Built-in heuristics catch headers like "Email", "Phone", "SSN", "IP",
+# "Name", "Address", "Domain/FQDN/Host". Use columnRules below for
+# anything custom — e.g. a column named "Customer Mail" that the
+# heuristic won't catch but is clearly an email column.
+#
+# Valid `pattern` values: Email, Phone, SSN, IPv4, IPv6, PersonName,
+# StreetAddress, FQDN, CreditCard, UncPath, DomainUser, MAC, GUID.
+#
+# xlsx:
+#   autoDetect: true
+#   columnRules:
+#     - header: "Customer Email"
+#       pattern: Email
+#     - headerRegex: "phone|mobile"
+#       pattern: Phone
+
 llm_validate:
   enabled: false
   # Absolute path to the GGUF model file. Set by `install-judge`.

@@ -1,7 +1,7 @@
 import type { Token } from '../api';
 import { getCategoryInlineStyles } from './colors';
+import { TOKEN_RE } from './tokens';
 
-const TOKEN_RE = /\{[A-Z][A-Z0-9_]*\}/g;
 const SKIP_ANCESTOR_TAGS = new Set(['script', 'style', 'title', 'noscript']);
 const BASELINE_STYLES = [
   'body { color:#18181b; background:#ffffff; max-width:80ch; margin:1rem auto; padding:0 1rem; font-family:ui-sans-serif,system-ui,sans-serif; line-height:1.5; }',

@@ -164,4 +164,81 @@ describe('ScrubMap', () => {
       expect(map.size).toBe(1);
     });
   });
+
+  // TDD for #63 (SCR-10): perf + correctness for apply() regex memoization.
+  // 5k-row vocab simulation + 200 "cell" applies. Must be behavior-identical to uncached.
+  // RED now (uncached): each apply rebuilds+recompiles giant alternation.
+  describe('SCR-10 apply cache TDD', () => {
+    test('large map apply produces identical output before/after (correctness) and meets perf budget', () => {
+      const map = new ScrubMap();
+      const N = 5000;
+      // Realistic-ish longish literals to exercise alternation cost (simulates real PII values in vocab).
+      for (let i = 0; i < N; i++) {
+        const real = i % 7 === 0
+          ? `Acme Customer ${i} Incorporated`
+          : i % 5 === 0
+          ? `user${i}@internal.example-${(i%20)}.local`
+          : `server-host-${i}-prod`;
+        map.mint('ITEM', real);
+      }
+
+      // Simulate 200-cell sheet: 200 independent cell values, some will match entries.
+      const cells: string[] = [];
+      for (let c = 0; c < 200; c++) {
+        const idx = (c * 17) % N;
+        const base = c % 3 === 0
+          ? `Contact Acme Customer ${idx} Incorporated for order ${c}`
+          : `Log from server-host-${idx}-prod at ${c}`;
+        cells.push(base);
+      }
+
+      // Capture "golden" scrubbed using current (will be cached later) behavior.
+      const goldens = cells.map((cell) => map.apply(cell));
+
+      // Perf measurement over the 200 applies (core hot path exercised by xlsx per-cell + scrubText).
+      const start = performance.now();
+      const results = cells.map((cell) => map.apply(cell));
+      const dur = performance.now() - start;
+
+      // Correctness: identical results (behavior must not change with memo).
+      for (let i = 0; i < results.length; i++) {
+        expect(results[i]).toBe(goldens[i]);
+      }
+      // Spot real substitutions: at least some cells must have been mapped (exercises the alternation).
+      const anyTokenized = results.some((r) => /\{ITEM(_\d+)?\}/.test(r));
+      expect(anyTokenized).toBe(true);
+
+      // Stated budget per acceptance (tight for TDD RED/GREEN): 200 applies against 5k vocab < 5 ms.
+      // Forces cache of alternation regex. (Currently RED: each apply does O(n) sort + new RegExp on 5k terms.)
+      expect(dur).toBeLessThan(5);
+      // Also log for visible evidence in test output (red/green).
+      console.log(`[TDD #63] 5k-map 200-apply dur=${dur.toFixed(2)}ms (budget<5)`);
+    });
+
+    test('apply cache invalidates on mint (subsequent apply sees new entry)', () => {
+      const map = new ScrubMap();
+      map.mint('FOO', 'alpha');
+      expect(map.apply('see alpha here')).toBe('see {FOO} here');
+      map.mint('FOO', 'beta');
+      expect(map.apply('see beta here')).toBe('see {FOO_1} here');
+    });
+
+    test('apply cache invalidates on loadFromRows', () => {
+      const map = new ScrubMap();
+      map.loadFromRows([{ real_value: 'gamma', token: '{BAR}' }]);
+      expect(map.apply('gamma value')).toBe('{BAR} value');
+    });
+  });
+
+  // SCR-07 TDD boundary (red pre, green post)
+  test('apply unicode-aware boundaries fire next to non-ASCII letters', () => {
+    const map = new ScrubMap();
+    map.mint('PERSON', 'José García');
+    const text = 'Contact José García here. Glued: αJosé Garcíaβ end.';
+    const result = map.apply(text);
+    expect(result).toContain('{PERSON}');
+    expect(result).toContain('Contact {PERSON} here.');
+    expect(result).toContain('αJosé Garcíaβ');
+    expect(result).not.toContain('α{PERSON}β');
+  });
 });

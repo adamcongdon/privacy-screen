@@ -32,6 +32,7 @@ import { serveStatic } from 'hono/bun';
 import { cors } from 'hono/cors';
 import { existsSync, statSync } from 'fs';
 import { join } from 'path';
+import pkg from '../package.json' with { type: 'json' };
 
 import { scrubRoute } from './routes/scrub';
 import { sendRoute } from './routes/send';
@@ -40,6 +41,7 @@ import { reviewRoute } from './routes/review';
 import { patternsRoute } from './routes/patterns';
 import { settingsRoute } from './routes/settings';
 import { filesRoute } from './routes/files';
+import { filesXlsxRoute } from './routes/files-xlsx';
 import { versionRoute } from './routes/version';
 import { judgeRoute } from './routes/judge';
 import { judgeControlRoute } from './routes/judge-control';
@@ -48,6 +50,8 @@ import { feedbackRoute } from './routes/feedback';
 import { reportClaudeCodeStatus } from './lib/claude-code-check';
 import { shutdownLlmProcess, getLlmClient } from './lib/llm-process';
 import { loadConfig } from '../src/config';
+import { embeddedAssets } from './web-assets.generated';
+import { openBrowser } from './lib/open-browser';
 
 const PORT = Number(process.env.PRIVACY_SCREEN_PORT ?? 31338);
 const HOST = process.env.PRIVACY_SCREEN_BIND_ANY === '1' ? '0.0.0.0' : '127.0.0.1';
@@ -111,7 +115,7 @@ app.use(
   }),
 );
 
-app.get('/api/health', (c) => c.json({ ok: true, version: '1.0.0-app-m1' }));
+app.get('/api/health', (c) => c.json({ ok: true, version: pkg.version }));
 
 app.route('/api/scrub', scrubRoute);
 app.route('/api/send', sendRoute);
@@ -119,6 +123,9 @@ app.route('/api/vocab', vocabRoute);
 app.route('/api/review', reviewRoute);
 app.route('/api/patterns', patternsRoute);
 app.route('/api/settings', settingsRoute);
+// Order matters: register the sub-route BEFORE the parent so Hono's matcher
+// resolves /api/files/xlsx/* to filesXlsxRoute, not the catch-all in filesRoute.
+app.route('/api/files/xlsx', filesXlsxRoute);
 app.route('/api/files', filesRoute);
 app.route('/api/version', versionRoute);
 app.route('/api/update', updateRoute);
@@ -126,9 +133,37 @@ app.route('/api/judge', judgeRoute);
 app.route('/api/judge-control', judgeControlRoute);
 app.route('/api/feedback', feedbackRoute);
 
-// Static frontend bundle (built via `bun run web:build`).
+// Static frontend bundle. Three serving modes, in priority order:
+//   1. Embedded — the release binary bakes web/dist into itself (see
+//      scripts/generate-web-embed.ts). This is what makes a single downloaded
+//      exe work with no extra files. embeddedAssets is non-empty only in builds.
+//   2. Filesystem — `bun run start` (web:build + server) in a source checkout
+//      serves web/dist directly.
+//   3. Dev stub — nothing built yet; point the user at the dev workflow.
 const webDist = join(import.meta.dir, '..', 'web', 'dist');
-if (existsSync(webDist) && statSync(webDist).isDirectory()) {
+const webMode: 'embedded' | 'filesystem' | 'none' =
+  embeddedAssets.length > 0
+    ? 'embedded'
+    : existsSync(webDist) && statSync(webDist).isDirectory()
+      ? 'filesystem'
+      : 'none';
+
+if (webMode === 'embedded') {
+  const byRoute = new Map(embeddedAssets.map((a) => [a.route, a.file]));
+  const indexFile = byRoute.get('/index.html');
+  app.get('/*', (c) => {
+    const pathname = new URL(c.req.url).pathname;
+    const file = byRoute.get(pathname === '/' ? '/index.html' : pathname);
+    if (file) return new Response(Bun.file(file));
+    // SPA fallback: unknown non-API path → index.html for client-side routing.
+    if (indexFile) {
+      return new Response(Bun.file(indexFile), {
+        headers: { 'content-type': 'text/html;charset=utf-8' },
+      });
+    }
+    return c.text('not found', 404);
+  });
+} else if (webMode === 'filesystem') {
   app.use('/*', serveStatic({ root: './web/dist' }));
   app.get('*', serveStatic({ path: './web/dist/index.html' }));
 } else {
@@ -147,11 +182,29 @@ const server = Bun.serve({
   fetch: app.fetch,
 });
 
+const appUrl = `http://${server.hostname}:${server.port}`;
+const webUiStatus =
+  webMode === 'embedded'
+    ? 'served from embedded bundle'
+    : webMode === 'filesystem'
+      ? 'served from web/dist'
+      : 'run `bun run web:dev`';
 process.stdout.write(
-  `privacy-screen app  →  http://${server.hostname}:${server.port}\n` +
-    `  API health:       http://${server.hostname}:${server.port}/api/health\n` +
-    `  Web UI:           ${existsSync(webDist) ? 'served from web/dist' : 'run `bun run web:dev`'}\n`,
+  `privacy-screen app  →  ${appUrl}\n` +
+    `  API health:       ${appUrl}/api/health\n` +
+    `  Web UI:           ${webUiStatus}\n`,
 );
+
+// Double-click / installer launch path: `--open` (or PRIVACY_SCREEN_OPEN=1)
+// opens the default browser at the app URL once the server is listening. The
+// installers' shortcuts pass --open so users land on the UI, not a console.
+if (process.argv.includes('--open') || process.env.PRIVACY_SCREEN_OPEN === '1') {
+  if (webMode === 'none') {
+    process.stdout.write('  (not opening browser: web bundle not built)\n');
+  } else {
+    void openBrowser(appUrl);
+  }
+}
 
 // Eager-start the LLM subprocess so it's warm before the first request.
 {

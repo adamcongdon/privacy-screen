@@ -5,11 +5,12 @@
  */
 import { describe, test, expect } from 'bun:test';
 import { ScrubMap } from '../src/scrub-map';
-import { runJudge, type JudgeOptions } from '../src/judge/judge';
+import { runJudge, type JudgeOptions, validateAndShape } from '../src/judge/judge';
 import {
   MockLlmClient,
   LlamaServerClient,
   type LlmCompletionRequest,
+  type LlmClient,
 } from '../src/judge/llm-client';
 import {
   normalizeCategory,
@@ -20,6 +21,10 @@ import {
   PROMPT_VERSION,
   JUDGE_SCHEMA,
 } from '../src/judge/prompt';
+
+// Namespace import for accessing exported internals (validateAndShape) in TDD tests without
+// polluting main imports or requiring type declaration changes. Used only for JDG-06 direct unit tests.
+import * as judgeInternals from '../src/judge/judge';
 
 const LONG_INPUT =
   'Please ping Aanya about the Korean migration scheduled for next quarter.';
@@ -131,13 +136,14 @@ describe('runJudge — early exit', () => {
 });
 
 describe('runJudge — error paths', () => {
-  test('client throw → spans=[] with parse_failed errorReason', async () => {
+  test('client throw → spans=[] with llm_failed errorReason (taxonomy JDG-05)', async () => {
+    // TDD RED updated before judge edit + re-applied; expects distinct llm_failed for client errors
     const client = new MockLlmClient([new Error('aborted')]);
     const map = new ScrubMap();
     const res = await runJudge(LONG_INPUT, map, makeOpts(client));
     expect(res.spans).toEqual([]);
     expect(res.errorReason).not.toBeNull();
-    expect(res.errorReason!.startsWith('parse_failed')).toBe(true);
+    expect(res.errorReason!.startsWith('llm_failed:')).toBe(true);
     expect(res.errorReason!).toContain('aborted');
   });
 
@@ -248,6 +254,42 @@ describe('runJudge — filtering rules', () => {
     expect(res.spans[0].text.length).toBe(200);
     expect(res.spans[0].reason.length).toBe(280);
   });
+
+  test('TDD for #43: code-like false positives (Repository_2, Server_3) from LLM judge are filtered and never reach review queue', async () => {
+    // Per fable-development-template.md TDD: this test is added and run (RED) BEFORE
+    // editing src/judge/judge.ts validateAndShape. It reproduces the symptom from
+    // issue #43 (LLM overflags code identifiers / token-like names as suspicious).
+    const client = new MockLlmClient([
+      llmJson([
+        {
+          text: 'Repository_2',
+          category: 'other',
+          confidence: 0.75,
+          reason: 'looks like a resource name',
+        },
+        {
+          text: 'Server_3',
+          category: 'other',
+          confidence: 0.8,
+          reason: 'internal server identifier',
+        },
+        {
+          text: 'Aanya',
+          category: 'person',
+          confidence: 0.9,
+          reason: 'real person name missed by regex',
+        },
+      ]),
+    ]);
+    const map = new ScrubMap();
+    const res = await runJudge(LONG_INPUT, map, makeOpts(client));
+    expect(res.errorReason).toBeNull();
+    // The real PII name must still be reported (safety: do not regress recall)
+    expect(res.spans.some((s) => s.text === 'Aanya')).toBe(true);
+    // The code-identifier false positives from the judge must be dropped
+    expect(res.spans.some((s) => s.text === 'Repository_2' || s.text === 'Server_3')).toBe(false);
+    expect(res.spans).toHaveLength(1);
+  });
 });
 
 /**
@@ -326,5 +368,322 @@ describe('LlamaServerClient — loopback enforcement', () => {
     }
     expect(threw).not.toBeNull();
     expect(threw!.message).toContain('503');
+  });
+});
+
+/**
+ * TDD tests for JDG-05 — written and executed for RED *before any edit* to
+ * src/judge/judge.ts (or server/routes/judge.ts). Covers:
+ * - Distinct error taxonomy: llm_failed: for client.complete failures (timeouts,
+ *   network, llm errors), parse_failed: only for response parse/JSON/shape.
+ * - chunksTotal / chunksFailed populated on JudgeResult.
+ * - Partial chunk failure: even when good chunks produce spans, errorReason
+ *   remains set (and chunksFailed>0) so that callers can log partials and
+ *   the sync path stays fail-closed (503).
+ */
+describe('runJudge — error taxonomy and partial-chunk failure reporting (JDG-05) [TDD RED before judge edit]', () => {
+  // NOTE: these tests MUST pass only after the fix. Run before touching judge.ts
+  // to demonstrate RED state per fable-development-template.md.
+
+  test('client/LLM throw uses distinct llm_failed: prefix + chunks counts', async () => {
+    const client = new MockLlmClient([new Error('connection refused')]);
+    const map = new ScrubMap();
+    const res = await runJudge(LONG_INPUT, map, makeOpts(client));
+    expect(res.spans).toEqual([]);
+    expect(res.errorReason).not.toBeNull();
+    expect(res.errorReason!.startsWith('llm_failed:')).toBe(true);
+    expect(res.errorReason!).toContain('connection refused');
+    expect((res as any).chunksTotal).toBe(1);
+    expect((res as any).chunksFailed).toBe(1);
+  });
+
+  test('parse error keeps parse_failed: (distinct from llm)', async () => {
+    const client = new MockLlmClient(['this is not valid json {{{']);
+    const map = new ScrubMap();
+    const res = await runJudge(LONG_INPUT, map, makeOpts(client));
+    expect(res.errorReason).not.toBeNull();
+    expect(res.errorReason!.startsWith('parse_failed:')).toBe(true);
+    expect((res as any).chunksTotal).toBe(1);
+    expect((res as any).chunksFailed).toBe(1);
+  });
+
+  test('mixed: one good chunk (yields span) + one error chunk -> spans kept, errorReason kept for partial, chunksTotal=2 chunksFailed=1', async () => {
+    // Construct input that will be split into (at least) 2 chunks by chunkText.
+    // MAX_CHUNK_CHARS=1800; use two ~950+ char segments joined by blank line to force >1800 total.
+    const goodChunkContent = 'Please contact Aanya urgently. ' + 'A'.repeat(950);
+    const badChunkContent = 'Also reach out to Bob at the office. ' + 'B'.repeat(950);
+    const multiChunkInput = goodChunkContent + '\n\n' + badChunkContent;
+
+    const client = new MockLlmClient([
+      // first chunk succeeds with a span
+      llmJson([
+        { text: 'Aanya', category: 'person', confidence: 0.91, reason: 'given name in context' },
+      ]),
+      // second chunk fails (simulates llm error on that chunk)
+      new Error('timeout on second chunk'),
+    ]);
+    const map = new ScrubMap();
+    const res = await runJudge(multiChunkInput, map, makeOpts(client));
+
+    // Partial success: span from chunk 1 is reported
+    expect(res.spans).toHaveLength(1);
+    expect(res.spans[0].text).toBe('Aanya');
+
+    // But errorReason must remain (partial failure) — this is key for logging + sync fail-closed
+    expect(res.errorReason).not.toBeNull();
+    expect(res.errorReason!.startsWith('llm_failed:')).toBe(true);
+    expect(res.errorReason!).toContain('timeout on second chunk');
+
+    expect((res as any).chunksTotal).toBe(2);
+    expect((res as any).chunksFailed).toBe(1);
+  });
+
+  test('sync fail-closed contract preserved: good chunk + error chunk (even zero-span error) still produces errorReason (caller does 503)', async () => {
+    // Mirrors the acceptance: "test: one ok + one error/zero-span chunk still 503"
+    const good = 'Scrubbed text with Carol inside. ' + 'C'.repeat(950);
+    const bad = 'More scrubbed text here for Bob. ' + 'D'.repeat(950);
+    const input = good + '\n\n' + bad;
+
+    const client = new MockLlmClient([
+      llmJson([{ text: 'Carol', category: 'person', confidence: 0.88, reason: 'name' }]),
+      new Error('zero-span error chunk'), // even if this chunk produced 0 spans before error
+    ]);
+    const map = new ScrubMap();
+    const res = await runJudge(input, map, makeOpts(client));
+
+    expect(res.spans.length).toBeGreaterThan(0); // from good chunk
+    expect(res.errorReason).not.toBeNull(); // still truthy -> sync route will 503 fail-closed
+    expect((res as any).chunksTotal).toBe(2);
+    expect((res as any).chunksFailed).toBe(1);
+  });
+});
+
+/**
+ * TDD RED tests for JDG-06 (issue #70) — added to tests/judge.test.ts *before*
+ * any changes to src/judge/llm-client.ts or src/judge/judge.ts per
+ * Plans/fable-development-template.md.
+ *
+ * These must fail (RED) on current code:
+ * - LlamaServerClient hardcodes json_object, does not send json_schema or JUDGE_SCHEMA
+ * - validateAndShape (and thus runJudge) accepts NaN / >1 confidence (NaN < x is false; 1.5 < 0.6 is false)
+ */
+describe('LlamaServerClient — json_schema wiring (JDG-06 TDD RED before edit)', () => {
+  test('LlamaServerClient serialises response_format.type === "json_schema" (strict) and includes full JUDGE_SCHEMA', async () => {
+    let capturedBody: any = null;
+    const stubFetch = asFetch(async (_input: unknown, init?: unknown) => {
+      const initObj = (init ?? {}) as { body?: string };
+      if (initObj.body) {
+        capturedBody = JSON.parse(initObj.body);
+      }
+      const payload = { choices: [{ message: { content: '{"suspicious_spans":[]}' } }] };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const client = new LlamaServerClient({
+      endpoint: 'http://127.0.0.1:8080',
+      fetchImpl: stubFetch,
+    });
+    await client.complete({
+      system: 's',
+      user: 'u',
+      maxTokens: 8,
+      timeoutMs: 100,
+    });
+    expect(capturedBody).not.toBeNull();
+    expect(capturedBody.response_format).toBeDefined();
+    expect(capturedBody.response_format.type).toBe('json_schema');
+    expect(capturedBody.response_format.json_schema).toBeDefined();
+    expect(capturedBody.response_format.json_schema.name).toBe('suspicious_spans');
+    expect(capturedBody.response_format.json_schema.strict).toBe(true);
+    // Full schema match (JUDGE_SCHEMA is the source of truth)
+    expect(capturedBody.response_format.json_schema.schema).toEqual(JUDGE_SCHEMA);
+  });
+});
+
+describe('validateAndShape / runJudge — NaN and range clamp for confidence (JDG-06 TDD RED before edit)', () => {
+  test('validateAndShape rejects confidence: NaN', () => {
+    const map = new ScrubMap();
+    const candidate = { text: 'NaNName', category: 'person', confidence: NaN, reason: 'nan conf' };
+    const shaped = judgeInternals.validateAndShape(candidate, map, 0.6);
+    expect(shaped).toBeNull();
+  });
+
+  test('validateAndShape rejects confidence: 1.5 (out of [0,1])', () => {
+    const map = new ScrubMap();
+    const candidate = { text: 'HighConf', category: 'person', confidence: 1.5, reason: 'too high' };
+    const shaped = judgeInternals.validateAndShape(candidate, map, 0.6);
+    expect(shaped).toBeNull();
+  });
+
+  test('high confidence >1 span is dropped via runJudge (exercises clamp)', async () => {
+    const client = new MockLlmClient([
+      llmJson([{ text: 'OverConf', category: 'person', confidence: 1.5, reason: 'r' }]),
+    ]);
+    const map = new ScrubMap();
+    const res = await runJudge(LONG_INPUT, map, makeOpts(client));
+    expect(res.spans).toEqual([]); // currently would be kept (RED)
+    expect(res.errorReason).toBeNull();
+  });
+
+  test('NaN confidence (via direct candidate) is rejected (defensive)', () => {
+    const map = new ScrubMap();
+    // Even though JSON never produces NaN, the clamp must be robust if non-JSON path or future code injects it
+    const candidate = { text: 'NaNish', category: 'person', confidence: NaN, reason: 'r' };
+    expect(judgeInternals.validateAndShape(candidate, map, 0.6)).toBeNull();
+  });
+});
+
+/**
+ * TDD test for JDG-07 — written and executed for RED *before any edit* to
+ * chunkText in src/judge/judge.ts. Demonstrates the exact defect from the
+ * issue: zero-overlap chunking causes boundary-straddling PII to be split
+ * across chunks and missed (under-flagged).
+ *
+ * The custom OverlapAwareMock only returns a span for a chunk whose *text*
+ * contains the *full* contiguous PII (as would be required for the model to
+ * recognize and emit it). With current chunkText, no chunk ever contains the
+ * full PII string -> always [], RED failure.
+ *
+ * After overlap (~150 chars) is added, an overlapping chunk will contain the
+ * full PII, the mock will emit it, dedup via existing `seen` still works,
+ * test goes GREEN. Per fable-development-template.md and the JDG-05 TDD
+ * precedent already in this file.
+ */
+describe('runJudge — JDG-07 overlap window for boundary PII (TDD RED before chunkText edit)', () => {
+  // Local client that decides response based on whether the chunk presented
+  // to the model contains the full straddling PII verbatim. This proves the
+  // chunking/overlap behavior rather than hard-coded queue order.
+  class OverlapAwareMock implements LlmClient {
+    private readonly fullResponse: string;
+    private readonly emptyResponse: string;
+    public callCount = 0;
+
+    constructor(fullResponse: string, emptyResponse: string) {
+      this.fullResponse = fullResponse;
+      this.emptyResponse = emptyResponse;
+    }
+
+    async complete(req: LlmCompletionRequest): Promise<string> {
+      this.callCount++;
+      // The chunk is embedded verbatim in the user prompt (see buildJudgePrompt).
+      if (req.user.includes('AanyaBoundaryStraddlerXXX')) {
+        return this.fullResponse;
+      }
+      return this.emptyResponse;
+    }
+  }
+
+  test('boundary PII straddling the MAX_CHUNK_CHARS cut is detected thanks to overlap (RED without overlap)', async () => {
+    // Construct input >1800 chars where the PII has no internal whitespace,
+    // and the prefix forces the cut (which falls back to maxChars) to land
+    // inside the PII. Without overlap, first chunk gets prefix+head, second
+    // gets tail+ suffix; full PII string never present in any chunk.
+    const MAX = 1800;
+    const pii = 'AanyaBoundaryStraddlerXXX';
+    // 1795 x's + pii => cut at 1800 eats only first 5 chars of 22-char pii.
+    const prefix = 'x'.repeat(MAX - 5);
+    // Suffix long enough to produce a second chunk and pass MIN_INPUT_LENGTH.
+    const suffix =
+      ' and the rest of the long input after the straddler to force a second chunk ' +
+      'z'.repeat(300);
+    const input = prefix + pii + suffix;
+
+    expect(input.length).toBeGreaterThan(MAX); // will be chunked
+
+    const fullSpanJson = llmJson([
+      {
+        text: pii,
+        category: 'person',
+        confidence: 0.93,
+        reason: 'name straddling the 1800-char chunk boundary',
+      },
+    ]);
+    const emptyJson = llmJson([]);
+
+    const client = new OverlapAwareMock(fullSpanJson, emptyJson);
+    const map = new ScrubMap();
+
+    // Build opts manually (makeOpts is typed only for MockLlmClient).
+    const opts: JudgeOptions = {
+      client: client as any,
+      timeoutMs: 2500,
+      maxTokens: 256,
+      maxSpans: 16,
+      minConfidence: 0.6,
+    };
+
+    const res = await runJudge(input, map, opts);
+
+    // With overlap impl this will find it; currently (no overlap) the mock
+    // never sees the full PII in any chunk so returns [] always.
+    expect(res.errorReason).toBeNull();
+    expect(res.spans).toHaveLength(1);
+    expect(res.spans[0].text).toBe(pii);
+    expect((res as any).chunksTotal).toBe(2);
+    // The aware mock was consulted at least once (actually twice).
+    expect(client.callCount).toBeGreaterThanOrEqual(1);
+  });
+});
+
+/**
+ * TDD tests for JDG-09: multi-chunk happy paths exercised via direct MockLlmClient arrays.
+ * Written (and run for RED) *before* touching the route seam in server/routes/judge.ts.
+ * These cover the chunking logic (accumulation, maxSpans early exit without consuming
+ * extra responses, cross-chunk dedup via seen Set) that previously had no dedicated
+ * happy-path coverage for multi-chunk inputs >1800 chars.
+ */
+describe('runJudge — multi-chunk happy paths (accumulation, maxSpans saturation, dedup) [TDD RED before seam edit for JDG-09]', () => {
+  // ~950 + ~950 > 1800 forces exactly 2 chunks with \n\n separator (see chunkText).
+  const chunk1 = 'Please contact Aanya about the Korean migration. ' + 'A'.repeat(900);
+  const chunk2 = 'Also reach Bob for the follow-up. ' + 'B'.repeat(900);
+  const multiChunkInput = chunk1 + '\n\n' + chunk2;
+
+  test('accumulation: unique spans from chunk 1 and chunk 2 are both kept in final result', async () => {
+    const client = new MockLlmClient([
+      llmJson([{ text: 'Aanya', category: 'person', confidence: 0.91, reason: 'given name chunk1' }]),
+      llmJson([{ text: 'Bob', category: 'person', confidence: 0.87, reason: 'given name chunk2' }]),
+    ]);
+    const map = new ScrubMap();
+    const res = await runJudge(multiChunkInput, map, makeOpts(client));
+    expect(res.errorReason).toBeNull();
+    expect((res as any).chunksTotal).toBe(2);
+    expect(res.spans).toHaveLength(2);
+    expect(res.spans[0].text).toBe('Aanya');
+    expect(res.spans[1].text).toBe('Bob');
+  });
+
+  test('maxSpans saturation: when first chunk supplies maxSpans, second chunk is never invoked (pending responses preserved)', async () => {
+    const client = new MockLlmClient([
+      // first chunk returns exactly 3 spans (we cap at 3)
+      llmJson([
+        { text: 'Name0', category: 'person', confidence: 0.9, reason: 'r0' },
+        { text: 'Name1', category: 'person', confidence: 0.9, reason: 'r1' },
+        { text: 'Name2', category: 'person', confidence: 0.9, reason: 'r2' },
+      ]),
+      // sentinel for chunk 2 — must remain unconsumed
+      llmJson([{ text: 'ShouldNotAppear', category: 'person', confidence: 0.9, reason: 'r' }]),
+    ]);
+    const map = new ScrubMap();
+    const res = await runJudge(multiChunkInput, map, makeOpts(client, { maxSpans: 3 }));
+    expect(res.spans).toHaveLength(3);
+    expect(res.spans.map(s => s.text)).toEqual(['Name0', 'Name1', 'Name2']);
+    // second response was never popped because loop bailed on spans.length >= maxSpans before second runChunk
+    expect(client.pending).toBe(1);
+  });
+
+  test('dedup across chunks: identical span.text from chunk1 + chunk2 is stored only once', async () => {
+    const client = new MockLlmClient([
+      llmJson([{ text: 'RepeatedPII', category: 'person', confidence: 0.95, reason: 'seen in chunk1' }]),
+      llmJson([{ text: 'RepeatedPII', category: 'person', confidence: 0.8, reason: 'seen again in chunk2' }]),
+    ]);
+    const map = new ScrubMap();
+    const res = await runJudge(multiChunkInput, map, makeOpts(client));
+    expect(res.errorReason).toBeNull();
+    expect((res as any).chunksTotal).toBe(2);
+    expect(res.spans).toHaveLength(1);
+    expect(res.spans[0].text).toBe('RepeatedPII');
+    expect(res.spans[0].reason).toBe('seen in chunk1'); // first one wins
   });
 });

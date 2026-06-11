@@ -1,6 +1,6 @@
 /**
  * Bidirectional token map for reversible PII anonymization.
- * Port of se-lz/src/SECC.Core/Models/ScrubMap.cs
+ * Ported from an internal C# reference implementation.
  *
  * Token format: {TYPE} for first instance, {TYPE_1} for second, {TYPE_2} for third…
  * Curly-brace format avoids markdown bold/italic corruption.
@@ -31,6 +31,24 @@ export interface SerializedScrubMap {
   entries: Array<{ token: string; real: string }>;
 }
 
+/**
+ * Node in the apply() prefix trie. Keyed by single (lowercased) code points so
+ * lookups mirror the old case-insensitive alternation regex. `token` is set on
+ * the node that completes a stored real value.
+ */
+interface TrieNode {
+  children: Map<string, TrieNode>;
+  token: string | null;
+}
+
+// A "word char" for boundary purposes — must match the old regex's
+// (?<![\p{L}\p{N}_]) / (?![\p{L}\p{N}_]) anchors exactly. Not global: callers
+// pass a single code point, so there is no lastIndex state to reset.
+const WORD_CHAR_RE = /[\p{L}\p{N}_]/u;
+function isWordChar(ch: string): boolean {
+  return WORD_CHAR_RE.test(ch);
+}
+
 export class ScrubMap {
   // keyed by lowercase real value for case-insensitive lookup
   private realToToken = new Map<string, string>();
@@ -38,6 +56,13 @@ export class ScrubMap {
   private tokenToReal = new Map<string, string>();
   // counts per TYPE so we know what the next N is
   private counters = new Map<string, number>();
+
+  // #63 cache: prefix-trie automaton for apply(); invalidated on any mint or load.
+  // Replaces a 5000-branch alternation RegExp whose *match* cost (not compile
+  // cost) dominated — a trie makes apply() O(text · maxKeyLen) instead of
+  // O(text · vocabSize). Output is byte-identical to the old regex (see the
+  // semantics notes on apply() and tests/scrub-map-parity.test.ts).
+  private _applyTrie: TrieNode | null = null;
 
   get size(): number {
     return this.realToToken.size;
@@ -69,6 +94,7 @@ export class ScrubMap {
 
     this.realToToken.set(key, token);
     this.tokenToReal.set(token, realValue); // preserve original casing
+    this._applyTrie = null; // #63: invalidate apply trie on map mutation
     return { token, isNew: true };
   }
 
@@ -106,30 +132,92 @@ export class ScrubMap {
       const cur = this.counters.get(type) ?? 0;
       if (n > cur) this.counters.set(type, n);
     }
+    this._applyTrie = null; // #63: invalidate apply trie on load (repopulates map)
   }
 
   /**
    * Apply token substitution to text using longest-first matching.
-   * Uses lookaround anchors to prevent substring false matches.
+   *
+   * Behaviour is byte-identical to the previous implementation, which compiled
+   * the vocabulary into one alternation regex sorted longest-first:
+   *   /(?<![\p{L}\p{N}_])VALUE1|VALUE2|…(?![\p{L}\p{N}_])/giu
+   * applied via String.replace(). That made each apply() O(text · vocabSize);
+   * for the per-cell xlsx hot path against a 5k-entry map it was the dominant
+   * cost (issue #63). A prefix trie reproduces the same semantics in
+   * O(text · maxKeyLen):
+   *   - case-insensitive (keys are stored lowercased; input is lowered per cp);
+   *   - word-boundary anchored on both sides, where a word char is [\p{L}\p{N}_];
+   *   - leftmost match wins, and at a given start the LONGEST value wins;
+   *   - matches are non-overlapping — scanning resumes after each replacement.
+   * The substitution emitted is the token, so the matched span's casing never
+   * appears in output. See tests/scrub-map-parity.test.ts for the differential
+   * proof against the original regex.
    */
   apply(text: string): string {
     if (this.realToToken.size === 0) return text;
 
-    // Sort entries longest-first so "Acme Corp" wins over "Acme"
-    const entries = [...this.realToToken.entries()].sort(
-      (a, b) => b[0].length - a[0].length,
-    );
+    if (!this._applyTrie) this._applyTrie = this.buildApplyTrie();
+    const root = this._applyTrie;
 
-    // Build alternation regex from escaped real values (case-insensitive)
-    const pattern = entries
-      .map(([k]) => `(?<![\\w])${escapeRegex(k)}(?![\\w])`)
-      .join('|');
+    // Operate on code points (the old regex used the `u` flag) so boundary
+    // checks and slicing stay aligned with the original string.
+    const cps = Array.from(text);
+    const n = cps.length;
+    let out = '';
+    let i = 0;
+    while (i < n) {
+      // Left anchor: the char before the match start must not be a word char.
+      const leftOk = i === 0 || !isWordChar(cps[i - 1]);
+      let bestEnd = -1;
+      let bestToken: string | null = null;
+      if (leftOk) {
+        let node: TrieNode = root;
+        let j = i;
+        while (j < n) {
+          const child: TrieNode | undefined = node.children.get(
+            cps[j].toLowerCase(),
+          );
+          if (!child) break;
+          node = child;
+          j++;
+          // Right anchor: the char after the match end must not be a word char.
+          if (node.token !== null && (j === n || !isWordChar(cps[j]))) {
+            bestEnd = j; // keep descending — a longer key may also match
+            bestToken = node.token;
+          }
+        }
+      }
+      if (bestToken !== null && bestEnd > i) {
+        out += bestToken;
+        i = bestEnd;
+      } else {
+        out += cps[i];
+        i++;
+      }
+    }
+    return out;
+  }
 
-    const rx = new RegExp(pattern, 'gi');
-    return text.replace(rx, (match) => {
-      const token = this.realToToken.get(match.toLowerCase());
-      return token ?? match;
-    });
+  /**
+   * Build the apply() prefix trie from the current vocabulary. Keys are already
+   * lowercased (case-insensitive storage), so the trie branches on lowercased
+   * code points and apply() lowercases the input per code point to match.
+   */
+  private buildApplyTrie(): TrieNode {
+    const root: TrieNode = { children: new Map(), token: null };
+    for (const [key, token] of this.realToToken) {
+      let node = root;
+      for (const cp of key) {
+        let next = node.children.get(cp);
+        if (!next) {
+          next = { children: new Map(), token: null };
+          node.children.set(cp, next);
+        }
+        node = next;
+      }
+      node.token = token;
+    }
+    return root;
   }
 
   /**
@@ -196,8 +284,4 @@ export class ScrubMap {
     map.loadFromRows(rows);
     return map;
   }
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

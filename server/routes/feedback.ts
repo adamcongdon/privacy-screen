@@ -1,29 +1,27 @@
 /**
- * /api/feedback — Send-feedback button backend (Issue #15).
+ * /api/feedback — Send-feedback button backend (Issue #15, async rework #22).
  *
- * Two endpoints:
- *   GET  /preview — returns the scrubbed diagnostics JSON. No claude spawn.
- *                   Used by the UI to show the user what's about to be sent.
- *   POST /        — accepts { summary: string } and runs the full pipeline:
- *                     1. Refuses 503 if `claude` is not on PATH (mirrors the
- *                        boot-time gate in server.ts).
- *                     2. Collects diagnostics.
- *                     3. Scrubs the user's summary + a stringified copy of the
- *                        diagnostics through scrubText() against a fresh
- *                        ScrubMap + the user's VocabStore.
- *                     4. Spawns `claude -p <prompt>` with a 60s wall-clock
- *                        timeout, env preserved (so `gh` can use the user's
- *                        auth). The prompt asks claude to file a GitHub issue
- *                        at adamcongdon/privacy-screen via `gh` CLI.
+ * Three endpoints:
+ *   GET  /preview      — returns the scrubbed diagnostics JSON. No spawn.
+ *                        Used by the UI to show the user what's about to be sent.
+ *   POST /             — accepts { summary: string }, runs scrub + credential
+ *                        gating, then enqueues a background job that pipes a
+ *                        deterministically-assembled body to
+ *                        `gh issue create --body-file -`. Returns 202 + jobId
+ *                        immediately. No LLM, no inline spawn wait.
+ *   GET  /:jobId       — poll for status (queued | drafting | filing | done | error).
+ *                        On done, returns issueNumber + issueUrl extracted from
+ *                        gh's stdout.
  *
- * Test seam: PRIVACY_SCREEN_FEEDBACK_TEST_CLAUDE_BIN overrides the binary
- * used for both the presence check AND the spawn. This lets tests stub the
- * CLI without touching PATH (the rest of the server still uses real claude).
+ * Test seam: __PRIVACY_SCREEN_TEST_GH_BIN overrides the gh binary used for
+ * both the presence check AND the spawn. This lets tests stub the CLI without
+ * touching PATH.
  *
- * Privacy invariant (ISC-32): every string that enters the spawn argv has
- * been through scrubText() against the user's vocab + scrub map. The
- * anti-leak test captures the argv and asserts no raw customer name appears,
- * only {CUSTOMER}/{CUSTOMER_N} tokens.
+ * Privacy invariant (ISC-32): every string that enters the spawn argv or the
+ * issue body has been through scrubText() against the user's vocab + scrub
+ * map. The anti-leak test captures the argv + body via the same stub pattern
+ * and asserts no raw customer name appears, only {CUSTOMER}/{CUSTOMER_N}
+ * tokens.
  */
 
 import { Hono } from 'hono';
@@ -32,21 +30,21 @@ import { loadConfig } from '../../src/config';
 import { scrubText } from '../../src/scrubber';
 import { ScrubMap } from '../../src/scrub-map';
 import { getVocab } from '../lib/vocab-store';
-import { checkClaudeCode } from '../lib/claude-code-check';
 import { collectDiagnostics, type Diagnostics, assertRedacted } from '../lib/feedback-diagnostics';
+import { createJob, getJob, updateJob } from '../lib/feedback-jobs';
 
 export const feedbackRoute = new Hono();
 
-/** Hard cap on the user summary so we don't blow the argv length on Linux. */
+/** Hard cap on the user summary so a pathological paste can't blow argv length. */
 const MAX_SUMMARY_LEN = 8_000;
-/** Wall-clock budget for the claude spawn. */
+/** Wall-clock budget for the `gh issue create` spawn. */
 const SPAWN_TIMEOUT_MS = 60_000;
-/** Truncate captured stdout to keep the JSON response bounded. */
-const STDOUT_TRUNCATE_LEN = 4_000;
-
-interface PostBody {
-  summary: string;
-}
+/** Maximum stderr we keep around when surfacing a gh failure. */
+const STDERR_TRUNCATE_LEN = 1_000;
+/** Maximum issue-title length we send to gh. */
+const TITLE_MAX_LEN = 60;
+/** GitHub repo the issue is filed against. */
+const TARGET_REPO = 'adamcongdon/privacy-screen';
 
 /**
  * GET /api/feedback/preview — return the diagnostics in their scrubbed form
@@ -72,7 +70,8 @@ feedbackRoute.get('/preview', (c) => {
 });
 
 /**
- * POST /api/feedback — file a GitHub issue via the local claude CLI.
+ * POST /api/feedback — scrub-and-validate inline, then enqueue a background
+ * job and return 202 + jobId. Never blocks the caller on the gh spawn.
  */
 feedbackRoute.post('/', async (c) => {
   const raw: unknown = await c.req.json().catch(() => null);
@@ -84,16 +83,38 @@ feedbackRoute.post('/', async (c) => {
     return c.json({ ok: false, error: 'summary is required' }, 400);
   }
 
-  // ── 1. Gate on local claude CLI presence (mirrors the boot check) ───────
-  const claudeBin = resolveClaudeBin();
-  const presence = checkClaudeBinary(claudeBin);
+  // ── 1. Gate on local gh CLI presence ─────────────────────────────────────
+  const ghBin = resolveGhBin();
+  const presence = checkGhBinary(ghBin);
   if (!presence.found) {
     return c.json(
       {
         ok: false,
         error:
-          'claude CLI not found on PATH — install Claude Code and run `claude login` ' +
+          'gh CLI not found on PATH — install GitHub CLI and run `gh auth login` ' +
           'before submitting feedback.',
+      },
+      503,
+    );
+  }
+
+  // ── 1b. Gate on gh authentication (issue #42) ────────────────────────────
+  //
+  // checkGhBinary only verifies the binary exists — it does NOT verify the
+  // user has logged in. Without this guard, the user submits feedback, the
+  // dialog closes, and the background spawn fails much later with a generic
+  // HTTP 401 from GitHub's GraphQL API. That error then surfaces in the
+  // feedback pill with no actionable hint. Gate up front so the user gets a
+  // synchronous, actionable message in the dialog.
+  const auth = checkGhAuth(ghBin);
+  if (!auth.ok) {
+    return c.json(
+      {
+        ok: false,
+        error:
+          'gh is installed but not authenticated — run `gh auth login` in a ' +
+          'terminal, then try again.' +
+          (auth.detail ? ` (gh said: ${auth.detail})` : ''),
       },
       503,
     );
@@ -112,8 +133,6 @@ feedbackRoute.post('/', async (c) => {
 
   const userSummary = String(body.summary).slice(0, MAX_SUMMARY_LEN);
 
-  // Defensive scrub: wrap scrubText invocations to avoid a crashing user
-  // input from bubbling up and echoing sensitive data.
   let summaryScrub;
   let diagnosticsScrubJson;
   try {
@@ -161,86 +180,218 @@ feedbackRoute.post('/', async (c) => {
     );
   }
 
-  const prompt = buildPrompt(summaryScrub.scrubbed, diagnosticsScrubJson.scrubbed);
+  // ── 3. Enqueue the background job and return immediately ────────────────
+  const job = createJob();
+  // Fire-and-forget. The worker owns all subsequent state transitions; if it
+  // throws unexpectedly the catch below records the error on the job so a
+  // polling client still gets a final state instead of hanging forever.
+  void runJob(job.jobId, ghBin, summaryScrub.scrubbed, diagnosticsScrubJson.scrubbed).catch(
+    (err) => {
+      const msg = (err as Error)?.message ?? String(err);
+      process.stderr.write('[privacy-screen] feedback.job.unexpected: ' + msg + '\n');
+      updateJob(job.jobId, { status: 'error', error: msg.slice(0, STDERR_TRUNCATE_LEN) });
+    },
+  );
 
-  // ── 3. Spawn claude -p <prompt> ─────────────────────────────────────────
-  // Use Bun.spawn so the event loop is not blocked by a long-running
-  // external process. AbortSignal.timeout enforces the wall-clock budget.
+  return c.json({ ok: true, jobId: job.jobId }, 202);
+});
+
+/**
+ * GET /api/feedback/:jobId — poll for status of an enqueued submission.
+ * Returns the JobState verbatim on hit, 404 on miss.
+ */
+feedbackRoute.get('/:jobId', (c) => {
+  const jobId = c.req.param('jobId');
+  const state = getJob(jobId);
+  if (!state) {
+    return c.json({ ok: false, error: 'not found' }, 404);
+  }
+  return c.json(state, 200);
+});
+
+// ── Worker ───────────────────────────────────────────────────────────────────
+
+/**
+ * Background worker for a single feedback submission. Walks the job through
+ * its phases (drafting → filing → done|error) and never throws to the caller —
+ * any failure is recorded on the job itself.
+ */
+export async function runJob(
+  jobId: string,
+  ghBin: string,
+  summary: string,
+  diagnosticsJson: string,
+): Promise<void> {
+  updateJob(jobId, { status: 'drafting' });
+
+  const title = buildTitle(summary);
+  const issueBody = buildBody(summary, diagnosticsJson);
+
+  updateJob(jobId, { status: 'filing' });
+
   try {
     const proc = Bun.spawn({
-      cmd: [claudeBin, '-p', prompt],
-      stdin: 'ignore',
+      cmd: [
+        ghBin,
+        'issue',
+        'create',
+        '--repo',
+        TARGET_REPO,
+        '--title',
+        title,
+        '--body-file',
+        '-',
+      ],
+      stdin: 'pipe',
       stdout: 'pipe',
       stderr: 'pipe',
       env: process.env,
       signal: AbortSignal.timeout(SPAWN_TIMEOUT_MS),
     });
 
+    // Write the body to stdin and close it. `proc.stdin` is a FileSink in Bun.
+    try {
+      proc.stdin.write(issueBody);
+      await proc.stdin.end();
+    } catch (err) {
+      // If the child died before we finished writing, fall through to exit code
+      // handling — stderr usually has the real reason.
+      process.stderr.write('[privacy-screen] feedback.gh.stdin.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
+    }
+
     const stdoutPromise = new Response(proc.stdout).text().catch(() => '');
     const stderrPromise = new Response(proc.stderr).text().catch(() => '');
     const exitCode = await proc.exited;
-    const stdout = (await stdoutPromise).slice(0, STDOUT_TRUNCATE_LEN);
-    const stderr = (await stderrPromise).slice(0, STDOUT_TRUNCATE_LEN);
+    const stdout = await stdoutPromise;
+    const stderr = (await stderrPromise).slice(0, STDERR_TRUNCATE_LEN);
 
-    if (exitCode === null) {
-      return c.json({ ok: false, error: `claude timed out after ${SPAWN_TIMEOUT_MS}ms` }, 504);
-    }
     if (exitCode !== 0) {
-      return c.json({ ok: false, error: `claude exited ${exitCode}: ${stderr}` }, 502);
+      updateJob(jobId, {
+        status: 'error',
+        error: stderr.trim() || `gh issue create failed (exit ${exitCode})`,
+      });
+      return;
     }
 
-    // MEDIUM-2: only return a github.com URL if present
     const urlMatch = stdout.match(/https:\/\/github\.com\/[^\s]+/);
-    const output = urlMatch ? urlMatch[0] : '(no url in output)';
-    return c.json({ ok: true, output }, 200);
+    const issueUrl = urlMatch ? urlMatch[0] : undefined;
+    const numberMatch = issueUrl ? issueUrl.match(/\/issues\/(\d+)/) : null;
+    const issueNumber = numberMatch ? Number.parseInt(numberMatch[1], 10) : undefined;
+
+    if (!issueUrl) {
+      updateJob(jobId, {
+        status: 'error',
+        error: 'gh exited 0 but no github.com URL appeared in stdout',
+      });
+      return;
+    }
+
+    updateJob(jobId, { status: 'done', issueUrl, issueNumber });
   } catch (err) {
-    // AbortError or spawn failure — map to 502/504 as appropriate
     const msg = (err as Error)?.message ?? String(err);
     if (msg && msg.toLowerCase().includes('aborted')) {
-      return c.json({ ok: false, error: `claude timed out after ${SPAWN_TIMEOUT_MS}ms` }, 504);
+      updateJob(jobId, { status: 'error', error: `gh timed out after ${SPAWN_TIMEOUT_MS}ms` });
+      return;
     }
-    return c.json({ ok: false, error: `claude spawn failed: ${msg}` }, 502);
+    updateJob(jobId, { status: 'error', error: `gh spawn failed: ${msg.slice(0, STDERR_TRUNCATE_LEN)}` });
   }
-});
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
- * Resolve which `claude` binary to use. The default is the literal string
- * "claude" — relying on PATH like the rest of the server does. The test seam
- * env var lets the feedback-route test substitute a stub script so we can
- * exercise the 503 path and the anti-leak capture without touching PATH.
+ * Produce a single-line, length-capped title from the (already-scrubbed) user
+ * summary. Falls back to a sentinel when the summary is empty after trimming.
  */
-export function resolveClaudeBin(): string {
-  if (process.env.NODE_ENV === 'production') return 'claude';
-  return process.env.__PRIVACY_SCREEN_TEST_CLAUDE_BIN ?? 'claude';
+export function buildTitle(summary: string): string {
+  const flattened = summary.replace(/[\r\n]+/g, ' ').trim();
+  if (flattened.length === 0) return 'Feedback';
+  return flattened.slice(0, TITLE_MAX_LEN);
 }
 
 /**
- * Presence check for the resolved binary. If the test seam pointed us at a
- * specific file path (anything containing `/`), we check whether the path
- * resolves to an executable by running `--version`. Otherwise we delegate
- * to the same `checkClaudeCode()` helper the server uses at boot.
+ * Assemble the deterministic issue body. The scrubbed summary goes on top so
+ * the issue preview shows the user's words; diagnostics live in a collapsed
+ * <details> block so triagers can expand them without cluttering the feed.
+ *
+ * The diagnostics JSON is already a pretty-printed string from the caller.
  */
-function checkClaudeBinary(bin: string): { found: boolean; version: string | null } {
-  if (bin === 'claude') {
-    try {
-      const r = spawnSync('claude', ['--version'], { encoding: 'utf-8', timeout: 1500 });
-      if (r && r.status === 0) return { found: true, version: (r.stdout ?? '').trim() };
-      return { found: false, version: null };
-    } catch (err) {
-      process.stderr.write('[privacy-screen] feedback.binary.check.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
-      return { found: false, version: null };
-    }
-  }
+export function buildBody(summary: string, diagnosticsJson: string): string {
+  return [
+    summary,
+    '',
+    '<details><summary>Diagnostics</summary>',
+    '',
+    '```json',
+    diagnosticsJson,
+    '```',
+    '',
+    '</details>',
+    '',
+  ].join('\n');
+}
 
+/**
+ * Resolve which `gh` binary to use. Default is the literal "gh" — relying on
+ * PATH like the rest of the system. The test seam env var lets tests stub the
+ * CLI without touching PATH.
+ */
+export function resolveGhBin(): string {
+  if (process.env.NODE_ENV === 'production') return 'gh';
+  return process.env.__PRIVACY_SCREEN_TEST_GH_BIN ?? 'gh';
+}
+
+/**
+ * Presence check for the resolved gh binary. Mirrors the shape of
+ * checkClaudeBinary() in the previous design — short timeout, no exceptions
+ * escape.
+ */
+export function checkGhBinary(bin: string): { found: boolean; version: string | null } {
   try {
-    const r = spawnSync(bin, ['--version'], { encoding: 'utf-8', timeout: 1500 });
-    if (r.status === 0) return { found: true, version: (r.stdout ?? '').trim() };
+    // Pass `env: process.env` explicitly — under bun, spawnSync does NOT
+    // inherit the parent environment by default. Without this, the child
+    // shell sees a stripped env, which masks PATH-dependent test seams.
+    const r = spawnSync(bin, ['--version'], {
+      encoding: 'utf-8',
+      timeout: 1500,
+      env: process.env,
+    });
+    if (r && r.status === 0) return { found: true, version: (r.stdout ?? '').trim() };
     return { found: false, version: null };
   } catch (err) {
     process.stderr.write('[privacy-screen] feedback.binary.check.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
     return { found: false, version: null };
+  }
+}
+
+/**
+ * Authentication check for the resolved gh binary (issue #42).
+ *
+ * `gh auth status` exits 0 when the CLI has a valid stored credential or
+ * picks up GITHUB_TOKEN from the environment. Any non-zero exit (no auth
+ * configured, expired token, rate limited) means the subsequent
+ * `gh issue create` will fail with the same HTTP 401 the user saw. We
+ * surface that synchronously instead.
+ *
+ * `detail` is a one-line stderr/stdout excerpt suitable for the dialog —
+ * truncated to keep the response payload small.
+ */
+export function checkGhAuth(bin: string): { ok: boolean; detail: string | null } {
+  try {
+    // Pass `env: process.env` explicitly so gh sees the user's GITHUB_TOKEN
+    // (and any test seams). Bun's spawnSync does not inherit by default.
+    const r = spawnSync(bin, ['auth', 'status'], {
+      encoding: 'utf-8',
+      timeout: 3000,
+      env: process.env,
+    });
+    if (r && r.status === 0) return { ok: true, detail: null };
+    const combined = `${r?.stderr ?? ''}${r?.stdout ?? ''}`.trim();
+    const firstLine = combined.split(/\r?\n/).find((line) => line.trim().length > 0) ?? '';
+    return { ok: false, detail: firstLine.slice(0, 200) || null };
+  } catch (err) {
+    process.stderr.write('[privacy-screen] feedback.auth.check.failed: ' + ((err as Error)?.message ?? String(err)) + '\n');
+    return { ok: false, detail: null };
   }
 }
 
@@ -260,35 +411,4 @@ function scrubDiagnostics(d: Diagnostics): Diagnostics {
     judge: { enabled: d.judge.enabled, configured: d.judge.configured },
     config: { ...d.config },
   };
-}
-
-/**
- * Build the prompt for `claude -p`. The prompt instructs claude to file a
- * GitHub issue against this repository using the local `gh` CLI. Everything
- * variable in here (`summary`, `diagnosticsJson`) has already been through
- * scrubText() in the caller.
- */
-function buildPrompt(summary: string, diagnosticsJson: string): string {
-  return [
-    'You are filing a GitHub issue on behalf of a privacy-screen user who clicked',
-    'the in-app "Send feedback" button. Use the local `gh` CLI (already',
-    'authenticated for the user) to open an issue at adamcongdon/privacy-screen.',
-    'When invoking gh, always pass --repo adamcongdon/privacy-screen; do not rely on the current working directory.',
-    '',
-    'Title: pick a short, specific title derived from the user summary below.',
-    'Body: use the scrubbed user summary verbatim, then append a',
-    '"<details><summary>Diagnostics</summary>" block containing the diagnostics JSON.',
-    '',
-    'Do NOT add any extra prose, do NOT add labels, do NOT @-mention anyone.',
-    'When done, print the URL of the issue you opened on stdout and exit.',
-    '',
-    '--- USER SUMMARY (already scrubbed) ---',
-    summary,
-    '--- END USER SUMMARY ---',
-    '',
-    '--- DIAGNOSTICS (already scrubbed) ---',
-    diagnosticsJson,
-    '--- END DIAGNOSTICS ---',
-    '',
-  ].join('\n');
 }

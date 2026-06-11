@@ -1,10 +1,16 @@
 /**
- * Scrubber tests — port of se-lz PiiScrubberTests.cs
+ * Scrubber tests — ported from an internal C# test suite.
  * Tests the scrubText() function against canonical cases from the C# test suite.
  */
 import { describe, test, expect } from 'bun:test';
 import { ScrubMap } from '../src/scrub-map';
 import { scrubText } from '../src/scrubber';
+import {
+  mkIpv4, mkIpv6, mkEmail, mkUncPath, mkDomainUser, mkFqdn,
+  mkPhone, mkStreetAddress, mkCreditCard, mkUrlPath, mkSensitiveKV,
+  mkCredential, mkMac, mkGuid, mkCorpEntity,
+  mkPersonFromHeader, mkPersonAdjacentToEmail, mkSignOffName,
+} from '../src/patterns';
 
 function scrub(text: string, map?: ScrubMap) {
   const m = map ?? new ScrubMap();
@@ -50,10 +56,10 @@ describe('scrubText — FQDN', () => {
     expect(r.scrubbed).not.toContain('backup01.acme.internal');
   });
 
-  test('skips allowlisted example FQDN', () => {
+  test('skips allowlisted Azure FQDN', () => {
     const map = new ScrubMap();
-    scrub('Check updates.example.com', map);
-    expect(map.tokenFor('updates.example.com')).toBeUndefined();
+    scrub('Check mgmt.azure.com', map);
+    expect(map.tokenFor('mgmt.azure.com')).toBeUndefined();
   });
 
   test('skips allowlisted Microsoft FQDN', () => {
@@ -231,6 +237,39 @@ describe('scrubText — customer_names from config', () => {
   });
 });
 
+describe('scrubText — user_patterns from config (SCR-08 / issue #61)', () => {
+  test('pre-mints user_patterns literals from cfg so they tokenize under declared cat with NO vocab pre-seeding (TDD red path first)', () => {
+    const map = new ScrubMap();
+    const cfg: PrivacyConfig = {
+      ...baseCfg,
+      user_patterns: [{ text: 'Project X', cat: 'project' }],
+    };
+    const r = scrubText('Status of Project X is green', map, null, {
+      sourceEvent: 'test',
+      config: cfg,
+    });
+    // Acceptance: the literal from config.user_patterns must be tokenized even with vocab=null
+    expect(r.scrubbed).not.toContain('Project X');
+    expect(map.tokenFor('Project X')).toBe('{PROJECT}');
+    expect(r.scrubbed).toContain('{PROJECT}');
+  });
+
+  test('user_patterns case-insensitive and supports multi-word + custom cat', () => {
+    const map = new ScrubMap();
+    const cfg: PrivacyConfig = {
+      ...baseCfg,
+      user_patterns: [{ text: 'Acme Secret', cat: 'internal' }],
+    };
+    const r = scrubText('acme secret and ACME SECRET here', map, null, {
+      sourceEvent: 'test',
+      config: cfg,
+    });
+    expect(r.scrubbed).not.toContain('acme secret');
+    expect(r.scrubbed).not.toContain('ACME SECRET');
+    expect(map.tokenFor('Acme Secret')).toMatch(/^\{INTERNAL(_\d+)?\}$/);
+  });
+});
+
 describe('scrubText — fqdn_allowlist_extra from config', () => {
   test('extra FQDN suffix passes through', () => {
     const map = new ScrubMap();
@@ -390,7 +429,7 @@ describe('scrubText — person name detection', () => {
     const map = new ScrubMap();
     const sample = [
       'From: Vincent Tidwell <vt@example.com>',
-      'To: Adam Congdon <adam@example.com>',
+      'To: Dana Whitfield <dw@example.com>',
       'Cc: Blake Sheffield <bs@example.com>; Chad Aiken <ca@example.com>; Mike Bova <mb@example.com>',
       '',
       'Hey team,',
@@ -413,15 +452,15 @@ describe('scrubText — person name detection', () => {
 
   test('respects name_allowlist from config', () => {
     const map = new ScrubMap();
-    const cfg: PrivacyConfig = { ...baseCfg, name_allowlist: ['Adam Congdon'] };
+    const cfg: PrivacyConfig = { ...baseCfg, name_allowlist: ['Dana Whitfield'] };
     const r = scrubText(
-      'From: Adam Congdon <adam@example.com>\nHi.',
+      'From: Dana Whitfield <dw@example.com>\nHi.',
       map,
       null,
       { sourceEvent: 'test', config: cfg },
     );
-    expect(map.tokenFor('Adam Congdon')).toBeUndefined();
-    expect(r.scrubbed).toContain('Adam Congdon');
+    expect(map.tokenFor('Dana Whitfield')).toBeUndefined();
+    expect(r.scrubbed).toContain('Dana Whitfield');
   });
 
   test('pre-mints person_names from config', () => {
@@ -681,5 +720,96 @@ describe('scrubText — FQDN identifier filtering', () => {
       config: baseCfg,
     });
     expect(map.tokenFor('host.example.com')).toBeDefined();
+  });
+});
+
+// #64 invariant test + helper (TDD RED already shown via ReferenceError run; now GREEN body)
+function assertNoResidualPii(scrubbed: string, cfg: PrivacyConfig, vocab: VocabStore | null): void {
+  if (!scrubbed) return;
+  const detectors: Array<[string, () => RegExp]> = [
+    ['ipv4', mkIpv4], ['ipv6', mkIpv6], ['email', mkEmail], ['uncpath', mkUncPath],
+    ['domainuser', mkDomainUser], ['fqdn', mkFqdn], ['phone', mkPhone],
+    ['streetaddr', mkStreetAddress], ['creditcard', mkCreditCard], ['urlpath', mkUrlPath],
+    ['sensitivekv', mkSensitiveKV], ['credential', mkCredential], ['mac', mkMac],
+    ['guid', mkGuid], ['corpentity', mkCorpEntity], ['personheader', mkPersonFromHeader],
+    ['personadjacent', mkPersonAdjacentToEmail], ['signoffname', mkSignOffName],
+  ];
+  const TOKEN_RE = /^\{[A-Z0-9_]+(_\d+)?\}$/;
+  for (const [name, mk] of detectors) {
+    const re = mk(); re.lastIndex = 0;
+    for (const h of [...scrubbed.matchAll(re)]) {
+      const val = h[0];
+      if (TOKEN_RE.test(val) || (val.includes('{') && val.includes('}'))) continue;
+      if ((name === 'sensitivekv' || name === 'credential') && /REDACTED/i.test(val || (h[2]||''))) continue;
+      throw new Error(`[assertNoResidualPii] Residual ${name} PII in scrubbed: ${JSON.stringify(val)}`);
+    }
+  }
+  if (vocab) {
+    for (const p of vocab.activePatterns()) {
+      try {
+        const re = new RegExp(p.regex_source, 'g'); re.lastIndex = 0;
+        for (const h of [...scrubbed.matchAll(re)]) {
+          const val = h[0];
+          if (TOKEN_RE.test(val) || (val.includes('{') && val.includes('}'))) continue;
+          throw new Error(`[assertNoResidualPii] Residual induced ${p.category}: ${JSON.stringify(val)}`);
+        }
+      } catch (e:any) { if (e.message && e.message.includes('Residual')) throw e; }
+    }
+  }
+}
+
+describe('scrubText — no residual PII invariant (SCR-11 / #64)', () => {
+  function freshVocab64(): { vocab: VocabStore; dir: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'pai-scrubber-64-'));
+    return { vocab: new VocabStore(join(dir, 'vocab.db')), dir };
+  }
+  const CORPUS = 'Email admin@acme.corp ; IP 10.9.9.9 ; phone (555) 111-2222 ; From: Test User <tu@ex.com> ; addr 99 Pine St ; cc 4012-8888-8888-1881 ; ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH ; Best,\n\nEve Demo';
+  test('planted corpus fully removed by scrub; re-run of all detectors + induced on output finds zero residual raw PII', () => {
+    const {vocab, dir} = freshVocab64();
+    try {
+      const id = vocab.persistInducedPattern({category:'ticket', regex_source:'\\bINC-\\d{5}\\b', skeleton:'\\bINC-\\d{5}\\b', source_examples:['INC-12345'], confidence:0.8});
+      vocab.setInducedStatus(id, 'active');
+      const cfg: PrivacyConfig = {...baseCfg};
+      const m = new ScrubMap();
+      const r = scrubText(CORPUS, m, vocab, {sourceEvent:'64', config:cfg});
+      assertNoResidualPii(r.scrubbed, cfg, vocab);
+      expect(r.scrubbed).not.toMatch(/10\.9\.9\.9|\(555\)|4012|ghp_/);
+    } finally { vocab.close(); rmSync(dir, {recursive:true, force:true}); }
+  });
+});
+
+// Unicode SCR-07 TDD cases (red shown before src; now green post unicode patterns+boundary)
+describe('scrubText — unicode person names and internationalized emails (SCR-07)', () => {
+  test('unicode name in From header + IDN-ish email mints PERSON+EMAIL', () => {
+    const map = new ScrubMap();
+    const r = scrubText(
+      'From: José García <josé@münchen.example>\nHello.',
+      map,
+      null,
+      { sourceEvent: 'test', config: baseCfg },
+    );
+    expect(map.tokenFor('José García')).toBeDefined();
+    expect(map.tokenFor('José García')).toMatch(/^\{PERSON/);
+    expect(map.tokenFor('josé@münchen.example')).toBeDefined();
+    expect(map.tokenFor('josé@münchen.example')).toMatch(/^\{EMAIL/);
+    expect(r.mintedTokens.some((t) => t.type === 'PERSON')).toBe(true);
+    expect(r.mintedTokens.some((t) => t.type === 'EMAIL')).toBe(true);
+    expect(r.scrubbed).not.toContain('José García');
+    expect(r.scrubbed).not.toContain('josé@münchen.example');
+  });
+
+  test('acceptance case mints PERSON+EMAIL', () => {
+    const map = new ScrubMap();
+    const r = scrubText(
+      'Jose Garcia <jose@muenchen.example>',
+      map,
+      null,
+      { sourceEvent: 'test', config: baseCfg },
+    );
+    expect(map.tokenFor('Jose Garcia')).toBeDefined();
+    expect(map.tokenFor('Jose Garcia')).toMatch(/^\{PERSON/);
+    expect(map.tokenFor('jose@muenchen.example')).toBeDefined();
+    expect(map.tokenFor('jose@muenchen.example')).toMatch(/^\{EMAIL/);
+    expect(r.hasCredentials).toBe(false);
   });
 });

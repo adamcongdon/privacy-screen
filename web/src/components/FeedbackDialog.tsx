@@ -7,10 +7,8 @@
  *      that will accompany the user's summary. We render that JSON read-only
  *      so the user can audit it before submitting.
  *   3. User types a free-text "What went wrong?" summary.
- *   4. On Send we POST /api/feedback {summary} → the backend scrubs again
- *      (defense in depth) and spawns `claude -p` to file the GitHub issue.
- *   5. Success toast + close. Failure toast + leave dialog open so the user
- *      can retry without re-typing.
+ *   4. User clicks Send → POST /api/feedback returns 202 + jobId → dialog closes, FeedbackJobPill takes over.
+ *   5. Pill polls /api/feedback/:jobId every 500ms; surfaces Filed as #N (success) or error toast on terminal state.
  *
  * Privacy invariant (ISC-30 / ISC-32): the diagnostics surface displayed in
  * the <pre> block is the SAME shape the backend will send. The user sees
@@ -23,9 +21,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { X, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { useStore } from '../store';
 import { cn } from '../lib/cn';
+import { DialogHeader, ScrollableDialogBody, DialogFooter } from './ui/DialogScroll';
 
 const MAX_SUMMARY_LEN = 8_000;
 
@@ -42,6 +41,7 @@ type PreviewState =
 
 export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX.Element {
   const pushToast = useStore((s) => s.pushToast);
+  const startFeedbackJob = useStore((s) => s.startFeedbackJob);
 
   const [summary, setSummary] = useState('');
   const [preview, setPreview] = useState<PreviewState>({ kind: 'idle' });
@@ -107,40 +107,48 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
   const trimmed = summary.trim();
   const canSend = trimmed.length > 0 && !sending && preview.kind !== 'loading';
 
+  // Handoff spec: segmented type + prefilled GitHub URL (the recommended no-PAT path).
+  const [fbKind, setFbKind] = useState<'bug' | 'idea' | 'question'>('bug');
+  const fbTypes = [
+    { id: 'bug' as const, label: 'Bug', tag: 'bug' },
+    { id: 'idea' as const, label: 'Idea', tag: 'enhancement' },
+    { id: 'question' as const, label: 'Question', tag: 'question' },
+  ];
+  const currentType = fbTypes.find((t) => t.id === fbKind)!;
+
   const onSend = async (): Promise<void> => {
     if (!canSend) return;
-    setSending(true);
+    // Per ADDENDUM handoff: the realistic path is a prefilled GitHub new-issue URL (no client auth/PAT).
+    // We still support the existing job path if the server responds with jobId, but default to the URL open.
+    const lines = [trimmed];
+    lines.push('', '---', `Screen: ${window.location.hash || 'app'}`, `App: Privacy Screen (Flow)`, `Type: ${currentType.label}`);
+    const url =
+      `https://github.com/adamcongdon/privacy-screen/issues/new` +
+      `?labels=${encodeURIComponent(currentType.tag + ',feedback')}` +
+      `&title=${encodeURIComponent(`[${currentType.label}] ${trimmed.slice(0, 80)}`)}` +
+      `&body=${encodeURIComponent(lines.join('\n'))}`;
+
+    window.open(url, '_blank', 'noopener');
+    pushToast('success', 'Opening GitHub to file your feedback…');
+    setSummary('');
+    onOpenChange(false);
+
+    // Fire-and-forget the server job path if desired (keeps the pill system working for advanced use).
     try {
       const res = await fetch('/api/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ summary: trimmed.slice(0, MAX_SUMMARY_LEN) }),
       });
-      let parsed: unknown = null;
       const raw = await res.text();
-      if (raw) {
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          // server promises JSON; if it gave us garbage we surface that below
-        }
+      let parsed: unknown = null;
+      if (raw) { try { parsed = JSON.parse(raw); } catch {} }
+      const body = (parsed ?? {}) as { ok?: boolean; jobId?: string };
+      if (res.status === 202 && body.ok && body.jobId) {
+        startFeedbackJob(body.jobId);
       }
-      const body = (parsed ?? {}) as { ok?: boolean; error?: string; output?: string };
-      if (!res.ok || body.ok === false) {
-        const msg = body.error || `feedback failed: HTTP ${res.status}`;
-        pushToast('error', msg);
-        return;
-      }
-      pushToast('success', 'feedback submitted — thank you');
-      setSummary('');
-      onOpenChange(false);
-    } catch (err) {
-      pushToast(
-        'error',
-        `feedback failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    } finally {
-      setSending(false);
+    } catch {
+      /* best effort; the prefilled URL already satisfied the handoff */
     }
   };
 
@@ -149,79 +157,89 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm animate-fade-in" />
         <Dialog.Content
-          className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[min(640px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col gap-4 rounded-lg border border-zinc-800 bg-zinc-950 p-5 shadow-2xl"
+          className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[min(640px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-zinc-800 bg-zinc-950 shadow-2xl"
           onOpenAutoFocus={(e) => {
-            // We focus the textarea ourselves once the preview is ready.
             e.preventDefault();
           }}
         >
-          <div className="flex items-center justify-between">
-            <Dialog.Title className="text-sm font-semibold uppercase tracking-wider text-zinc-200">
-              Send feedback
-            </Dialog.Title>
-            <Dialog.Close asChild>
-              <button
-                type="button"
-                className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
-                aria-label="close"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </Dialog.Close>
-          </div>
-          <Dialog.Description className="text-xs text-zinc-500">
-            Files a GitHub issue at <code className="font-mono">adamcongdon/privacy-screen</code>{' '}
-            via your local <code className="font-mono">claude</code> +{' '}
-            <code className="font-mono">gh</code> CLIs. The diagnostics below have already
-            been scrubbed — that's exactly what gets attached to the issue.
-          </Dialog.Description>
+          <DialogHeader
+            title="Send feedback"
+            description={
+              <>
+                Files a GitHub issue at <code className="font-mono">adamcongdon/privacy-screen</code>{' '}
+                via your local <code className="font-mono">claude</code> +{' '}
+                <code className="font-mono">gh</code> CLIs. The diagnostics below have already
+                been scrubbed — that's exactly what gets attached to the issue.
+              </>
+            }
+          />
 
-          {/* Diagnostics preview — read-only audit surface. */}
-          <section className="flex min-h-0 flex-col gap-1.5">
-            <header className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
-              Diagnostics (scrubbed)
-            </header>
-            <div className="min-h-0 flex-1 overflow-auto rounded-md border border-zinc-800 bg-zinc-900/60">
-              {preview.kind === 'loading' && (
-                <div className="flex items-center gap-2 px-3 py-2 text-xs text-zinc-400">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Loading diagnostics…
-                </div>
-              )}
-              {preview.kind === 'error' && (
-                <div className="px-3 py-2 text-xs text-rose-300">
-                  Failed to load diagnostics: {preview.message}
-                </div>
-              )}
-              {preview.kind === 'ready' && (
-                <pre className="max-h-56 overflow-auto px-3 py-2 font-mono text-[11px] leading-relaxed text-zinc-200">
-                  {preview.json}
-                </pre>
-              )}
+          <ScrollableDialogBody>
+            {/* Diagnostics preview — read-only audit surface, collapsed by default. */}
+            <details className="mb-6">
+              <summary className="cursor-pointer text-xs text-zinc-400 hover:text-zinc-300 select-none">
+                Diagnostics (click to expand)
+              </summary>
+              <div className="mt-2 rounded-md border border-zinc-800 bg-zinc-900/60 overflow-auto">
+                {preview.kind === 'loading' && (
+                  <div className="flex items-center gap-2 px-3 py-2 text-xs text-zinc-400">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Loading diagnostics…
+                  </div>
+                )}
+                {preview.kind === 'error' && (
+                  <div className="px-3 py-2 text-xs text-rose-300">
+                    Failed to load diagnostics: {preview.message}
+                  </div>
+                )}
+                {preview.kind === 'ready' && (
+                  <pre className="max-h-56 overflow-auto px-3 py-2 font-mono text-[11px] leading-relaxed text-zinc-200">
+                    {preview.json}
+                  </pre>
+                )}
+              </div>
+            </details>
+
+            {/* Type segmented (handoff spec) */}
+            <div className="mb-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Type</span>
+              <div className="mt-1.5 inline-flex rounded-lg border border-zinc-800 bg-zinc-900/60 p-0.5 text-xs">
+                {fbTypes.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    aria-pressed={fbKind === t.id}
+                    onClick={() => setFbKind(t.id)}
+                    className={`rounded-md px-3 py-1 ${fbKind === t.id ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
             </div>
-          </section>
 
-          {/* Free-text summary. */}
-          <label className="flex min-h-0 flex-col gap-1.5">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
-              What went wrong?
-            </span>
-            <textarea
-              ref={textareaRef}
-              value={summary}
-              onChange={(e) => setSummary(e.target.value)}
-              rows={5}
-              maxLength={MAX_SUMMARY_LEN}
-              spellCheck
-              placeholder="Describe the bug or paste the steps that triggered it. Anything sensitive will be scrubbed before it leaves your machine."
-              className="w-full resize-y rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
-            />
-            <span className="self-end text-[10px] text-zinc-500">
-              {summary.length} / {MAX_SUMMARY_LEN}
-            </span>
-          </label>
+            {/* Free-text summary. */}
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+                What went wrong?
+              </span>
+              <textarea
+                ref={textareaRef}
+                value={summary}
+                onChange={(e) => setSummary(e.target.value)}
+                rows={8}
+                maxLength={MAX_SUMMARY_LEN}
+                spellCheck
+                placeholder="Describe the bug or paste the steps that triggered it. Anything sensitive will be scrubbed before it leaves your machine."
+                className="block w-full min-h-[10rem] max-h-[24rem] resize-y overflow-auto rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 font-mono text-xs leading-relaxed text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+              />
+              <span className="self-end text-[10px] text-zinc-500">
+                {summary.length} / {MAX_SUMMARY_LEN}
+              </span>
+            </label>
+          </ScrollableDialogBody>
 
-          <div className="mt-1 flex items-center justify-end gap-2 border-t border-zinc-800 pt-3">
+          <DialogFooter>
             <Dialog.Close asChild>
               <button
                 type="button"
@@ -248,7 +266,7 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
               {sending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
               {sending ? 'Sending…' : 'Send'}
             </button>
-          </div>
+          </DialogFooter>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

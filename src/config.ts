@@ -4,13 +4,25 @@
  * Resolution order:
  *   1. $PRIVACY_SCREEN_CONFIG (explicit override)
  *   2. ./PRIVACY_CONFIG.yaml (relative to CWD)
- *   3. <project_root>/PRIVACY_CONFIG.yaml (relative to this file)
- *   4. Built-in defaults (no file = no extra config, sane defaults)
+ *   3. $HOME/.privacy-screen/PRIVACY_CONFIG.yaml (canonical user data dir —
+ *      the writable, persistent location used by the installed app; mirrors
+ *      where secrets.ts stores settings.json and judge-control stores models/)
+ *   4. <project_root>/PRIVACY_CONFIG.yaml (relative to this file)
+ *   5. Built-in defaults (no file = no extra config, sane defaults)
  */
 
 import { existsSync, readFileSync } from 'fs';
+import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { parse as parseYaml } from 'yaml';
+import {
+  isPatternName,
+  type ColumnPatternRule,
+  type XlsxConfig,
+} from './xlsx-types';
+
+// Re-export so existing consumers can `import type { XlsxConfig } from './config'`.
+export type { ColumnPatternRule, XlsxConfig, PatternName } from './xlsx-types';
 
 export type Mode = 'enforce' | 'observe' | 'disabled';
 
@@ -20,6 +32,19 @@ export type Mode = 'enforce' | 'observe' | 'disabled';
  * version-check requests. See Plans/INSTALLER.md.
  */
 export type UpdateChannel = 'off' | 'stable' | 'beta';
+
+/** Canonical manifest URLs for the self-service channel picker (no YAML editing). */
+export const UPDATE_CANONICAL_URLS: Record<'stable' | 'beta', string> = {
+  stable: 'https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json',
+  beta: 'https://raw.githubusercontent.com/adamcongdon/privacy-screen/beta/release-manifest-beta.json',
+};
+
+export function recommendedManifestUrlForChannel(
+  ch: 'off' | 'stable' | 'beta',
+): string | undefined {
+  if (ch === 'off') return undefined;
+  return UPDATE_CANONICAL_URLS[ch];
+}
 
 /**
  * LLM secondary-validation runtime. Only `llama-server` is supported in v1
@@ -67,7 +92,7 @@ export interface LlmValidateConfig {
 }
 
 export interface PrivacyConfig {
-  /** Extra FQDN suffixes never to tokenize (e.g. ".helios.example.com"). */
+  /** Extra FQDN suffixes never to tokenize (e.g. ".internal.example.com"). */
   fqdn_allowlist_extra: string[];
   /** Customer names — always tokenized as {CUST_N}. Case-insensitive match. */
   customer_names: string[];
@@ -115,6 +140,27 @@ export interface PrivacyConfig {
   llm_validate: LlmValidateConfig;
   /** Hook-side opt-in knobs (auto-approve precheck, etc). */
   hook: HookConfig;
+
+  /**
+   * Self-service user-defined literal patterns (from right-click "Tokenize selection").
+   * These are high-priority literal matches in the scrubber (priority 1.2).
+   * Persisted via UI only.
+   */
+  user_patterns?: Array<{ text: string; cat: string }>;
+
+  /**
+   * Self-service custom token categories (name + color) created by the user.
+   * Merged with built-ins for pills, menus, vocab filters.
+   * Persisted via UI only.
+   */
+  custom_categories?: Array<{ id: string; label: string; color: string }>;
+  /**
+   * xlsx scrubber config (Issue #23). Drives column → pattern resolution
+   * for `.xlsx` uploads. Optional in the type so call sites that construct
+   * `PrivacyConfig` literals (tests, mocks) don't break; `loadConfig`
+   * always populates it with the default `{ columnRules: [], autoDetect: true }`.
+   */
+  xlsx?: XlsxConfig;
 }
 
 const DEFAULTS: PrivacyConfig = {
@@ -140,8 +186,7 @@ const DEFAULTS: PrivacyConfig = {
     NotebookEdit: ['old_string', 'new_string'],
   },
   update_channel: 'off',
-  update_manifest_url:
-    'https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json',
+  update_manifest_url: UPDATE_CANONICAL_URLS.stable,
   llm_validate: {
     enabled: false,
     model_path: null,
@@ -154,6 +199,12 @@ const DEFAULTS: PrivacyConfig = {
   hook: {
     auto_approve_clean: false,
   },
+  xlsx: {
+    columnRules: [],
+    autoDetect: true,
+  },
+  user_patterns: [],
+  custom_categories: [],
 };
 
 export function loadConfig(explicitPath?: string): PrivacyConfig {
@@ -170,14 +221,31 @@ export function loadConfig(explicitPath?: string): PrivacyConfig {
   return applyEnvOverrides(merged);
 }
 
+/**
+ * Canonical user-data location for PRIVACY_CONFIG.yaml — `$HOME/.privacy-screen/
+ * PRIVACY_CONFIG.yaml`. This is the writable, persistent path the installed app
+ * reads from and writes to (the bundled binary runs with cwd=`/` and an
+ * `import.meta.dir` that points at a read-only virtual filesystem, so neither
+ * the CWD nor project-root candidates are usable there). Mirrors secrets.ts.
+ * Exported so the settings writer (server/lib/config-resolver.ts) targets the
+ * exact same file the reader picks up.
+ */
+export function userConfigPath(): string {
+  return join(homedir(), '.privacy-screen', 'PRIVACY_CONFIG.yaml');
+}
+
 function findConfigPath(): string | null {
   // Env-var override is authoritative — if set, never fall through to CWD or
   // project-root candidates, even when the target file doesn't exist. Tests
   // and isolated processes rely on this to keep the dev-machine config out.
   const envOverride = process.env.PRIVACY_SCREEN_CONFIG;
   if (envOverride) return envOverride;
+  // CWD is checked before the user-data dir so the dev workflow (running from
+  // the repo, which has its own PRIVACY_CONFIG.yaml) is unchanged, and so the
+  // test suite — run from the repo root — never picks up a real user config.
   for (const c of [
     join(process.cwd(), 'PRIVACY_CONFIG.yaml'),
+    userConfigPath(),
     resolve(import.meta.dir, '..', 'PRIVACY_CONFIG.yaml'),
   ]) {
     if (existsSync(c)) return c;
@@ -204,7 +272,63 @@ function mergeConfig(base: PrivacyConfig, override: unknown): PrivacyConfig {
     update_manifest_url: safeManifestUrl(o.update_manifest_url, base.update_manifest_url),
     llm_validate: mergeLlmValidate(base.llm_validate, o.llm_validate),
     hook: mergeHook(base.hook, o.hook),
+    xlsx: mergeXlsx(base.xlsx ?? { columnRules: [], autoDetect: true }, o.xlsx),
+    user_patterns: mergeUserPatterns(base.user_patterns ?? [], o.user_patterns),
+    custom_categories: mergeCustomCategories(base.custom_categories ?? [], o.custom_categories),
   };
+}
+
+/**
+ * Parse and validate the `xlsx:` YAML section. Rejects rules with an
+ * invalid `pattern` literal with a clear error — silent fallback would
+ * just leave the user puzzled why their column rule isn't firing.
+ *
+ * Shape contract (from privacy-config.example.yaml):
+ *   xlsx:
+ *     autoDetect: true
+ *     columnRules:
+ *       - header: "Customer Email"
+ *         pattern: Email
+ *       - headerRegex: "phone|mobile"
+ *         pattern: Phone
+ */
+function mergeXlsx(base: XlsxConfig, override: unknown): XlsxConfig {
+  if (!override || typeof override !== 'object') return base;
+  const o = override as Record<string, unknown>;
+
+  const autoDetect =
+    typeof o.autoDetect === 'boolean' ? o.autoDetect : base.autoDetect;
+
+  let columnRules: ColumnPatternRule[] = base.columnRules;
+  if (Array.isArray(o.columnRules)) {
+    columnRules = o.columnRules.map((raw, idx) => {
+      if (!raw || typeof raw !== 'object') {
+        throw new Error(
+          `[PrivacyScreen] xlsx.columnRules[${idx}]: rule must be an object`,
+        );
+      }
+      const r = raw as Record<string, unknown>;
+      if (!isPatternName(r.pattern)) {
+        throw new Error(
+          `[PrivacyScreen] xlsx.columnRules[${idx}].pattern: invalid PatternName '${String(r.pattern)}'. ` +
+            `Valid: Email, Phone, SSN, IPv4, IPv6, PersonName, StreetAddress, FQDN, CreditCard, UncPath, DomainUser, MAC, GUID.`,
+        );
+      }
+      const rule: ColumnPatternRule = { pattern: r.pattern };
+      if (typeof r.header === 'string' && r.header.length > 0) rule.header = r.header;
+      if (typeof r.headerRegex === 'string' && r.headerRegex.length > 0) {
+        rule.headerRegex = r.headerRegex;
+      }
+      if (!rule.header && !rule.headerRegex) {
+        throw new Error(
+          `[PrivacyScreen] xlsx.columnRules[${idx}]: must define 'header' or 'headerRegex'`,
+        );
+      }
+      return rule;
+    });
+  }
+
+  return { autoDetect, columnRules };
 }
 
 function mergeHook(base: HookConfig, override: unknown): HookConfig {
@@ -315,4 +439,35 @@ function mergeSkipFields(
     }
   }
   return out;
+}
+
+function mergeUserPatterns(
+  base: Array<{ text: string; cat: string }>,
+  override: unknown,
+): Array<{ text: string; cat: string }> {
+  if (!Array.isArray(override)) return base;
+  return override
+    .filter((p): p is { text: string; cat: string } =>
+      p && typeof p === 'object' && typeof p.text === 'string' && p.text.length > 0 && typeof p.cat === 'string' && p.cat.length > 0,
+    )
+    .map((p) => ({ text: p.text, cat: p.cat.toLowerCase() }));
+}
+
+function mergeCustomCategories(
+  base: Array<{ id: string; label: string; color: string }>,
+  override: unknown,
+): Array<{ id: string; label: string; color: string }> {
+  if (!Array.isArray(override)) return base;
+  const seen = new Set<string>();
+  const out: Array<{ id: string; label: string; color: string }> = [];
+  for (const c of override) {
+    if (!c || typeof c !== 'object') continue;
+    const id = typeof c.id === 'string' ? c.id : '';
+    const label = typeof c.label === 'string' ? c.label.trim() : '';
+    const color = typeof c.color === 'string' ? c.color : '';
+    if (!id || !label || !color || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, label, color });
+  }
+  return out.length ? out : base;
 }

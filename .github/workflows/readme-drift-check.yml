@@ -1,0 +1,103 @@
+name: README drift check
+
+# Warn-only PR-time check. Asks Claude: does this PR change user-visible behavior
+# that the README doesn't reflect? If yes, leave one PR comment with a concrete diff
+# suggestion. If no, exit silently. NEVER fails the PR.
+#
+# Pairs with .github/workflows/readme-sync.yml (post-release docs sync).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main, beta]
+    paths-ignore:
+      # Don't run on PRs that ONLY touch docs/CI — nothing to drift against.
+      - 'CHANGELOG.md'
+      - 'README.md'
+      - 'docs/**'
+      - '.github/workflows/**'
+      - '.github/dependabot.yml'
+      - '.github/CODEOWNERS'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+  id-token: write
+
+jobs:
+  drift-check:
+    # Skip dependabot — its PRs are bumps with no user-visible surface.
+    if: github.actor != 'dependabot[bot]' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Run Claude README drift check
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--allowed-tools Bash(git *) Bash(gh *) Bash(cat *) Bash(grep *) Read Glob Grep'
+          prompt: |
+            You are doing a README freshness check for PR #${{ github.event.pull_request.number }}
+            in `adamcongdon/privacy-screen`.
+
+            QUESTION
+            --------
+            Does this PR change user-visible behavior that the `README.md` does not yet reflect?
+
+            User-visible = something an end user, hook user, or CLI user would notice or want
+            documented. Examples: new CLI subcommand, new flag, changed default, new config
+            key in `PRIVACY_CONFIG.yaml`, new scrub category, new endpoint, new install step,
+            removed feature, changed safety guarantee.
+
+            NOT user-visible (skip): refactors, test changes, dependency bumps without behavior
+            change, internal type tightening, comment/doc edits, CI changes, code style.
+
+            STEPS
+            -----
+            1. Get the diff:
+                 `git fetch origin ${{ github.event.pull_request.base.ref }}`
+                 `git diff origin/${{ github.event.pull_request.base.ref }}...HEAD`
+
+            2. Read `README.md`. Pay attention to:
+                 - `## Quick start — App` and `## Quick start — Hook` (setup steps)
+                 - `## What it covers` (the regex/scrub category table)
+                 - `## Modes` (mode names + behavior)
+                 - `## Setup` and `## CLI` (commands + flags)
+                 - `## Optional: LLM secondary validator` (judge config)
+                 - `## Features` (between `<!-- features:start -->` and `<!-- features:end -->`)
+
+            3. Decide:
+                 - If NO user-visible change → print exactly: `README drift check: no user-visible changes detected.` and exit. Do NOT comment on the PR.
+                 - If user-visible AND README already covers it → print: `README drift check: README already reflects this change.` and exit. Do NOT comment.
+                 - If user-visible AND README does NOT cover it → post ONE comment on the PR (see format below).
+
+            4. Comment format (use `gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body '...'`):
+
+               ```
+               ### README freshness check
+
+               This PR appears to change user-visible behavior that the README does not yet describe:
+
+               - **Change:** <one-sentence summary of the new/changed behavior>
+               - **Where:** <file:line of the most representative diff hunk>
+               - **Suggested README section:** `## <section heading>`
+               - **Suggested wording:**
+
+                 > <2–4 sentence draft, in the existing README voice>
+
+               If this is intentional and README updates land in a follow-up PR, ignore this comment. This check is warn-only and never blocks merge.
+
+               <sub>Automated by `.github/workflows/readme-drift-check.yml`</sub>
+               ```
+
+            HARD CONSTRAINTS
+            ----------------
+            - Post AT MOST one comment per run. If you already see a `### README freshness check` comment from `github-actions[bot]` on this PR, do not post another — exit silently.
+            - NEVER edit any file. NEVER push commits. Comment-only.
+            - NEVER fail the job. This check is advisory.

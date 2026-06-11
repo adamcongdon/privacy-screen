@@ -1,13 +1,29 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en" class="theme-dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>privacy-screen</title>
+    <!-- PWA: basic web app manifest for "install on task bar" / Add to desktop (issue #47).
+         Minimal impl (no vite-plugin-pwa dep per "basic"/"minimal" guidance).
+         Icons referenced but not shipped in this change (see note in manifest + GH comment).
+         SW registered to meet PWA criteria. Served via vite public/ -> dist/ + hono serveStatic. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
   </head>
-  <body class="bg-zinc-950 text-zinc-100 antialiased">
+  <body class="antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <!-- Register minimal SW for PWA (install to taskbar). Safe: no aggressive caching of API. -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker.register('/sw.js').catch(function () {});
+        });
+      }
+    </script>
   </body>
 </html>

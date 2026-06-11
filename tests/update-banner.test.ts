@@ -145,8 +145,10 @@ test('dismiss button updates store and localStorage', () => {
   }
 });
 
-test('clicking the banner body opens settings with deep link to update', () => {
-  useStore.setState({ versionInfo: VERSION_INFO_AVAILABLE, settingsOpen: false });
+test('clicking the banner body navigates to the settings route', () => {
+  // Settings is a route now (the SettingsDrawer is no longer mounted), so the
+  // banner CTA navigates via setRoute('settings') instead of opening a drawer.
+  useStore.setState({ versionInfo: VERSION_INFO_AVAILABLE, route: 'scrub' });
   render(React.createElement(UpdateAvailableBanner));
 
   // The body is a button (distinct from the dismiss icon button).
@@ -160,6 +162,5 @@ test('clicking the banner body opens settings with deep link to update', () => {
     bodyBtn!.click();
   });
 
-  expect(useStore.getState().settingsOpen).toBe(true);
-  expect(useStore.getState().settingsDeepLink).toBe('update');
+  expect(useStore.getState().route).toBe('settings');
 });

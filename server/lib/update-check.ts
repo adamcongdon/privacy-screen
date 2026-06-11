@@ -211,9 +211,20 @@ export async function checkForUpdate(
       // legitimate here and would let a manifest-host adversary forward
       // the beacon to a third party. Reject 30x at the fetch layer.
       redirect: 'error',
-      // Explicitly: no custom headers, no body, no credentials.
-      // We send nothing about this machine beyond what an anonymous
-      // GET inherently reveals to the host.
+      // Never serve a cached manifest. A long-running app process otherwise
+      // honors the manifest's Cache-Control max-age (raw.githubusercontent
+      // sends max-age=300) and keeps returning the version it first fetched —
+      // so "Check for updates now" reports a stale release (e.g. still beta.13
+      // minutes after beta.14 published). `cache: 'no-store'` bypasses Bun's
+      // per-process HTTP cache; the no-cache headers ask the CDN for a
+      // revalidated copy. This is a user-initiated point check, not a hot path.
+      cache: 'no-store',
+      headers: {
+        'cache-control': 'no-cache',
+        pragma: 'no-cache',
+      },
+      // Otherwise: no body, no credentials. We send nothing about this machine
+      // beyond what an anonymous GET inherently reveals to the host.
     });
     if (!res.ok) return null;
     const raw: unknown = await res.json();
@@ -230,9 +241,24 @@ export async function checkForUpdate(
   if (manifest.channel !== opts.channel) return null;
 
   // Strictly newer only. Equal or older → null. We never recommend a
-  // downgrade.
+  // downgrade. One carve-out: a beta-channel client running a clean
+  // release should be offered the matching-base beta (e.g. current 0.0.1
+  // → manifest 0.0.1-beta.10), because subscribing to the beta channel
+  // means "track beta builds even if I happen to be on a stable tag."
   const cmp = compareVersions(manifest.version, currentVersion);
-  if (cmp !== 1) return null;
+  let isUpgrade = cmp === 1;
+  if (!isUpgrade && opts.channel === 'beta') {
+    const pm = parseSemver(manifest.version);
+    const pc = parseSemver(currentVersion);
+    if (
+      pm && pc &&
+      pm.major === pc.major && pm.minor === pc.minor && pm.patch === pc.patch &&
+      pm.beta !== null && pc.beta === null
+    ) {
+      isUpgrade = true;
+    }
+  }
+  if (!isUpgrade) return null;
 
   const asset = manifest.platforms[platformKey];
   if (!asset) return null;

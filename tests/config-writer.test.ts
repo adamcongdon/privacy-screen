@@ -6,7 +6,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
 
-import { patchLlmValidate } from '../server/lib/config-writer';
+import { patchLlmValidate, patchScreeningMode } from '../server/lib/config-writer';
 
 const TEST_CONFIG = '/tmp/pai-privacy-config-writer.yaml';
 
@@ -91,5 +91,42 @@ llm_validate:
     const next = patchLlmValidate({ enabled: true });
     // The writer accepted the patch; loader was already ignoring the broken file.
     expect(next.llm_validate.enabled).toBe(true);
+  });
+});
+
+describe('patchScreeningMode', () => {
+  test('writes the root mode scalar and preserves comments + other fields', () => {
+    writeFileSync(
+      TEST_CONFIG,
+      `# Keep me.
+mode: enforce
+customer_names:
+  - "Acme Corp"
+llm_validate:
+  enabled: true
+`,
+    );
+    const next = patchScreeningMode('observe');
+    expect(next.mode).toBe('observe');
+    const after = readFileSync(TEST_CONFIG, 'utf-8');
+    expect(after).toContain('# Keep me.');
+    expect(after).toContain('customer_names');
+    expect(after).toContain('Acme Corp');
+    // The judge block is untouched.
+    expect(next.llm_validate.enabled).toBe(true);
+  });
+
+  test('creates a minimal file when none exists', () => {
+    expect(existsSync(TEST_CONFIG)).toBe(false);
+    const next = patchScreeningMode('disabled');
+    expect(next.mode).toBe('disabled');
+    expect(readFileSync(TEST_CONFIG, 'utf-8')).toContain('mode: disabled');
+  });
+
+  test('round-trips each mode through loadConfig', () => {
+    for (const m of ['enforce', 'observe', 'disabled'] as const) {
+      const next = patchScreeningMode(m);
+      expect(next.mode).toBe(m);
+    }
   });
 });

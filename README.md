@@ -23,9 +23,43 @@ open http://127.0.0.1:31338
 
 **No API key needed** — inference runs through your local `claude` CLI, using the same OAuth session you already have. The server refuses to start if `claude` isn't on PATH. Walk `SAFETY_CHECKLIST_APP.md` before sending real data.
 
+## Install — desktop (double-click)
+
+Prefer not to clone the repo? Grab a packaged installer from the [latest release](https://github.com/adamcongdon/privacy-screen/releases):
+
+| Platform | Asset | What it does |
+|---|---|---|
+| **Windows** | `privacy-screen-setup-win32-x64.exe` | Double-click installer (no admin). Adds Start Menu / Desktop shortcuts that start the server and open the UI. |
+| **macOS** | `privacy-screen-<version>-darwin-arm64.dmg` / `-x64.dmg` | Open the `.dmg`, drag **privacy-screen** to Applications, launch it — the UI opens automatically. |
+
+The downloaded binaries are **self-contained**: the web UI is embedded inside the executable, so there are no extra files to place and no `bun run web:build` step. The shortcuts launch with `--open`, which boots the loopback server and opens `http://127.0.0.1:31338` in your browser. You still need the `claude` CLI installed and logged in — the installer/app warns if it isn't found.
+
+Prefer the raw binary? The plain `privacy-screen-win32-x64.exe` / `privacy-screen-darwin-*` assets also work standalone; pass `--open` (or set `PRIVACY_SCREEN_OPEN=1`) to auto-open the browser.
+
+> Building installers locally: `bun scripts/build-release.ts` produces the binaries and, on Windows with [Inno Setup 6](https://jrsoftware.org/isdl.php) installed, the `setup.exe`. macOS `.dmg`s are built by `installers/macos/package-macos.sh` (run on a Mac). See `installers/` and `.github/workflows/release.yml`.
+
 ## Quick start — Hook
 
 `SAFETY_CHECKLIST.md` (the older one) covers the Claude Code hook flow. Hook is NOT yet registered in your `settings.json` — opt in only after the checklist passes.
+
+## Features
+
+User-visible capabilities, newest first. `🆕` marks the latest release; the badge auto-decays once a feature is two releases behind. Per-release detail lives in [`CHANGELOG.md`](./CHANGELOG.md).
+
+<!-- features:start -->
+<!--
+  Entries are managed by .github/workflows/readme-sync.yml on every published release.
+  Manual edits are fine, but keep the format below so the automation can parse it:
+
+  - 🆕 **vX.Y.Z** — one-line user-visible blurb
+  - **vX.Y.Z** — one-line user-visible blurb
+-->
+
+_No features tracked yet — this list populates from the next published release._
+
+<!-- features:end -->
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for the full release history and [GitHub Releases](https://github.com/adamcongdon/privacy-screen/releases) for downloadable binaries.
 
 ## Auto-update
 
@@ -55,7 +89,7 @@ See `release-manifest.example.json` for the manifest shape and `Plans/INSTALLER.
 
 ## What it covers
 
-PrivacyScreen ships with deterministic regex coverage for the 8-category taxonomy used by [OpenAI's Privacy Filter](https://openai.com/index/introducing-openai-privacy-filter/) plus infrastructure-specific categories Adam works with daily:
+PrivacyScreen ships with deterministic regex coverage for the 8-category taxonomy used by [OpenAI's Privacy Filter](https://openai.com/index/introducing-openai-privacy-filter/) plus infrastructure-specific categories common in enterprise environments:
 
 | Category | Example | Token | Source |
 |---|---|---|---|
@@ -68,8 +102,8 @@ PrivacyScreen ships with deterministic regex coverage for the 8-category taxonom
 | URL with path | `https://internal.acme.com/secret/123` | `{URL}` | OpenAI `private_url` |
 | IPv4 / IPv6 | `10.0.5.3` | `{IP}` | Custom |
 | FQDN | `server.customer.com` | `{HOST}` | Custom (allowlist for vendor infra) |
-| UNC path | `\\server\share` | `{PATH}` | Custom (example-specific) |
-| Domain user | `DOMAIN\user` | `{USER}` | Custom (example-specific) |
+| UNC path | `\\server\share` | `{PATH}` | Custom (enterprise infra) |
+| Domain user | `DOMAIN\user` | `{USER}` | Custom (enterprise infra) |
 | MAC address | `aa:bb:cc:dd:ee:ff` | `{MAC}` | Custom |
 | GUID | `550e8400-…` | `{GUID}` | Custom |
 | Customer names | from `PRIVACY_CONFIG.yaml` | `{CUSTOMER}` | Custom |
@@ -123,13 +157,13 @@ Add to your Claude Code `settings.json`:
 {
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "bun /Users/adam.congdon/code/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
+      { "hooks": [{ "type": "command", "command": "bun /path/to/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
     ],
     "PreToolUse": [
-      { "hooks": [{ "type": "command", "command": "bun /Users/adam.congdon/code/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
+      { "hooks": [{ "type": "command", "command": "bun /path/to/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
     ],
     "PostToolUse": [
-      { "hooks": [{ "type": "command", "command": "bun /Users/adam.congdon/code/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
+      { "hooks": [{ "type": "command", "command": "bun /path/to/privacy-screen/hooks/PrivacyScreen.hook.ts", "timeout": 8 }] }
     ]
   }
 }
@@ -300,3 +334,20 @@ See `privacy-config.example.yaml` for the commented examples and [`Plans/INSTALL
 - `PRIVACY_CONFIG.yaml` — your personal customer name list
 
 Never commit either. The `.example` template is safe to share.
+
+## License
+
+Licensed under the **Apache License, Version 2.0**. See [`LICENSE`](LICENSE) for the full text and [`NOTICE`](NOTICE) for attribution + third-party acknowledgments.
+
+```
+Copyright 2026 the privacy-screen authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+```
+
+`SPDX-License-Identifier: Apache-2.0`
+
