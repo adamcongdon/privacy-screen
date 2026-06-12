@@ -15,7 +15,7 @@
  * second commit attempt, AND a direct `getUpload` returns null.
  */
 
-import { describe, test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, beforeEach, afterEach, afterAll } from 'bun:test';
 import { Hono } from 'hono';
 import ExcelJS from 'exceljs';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
@@ -569,5 +569,408 @@ describe('CSV column-aware parsing (#35) — TDD red phase', () => {
     expect(outCsv).toContain('bravo@invented-domain.test');
     // Other columns still scrubbed
     expect(outCsv).not.toContain('(555) 010-4001');
+  });
+});
+
+// ── Helpers for the persistence / CSV-override AC3 tests (#35) ───────────────
+
+/**
+ * Inspect a CSV buffer through the direct /api/files/xlsx/inspect endpoint and
+ * return the staged uploadId + the sheet name the inspection reported (ExcelJS
+ * names a CSV-derived sheet 'sheet1', so the override key must use that exact
+ * name — same thing the UI does).
+ */
+async function uploadCsvAndGetIds(
+  app: Hono,
+  buf: Buffer,
+  name: string,
+): Promise<{ uploadId: string; sheetName: string }> {
+  const file = bufferToFile(buf, name, 'text/csv');
+  const res = await app.fetch(
+    makeMultipartRequest('http://127.0.0.1/api/files/xlsx/inspect', [file]),
+  );
+  expect(res.status).toBe(200);
+  const j = (await res.json()) as {
+    uploadId: string;
+    sheets: Array<{ name: string }>;
+  };
+  return { uploadId: j.uploadId, sheetName: j.sheets[0].name };
+}
+
+/** A 2-column CSV (VM, Email) used by the persistence round-trip tests. */
+async function buildVmEmailCsv(): Promise<Buffer> {
+  const csv =
+    'VM,Email\n' +
+    'webserver-01,admin@invented-domain.test\n' +
+    'db-01,ops@invented-domain.test\n';
+  return Buffer.from(csv, 'utf8');
+}
+
+describe('ISC-6a: CSV PatternName override', () => {
+  test('commit with Email pattern override on a column → cell value tokenized', async () => {
+    // Upload a CSV where Notes column has an email-looking value but Notes header
+    // won't auto-detect as Email. Override Notes → Email pattern.
+    // Assert columnsResolved shows 'Email' AND raw email is gone from output.
+    const csv = Buffer.from(
+      'VM,Notes\nwebserver-01,admin@invented-domain.test\ndb-01,ops@invented-domain.test\n',
+      'utf8',
+    );
+    const app = makeApp();
+    const { uploadId, sheetName } = await uploadCsvAndGetIds(app, csv, 'isc6a.csv');
+
+    const commitRes = await app.fetch(
+      makeJsonRequest('http://127.0.0.1/api/files/xlsx/commit', {
+        uploadId,
+        overrides: { [sheetName]: { Notes: { pattern: 'Email' } } },
+      }),
+    );
+    expect(commitRes.status).toBe(200);
+    const j = (await commitRes.json()) as {
+      ok: boolean;
+      summary: { columnsResolved: Record<string, string> };
+      base64: string;
+    };
+    expect(j.ok).toBe(true);
+    expect(j.summary.columnsResolved[`${sheetName}::Notes`]).toBe('Email');
+
+    const outCsv = Buffer.from(j.base64, 'base64').toString('utf8');
+    expect(outCsv).not.toContain('admin@invented-domain.test');
+    expect(outCsv).not.toContain('ops@invented-domain.test');
+  });
+});
+
+describe('ISC-6b: CSV regex override', () => {
+  test('commit with regex override on a column → scrubText runs on cells', async () => {
+    const csv = Buffer.from(
+      'VM,Notes\nwebserver-01,alpha@invented-domain.test\ndb-01,plain text\n',
+      'utf8',
+    );
+    const app = makeApp();
+    const { uploadId, sheetName } = await uploadCsvAndGetIds(app, csv, 'isc6b.csv');
+
+    const commitRes = await app.fetch(
+      makeJsonRequest('http://127.0.0.1/api/files/xlsx/commit', {
+        uploadId,
+        overrides: { [sheetName]: { Notes: { pattern: 'regex' } } },
+      }),
+    );
+    expect(commitRes.status).toBe(200);
+    const j = (await commitRes.json()) as {
+      ok: boolean;
+      summary: { columnsResolved: Record<string, string> };
+      base64: string;
+    };
+    expect(j.ok).toBe(true);
+    expect(j.summary.columnsResolved[`${sheetName}::Notes`]).toBe('regex');
+
+    const outCsv = Buffer.from(j.base64, 'base64').toString('utf8');
+    // The email value in Notes should have been tokenized by scrubText
+    expect(outCsv).not.toContain('alpha@invented-domain.test');
+  });
+});
+
+describe('ISC-1 + ISC-2: persistence round-trip', () => {
+  let persistDir: string;
+  let persistConfigPath: string;
+  let savedEnv: string | undefined;
+
+  beforeEach(() => {
+    const { mkdtempSync, writeFileSync: wfs } = require('fs') as typeof import('fs');
+    const { tmpdir } = require('os') as typeof import('os');
+    const { join: pjoin } = require('path') as typeof import('path');
+    persistDir = mkdtempSync(pjoin(tmpdir(), 'isc-persist-'));
+    const dbFile = pjoin(persistDir, 'vocab.db');
+    persistConfigPath = pjoin(persistDir, 'PRIVACY_CONFIG.yaml');
+    wfs(persistConfigPath, `db_path: ${dbFile}\nmode: observe\nllm_validate:\n  enabled: false\n`);
+    savedEnv = process.env.PRIVACY_SCREEN_CONFIG;
+    process.env.PRIVACY_SCREEN_CONFIG = persistConfigPath;
+    resetVocab();
+    resetUploads();
+  });
+
+  afterEach(() => {
+    resetVocab();
+    if (savedEnv !== undefined) {
+      process.env.PRIVACY_SCREEN_CONFIG = savedEnv;
+    } else {
+      delete process.env.PRIVACY_SCREEN_CONFIG;
+    }
+    const { rmSync } = require('fs') as typeof import('fs');
+    rmSync(persistDir, { recursive: true, force: true });
+  });
+
+  test('commit overrides persist to YAML and auto-resolve on second upload', async () => {
+    const app = makeApp();
+    const buf = await buildVmEmailCsv();
+
+    // Upload #1: commit with VM → custom label "VM", Email → Email pattern
+    const { uploadId: uid1, sheetName: sn1 } = await uploadCsvAndGetIds(app, buf, 'upload1.csv');
+    const commit1 = await app.fetch(
+      makeJsonRequest('http://127.0.0.1/api/files/xlsx/commit', {
+        uploadId: uid1,
+        overrides: {
+          [sn1]: {
+            VM: { pattern: 'custom', label: 'VM' },
+            Email: { pattern: 'Email' },
+          },
+        },
+      }),
+    );
+    expect(commit1.status).toBe(200);
+    const c1 = (await commit1.json()) as { ok: boolean };
+    expect(c1.ok).toBe(true);
+
+    // Assert the tmp YAML now contains columnRules
+    const { readFileSync } = require('fs') as typeof import('fs');
+    const yamlContent = readFileSync(persistConfigPath, 'utf8');
+    expect(yamlContent).toContain('columnRules');
+    expect(yamlContent.toLowerCase()).toContain('vm');
+    expect(yamlContent).toContain('Email');
+
+    // Upload #2: fresh upload with same headers — NO overrides sent
+    resetUploads();
+    const { uploadId: uid2, sheetName: sn2 } = await uploadCsvAndGetIds(app, buf, 'upload2.csv');
+    void uid2;
+    void sn2;
+
+    // Drive it through commit with NO overrides to see auto-resolution.
+    // We need a fresh inspect first. Re-upload.
+    resetUploads();
+    const file2 = bufferToFile(buf, 'upload2b.csv', 'text/csv');
+    const inspRes = await app.fetch(
+      makeMultipartRequest('http://127.0.0.1/api/files/xlsx/inspect', [file2]),
+    );
+    expect(inspRes.status).toBe(200);
+    const insp = (await inspRes.json()) as {
+      uploadId: string;
+      sheets: Array<{ name: string; columns: Array<{ header: string; source: string; resolvedPattern: string | null; resolvedAction?: string }> }>;
+    };
+
+    // VM column should now come back with source='rule'
+    const sheet = insp.sheets[0];
+    const vmCol = sheet.columns.find((c) => c.header === 'VM');
+    const emailCol = sheet.columns.find((c) => c.header === 'Email');
+    expect(vmCol).toBeDefined();
+    expect(emailCol).toBeDefined();
+    expect(vmCol!.source).toBe('rule');
+    expect(emailCol!.source).toBe('rule');
+    // Email column should have resolvedPattern = 'Email'
+    expect(emailCol!.resolvedPattern).toBe('Email');
+  });
+});
+
+describe('ISC-2: all rule kinds persist and auto-resolve', () => {
+  let persistDir2: string;
+  let persistConfigPath2: string;
+  let savedEnv2: string | undefined;
+
+  beforeEach(() => {
+    const { mkdtempSync, writeFileSync: wfs } = require('fs') as typeof import('fs');
+    const { tmpdir } = require('os') as typeof import('os');
+    const { join: pjoin } = require('path') as typeof import('path');
+    persistDir2 = mkdtempSync(pjoin(tmpdir(), 'isc2-persist-'));
+    const dbFile = pjoin(persistDir2, 'vocab.db');
+    persistConfigPath2 = pjoin(persistDir2, 'PRIVACY_CONFIG.yaml');
+    wfs(persistConfigPath2, `db_path: ${dbFile}\nmode: observe\nllm_validate:\n  enabled: false\n`);
+    savedEnv2 = process.env.PRIVACY_SCREEN_CONFIG;
+    process.env.PRIVACY_SCREEN_CONFIG = persistConfigPath2;
+    resetVocab();
+    resetUploads();
+  });
+
+  afterEach(() => {
+    resetVocab();
+    if (savedEnv2 !== undefined) {
+      process.env.PRIVACY_SCREEN_CONFIG = savedEnv2;
+    } else {
+      delete process.env.PRIVACY_SCREEN_CONFIG;
+    }
+    const { rmSync } = require('fs') as typeof import('fs');
+    rmSync(persistDir2, { recursive: true, force: true });
+  });
+
+  test('PatternName, custom, regex, skip all persist and auto-resolve on re-inspect', async () => {
+    // CSV with four columns: one for each rule kind
+    const csv = Buffer.from(
+      'ColPattern,ColCustom,ColRegex,ColSkip\n' +
+      'user@invented.test,server-01,some text,keep-raw\n',
+      'utf8',
+    );
+    const app = makeApp();
+    const { uploadId, sheetName } = await uploadCsvAndGetIds(app, csv, 'allkinds.csv');
+
+    const commit1 = await app.fetch(
+      makeJsonRequest('http://127.0.0.1/api/files/xlsx/commit', {
+        uploadId,
+        overrides: {
+          [sheetName]: {
+            ColPattern: { pattern: 'Email' },
+            ColCustom: { pattern: 'custom', label: 'ServerName' },
+            ColRegex: { pattern: 'regex' },
+            ColSkip: { pattern: 'skip' },
+          },
+        },
+      }),
+    );
+    expect(commit1.status).toBe(200);
+
+    // Now re-inspect a fresh upload of the same CSV
+    resetUploads();
+    const file2 = bufferToFile(csv, 'allkinds2.csv', 'text/csv');
+    const inspRes = await app.fetch(
+      makeMultipartRequest('http://127.0.0.1/api/files/xlsx/inspect', [file2]),
+    );
+    expect(inspRes.status).toBe(200);
+    const insp = (await inspRes.json()) as {
+      sheets: Array<{ columns: Array<{ header: string; source: string; resolvedPattern: string | null; resolvedAction?: string }> }>;
+    };
+    const cols = insp.sheets[0].columns;
+
+    const find = (h: string) => cols.find((c) => c.header === h)!;
+    // All four should auto-resolve from rules
+    expect(find('ColPattern').source).toBe('rule');
+    expect(find('ColPattern').resolvedPattern).toBe('Email');
+    expect(find('ColCustom').source).toBe('rule');
+    expect(find('ColCustom').resolvedAction).toBe('custom');
+    expect(find('ColRegex').source).toBe('rule');
+    expect(find('ColRegex').resolvedAction).toBe('regex');
+    expect(find('ColSkip').source).toBe('rule');
+    expect(find('ColSkip').resolvedAction).toBe('skip');
+  });
+});
+
+describe('ISC-3: last-write-wins merge', () => {
+  let persistDir3: string;
+  let persistConfigPath3: string;
+  let savedEnv3: string | undefined;
+
+  beforeEach(() => {
+    const { mkdtempSync, writeFileSync: wfs } = require('fs') as typeof import('fs');
+    const { tmpdir } = require('os') as typeof import('os');
+    const { join: pjoin } = require('path') as typeof import('path');
+    persistDir3 = mkdtempSync(pjoin(tmpdir(), 'isc3-persist-'));
+    const dbFile = pjoin(persistDir3, 'vocab.db');
+    persistConfigPath3 = pjoin(persistDir3, 'PRIVACY_CONFIG.yaml');
+    wfs(persistConfigPath3, `db_path: ${dbFile}\nmode: observe\nllm_validate:\n  enabled: false\n`);
+    savedEnv3 = process.env.PRIVACY_SCREEN_CONFIG;
+    process.env.PRIVACY_SCREEN_CONFIG = persistConfigPath3;
+    resetVocab();
+    resetUploads();
+  });
+
+  afterEach(() => {
+    resetVocab();
+    if (savedEnv3 !== undefined) {
+      process.env.PRIVACY_SCREEN_CONFIG = savedEnv3;
+    } else {
+      delete process.env.PRIVACY_SCREEN_CONFIG;
+    }
+    const { rmSync } = require('fs') as typeof import('fs');
+    rmSync(persistDir3, { recursive: true, force: true });
+  });
+
+  test('second commit with different action for same header replaces the first (case-insensitive)', async () => {
+    const csv = Buffer.from('Col\nsome-value\n', 'utf8');
+    const app = makeApp();
+
+    // Commit 1: Email pattern for 'Col'
+    const { uploadId: uid1, sheetName: sn1 } = await uploadCsvAndGetIds(app, csv, 'lww1.csv');
+    await app.fetch(
+      makeJsonRequest('http://127.0.0.1/api/files/xlsx/commit', {
+        uploadId: uid1,
+        overrides: { [sn1]: { Col: { pattern: 'Email' } } },
+      }),
+    );
+
+    // Commit 2: skip for 'col' (lowercase — must collapse to same rule)
+    resetUploads();
+    const { uploadId: uid2, sheetName: sn2 } = await uploadCsvAndGetIds(app, csv, 'lww2.csv');
+    await app.fetch(
+      makeJsonRequest('http://127.0.0.1/api/files/xlsx/commit', {
+        uploadId: uid2,
+        overrides: { [sn2]: { Col: { pattern: 'skip' } } },
+      }),
+    );
+
+    // YAML should have exactly ONE rule for Col and it should be skip
+    const { readFileSync } = require('fs') as typeof import('fs');
+    const yamlContent = readFileSync(persistConfigPath3, 'utf8');
+    // Parse and check
+    const { parse: parseYaml } = require('yaml') as typeof import('yaml');
+    const parsed = parseYaml(yamlContent) as { xlsx?: { columnRules?: Array<{ header?: string; action?: string; pattern?: string }> } };
+    const rules = parsed.xlsx?.columnRules ?? [];
+    // Exactly one rule with header matching Col (case-insensitive)
+    const colRules = rules.filter((r) => r.header?.toLowerCase() === 'col');
+    expect(colRules).toHaveLength(1);
+    expect(colRules[0].action).toBe('skip');
+    expect(colRules[0].pattern).toBeUndefined();
+  });
+});
+
+describe('ISC-4: skip passthrough audit log', () => {
+  let persistDir4: string;
+  let persistConfigPath4: string;
+  let savedEnv4: string | undefined;
+
+  beforeEach(() => {
+    const { mkdtempSync, writeFileSync: wfs } = require('fs') as typeof import('fs');
+    const { tmpdir } = require('os') as typeof import('os');
+    const { join: pjoin } = require('path') as typeof import('path');
+    persistDir4 = mkdtempSync(pjoin(tmpdir(), 'isc4-audit-'));
+    const dbFile = pjoin(persistDir4, 'vocab.db');
+    persistConfigPath4 = pjoin(persistDir4, 'PRIVACY_CONFIG.yaml');
+    wfs(persistConfigPath4, `db_path: ${dbFile}\nmode: observe\nllm_validate:\n  enabled: false\n`);
+    savedEnv4 = process.env.PRIVACY_SCREEN_CONFIG;
+    process.env.PRIVACY_SCREEN_CONFIG = persistConfigPath4;
+    resetVocab();
+    resetUploads();
+  });
+
+  afterEach(() => {
+    resetVocab();
+    if (savedEnv4 !== undefined) {
+      process.env.PRIVACY_SCREEN_CONFIG = savedEnv4;
+    } else {
+      delete process.env.PRIVACY_SCREEN_CONFIG;
+    }
+    const { rmSync } = require('fs') as typeof import('fs');
+    rmSync(persistDir4, { recursive: true, force: true });
+  });
+
+  test('committing a skip override logs a redaction_log row for the skipped column', async () => {
+    const csv = Buffer.from('Email,Phone\nalpha@invented.test,(555)123-4567\n', 'utf8');
+    const app = makeApp();
+    const { uploadId, sheetName } = await uploadCsvAndGetIds(app, csv, 'isc4.csv');
+
+    const commitRes = await app.fetch(
+      makeJsonRequest('http://127.0.0.1/api/files/xlsx/commit', {
+        uploadId,
+        overrides: { [sheetName]: { Email: { pattern: 'skip' } } },
+      }),
+    );
+    expect(commitRes.status).toBe(200);
+
+    // Query the redaction_log in the test db
+    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+    const { loadConfig } = require('../src/config') as typeof import('../src/config');
+    const cfg = loadConfig();
+    expect(cfg.db_path).not.toBeNull();
+    const db = new Database(cfg.db_path as string, { readonly: true });
+    try {
+      const rows = db
+        .query<{ event: string; tokens_minted: number; tokens_reused: number; blocked: number }, []>(
+          `SELECT event, tokens_minted, tokens_reused, blocked FROM redaction_log ORDER BY id DESC`,
+        )
+        .all();
+      // There should be at least one row for the skip passthrough of Email
+      const skipRow = rows.find((r) => r.event.includes('skip-passthrough') && r.event.includes('Email'));
+      expect(skipRow).toBeDefined();
+      // Skip passthrough: minted=0, reused=0, blocked=false
+      expect(skipRow!.tokens_minted).toBe(0);
+      expect(skipRow!.tokens_reused).toBe(0);
+      expect(skipRow!.blocked).toBe(0);
+    } finally {
+      db.close();
+    }
   });
 });
