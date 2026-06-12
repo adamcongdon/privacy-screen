@@ -93,11 +93,9 @@ filesRoute.post('/', async (c) => {
         // shows on this upload. POST /api/files is the path the web UI actually
         // uses for uploads, so without this the remembered policy would be
         // invisible on re-upload even though the rule is persisted.
-        const inspection = await inspectXlsx(
-          buffer,
-          cfg.xlsx ?? { columnRules: [], autoDetect: true },
-          name,
-        );
+        // loadConfig() always populates cfg.xlsx from DEFAULTS, and inspectXlsx
+        // defaults a missing config to { columnRules: [], autoDetect: true }.
+        const inspection = await inspectXlsx(buffer, cfg.xlsx, name);
         const staged = stageUpload(buffer, name);
         results.push({
           name,

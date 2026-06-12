@@ -32,7 +32,7 @@ import {
   normalizeCustomLabel,
   type CommitOverrides,
 } from '../../src/xlsx-scrubber';
-import { isPatternName } from '../../src/xlsx-types';
+import { isPatternName, isColumnRuleAction } from '../../src/xlsx-types';
 import type { ColumnPatternRule } from '../../src/xlsx-types';
 import { loadConfig } from '../../src/config';
 import { patchXlsxColumnRules } from '../lib/config-writer';
@@ -47,9 +47,6 @@ import { stageUpload, getUpload, dropUpload } from '../lib/xlsx-uploads';
  * one-way: files.ts dispatches into this router, never the reverse.
  */
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
-
-/** Set of allowed override `pattern` literals beyond PatternName. */
-const NON_PATTERN_OVERRIDES = new Set(['skip', 'regex', 'custom']);
 
 export const filesXlsxRoute = new Hono();
 
@@ -98,11 +95,7 @@ filesXlsxRoute.post('/inspect', async (c) => {
 
   let inspection;
   try {
-    inspection = await inspectXlsx(
-      buffer,
-      cfg.xlsx ?? { columnRules: [], autoDetect: true },
-      name,
-    );
+    inspection = await inspectXlsx(buffer, cfg.xlsx, name);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const label = isCsv ? 'csv' : 'xlsx';
@@ -145,7 +138,7 @@ function validateOverridesShape(raw: unknown): string | null {
       if (typeof pat !== 'string') {
         return `overrides[${JSON.stringify(sheetName)}][${JSON.stringify(header)}].pattern: must be a string`;
       }
-      if (!NON_PATTERN_OVERRIDES.has(pat) && !isPatternName(pat)) {
+      if (!isColumnRuleAction(pat) && !isPatternName(pat)) {
         return `overrides[${JSON.stringify(sheetName)}][${JSON.stringify(header)}].pattern: invalid value '${pat}' (expected PatternName | 'skip' | 'regex' | 'custom')`;
       }
       // Custom-label overrides (#39) must carry a valid label that normalizes
@@ -186,7 +179,7 @@ function persistColumnOverrides(
     // Build new rules from committed overrides. Key on lowercase header for
     // dedup; last override for a header (across all sheets) wins within this commit.
     const newRulesMap = new Map<string, ColumnPatternRule>();
-    for (const [, perSheet] of Object.entries(overrides)) {
+    for (const perSheet of Object.values(overrides)) {
       for (const [header, override] of Object.entries(perSheet)) {
         if (!header) continue;
         const key = header.toLowerCase();

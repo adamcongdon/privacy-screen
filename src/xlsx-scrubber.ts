@@ -557,7 +557,7 @@ export async function inspectXlsx(
         resolvedPattern,
         source,
         sampleValue: firstNonEmptyCellText(sheet, col),
-        ...(resolvedAction !== undefined ? { resolvedAction } : {}),
+        resolvedAction,
       });
     }
 
