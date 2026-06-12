@@ -88,7 +88,16 @@ filesRoute.post('/', async (c) => {
       const ab = await entry.arrayBuffer();
       const buffer = Buffer.from(ab);
       try {
-        const inspection = await inspectXlsx(buffer, undefined, name);
+        // #35: pass the persisted xlsx config so previously committed column
+        // rules auto-resolve here (source='rule') and the "remembered" badge
+        // shows on this upload. POST /api/files is the path the web UI actually
+        // uses for uploads, so without this the remembered policy would be
+        // invisible on re-upload even though the rule is persisted.
+        const inspection = await inspectXlsx(
+          buffer,
+          cfg.xlsx ?? { columnRules: [], autoDetect: true },
+          name,
+        );
         const staged = stageUpload(buffer, name);
         results.push({
           name,

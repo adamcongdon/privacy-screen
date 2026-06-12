@@ -757,6 +757,49 @@ describe('ISC-1 + ISC-2: persistence round-trip', () => {
     // Email column should have resolvedPattern = 'Email'
     expect(emailCol!.resolvedPattern).toBe('Email');
   });
+
+  // Regression (#35): the web UI uploads via POST /api/files (the columnar
+  // dispatch path), NOT /api/files/xlsx/inspect. An earlier implementation
+  // wired persisted-rule resolution only into the direct /inspect endpoint and
+  // passed `undefined` config to inspectXlsx in files.ts, so the "remembered"
+  // policy was invisible on real re-uploads. This asserts the dispatch path
+  // honors persisted columnRules. See server/routes/files.ts inspectXlsx call.
+  test('persisted rules auto-resolve on re-upload via POST /api/files (UI path)', async () => {
+    const app = makeApp();
+    const buf = await buildVmEmailCsv();
+
+    // Upload #1 + commit: VM → custom "VM", Email → Email pattern.
+    const { uploadId: uid1, sheetName: sn1 } = await uploadCsvAndGetIds(app, buf, 'ui1.csv');
+    const commit1 = await app.fetch(
+      makeJsonRequest('http://127.0.0.1/api/files/xlsx/commit', {
+        uploadId: uid1,
+        overrides: { [sn1]: { VM: { pattern: 'custom', label: 'VM' }, Email: { pattern: 'Email' } } },
+      }),
+    );
+    expect(commit1.status).toBe(200);
+    expect(((await commit1.json()) as { ok: boolean }).ok).toBe(true);
+
+    // Upload #2 via the REAL UI path: POST /api/files (dispatch), NO overrides.
+    resetUploads();
+    const file2 = bufferToFile(buf, 'ui2.csv', 'text/csv');
+    const res = await app.fetch(makeMultipartRequest('http://127.0.0.1/api/files', [file2]));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      files: Array<{
+        kind?: string;
+        sheets?: Array<{ columns: Array<{ header: string; source: string; resolvedPattern: string | null; resolvedAction?: string }> }>;
+      }>;
+    };
+    const entry = body.files[0];
+    expect(entry.kind).toBe('xlsx-inspection');
+    const cols = entry.sheets![0].columns;
+    const vm = cols.find((c) => c.header === 'VM');
+    const email = cols.find((c) => c.header === 'Email');
+    expect(vm!.source).toBe('rule');
+    expect(vm!.resolvedAction).toBe('custom');
+    expect(email!.source).toBe('rule');
+    expect(email!.resolvedPattern).toBe('Email');
+  });
 });
 
 describe('ISC-2: all rule kinds persist and auto-resolve', () => {
