@@ -17,6 +17,8 @@ import { join, resolve } from 'path';
 import { parse as parseYaml } from 'yaml';
 import {
   isPatternName,
+  isColumnRuleAction,
+  normalizeCustomLabel,
   type ColumnPatternRule,
   type XlsxConfig,
 } from './xlsx-types';
@@ -333,22 +335,68 @@ function mergeXlsx(base: XlsxConfig, override: unknown): XlsxConfig {
         );
       }
       const r = raw as Record<string, unknown>;
-      if (!isPatternName(r.pattern)) {
-        throw new Error(
-          `[PrivacyScreen] xlsx.columnRules[${idx}].pattern: invalid PatternName '${String(r.pattern)}'. ` +
-            `Valid: Email, Phone, SSN, IPv4, IPv6, PersonName, StreetAddress, FQDN, CreditCard, UncPath, DomainUser, MAC, GUID.`,
-        );
-      }
-      const rule: ColumnPatternRule = { pattern: r.pattern };
-      if (typeof r.header === 'string' && r.header.length > 0) rule.header = r.header;
-      if (typeof r.headerRegex === 'string' && r.headerRegex.length > 0) {
-        rule.headerRegex = r.headerRegex;
-      }
-      if (!rule.header && !rule.headerRegex) {
+
+      // Require at least one of header / headerRegex (unchanged).
+      const hasHeader = typeof r.header === 'string' && r.header.length > 0;
+      const hasHeaderRegex = typeof r.headerRegex === 'string' && r.headerRegex.length > 0;
+      if (!hasHeader && !hasHeaderRegex) {
         throw new Error(
           `[PrivacyScreen] xlsx.columnRules[${idx}]: must define 'header' or 'headerRegex'`,
         );
       }
+
+      const hasPattern = r.pattern !== undefined && r.pattern !== null;
+      const hasAction = r.action !== undefined && r.action !== null;
+
+      if (hasPattern && hasAction) {
+        throw new Error(
+          `[PrivacyScreen] xlsx.columnRules[${idx}]: 'pattern' and 'action' are mutually exclusive`,
+        );
+      }
+
+      if (!hasPattern && !hasAction) {
+        throw new Error(
+          `[PrivacyScreen] xlsx.columnRules[${idx}]: must define 'pattern' or 'action'`,
+        );
+      }
+
+      const rule: ColumnPatternRule = {};
+      if (hasHeader) rule.header = r.header as string;
+      if (hasHeaderRegex) rule.headerRegex = r.headerRegex as string;
+
+      if (hasPattern) {
+        if (!isPatternName(r.pattern)) {
+          throw new Error(
+            `[PrivacyScreen] xlsx.columnRules[${idx}].pattern: invalid PatternName '${String(r.pattern)}'. ` +
+              `Valid: Email, Phone, SSN, IPv4, IPv6, PersonName, StreetAddress, FQDN, CreditCard, UncPath, DomainUser, MAC, GUID.`,
+          );
+        }
+        rule.pattern = r.pattern;
+      } else {
+        // hasAction is true
+        if (!isColumnRuleAction(r.action)) {
+          throw new Error(
+            `[PrivacyScreen] xlsx.columnRules[${idx}].action: invalid ColumnRuleAction '${String(r.action)}'. ` +
+              `Valid: skip, regex, custom.`,
+          );
+        }
+        rule.action = r.action;
+        if (r.action === 'custom') {
+          if (typeof r.label !== 'string' || r.label.length === 0) {
+            throw new Error(
+              `[PrivacyScreen] xlsx.columnRules[${idx}]: action 'custom' requires a non-empty 'label'`,
+            );
+          }
+          const normalized = normalizeCustomLabel(r.label);
+          if (!normalized) {
+            throw new Error(
+              `[PrivacyScreen] xlsx.columnRules[${idx}].label: '${r.label}' cannot be normalized to a valid token type (2-24 chars, must start with a letter, alphanumerics + underscores only)`,
+            );
+          }
+          rule.label = normalized;
+        }
+      }
+
       return rule;
     });
   }
