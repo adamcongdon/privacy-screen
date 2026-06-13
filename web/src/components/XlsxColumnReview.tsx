@@ -161,7 +161,7 @@ function SourceBadge({ source }: { source: XlsxColumnSource }): JSX.Element {
         cls,
       )}
     >
-      {source}
+      {source === 'rule' ? 'remembered' : source}
     </span>
   );
 }
