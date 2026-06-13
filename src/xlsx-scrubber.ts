@@ -38,6 +38,9 @@ import { scrubText, type ScrubContext } from './scrubber';
 // `exceljs` into the import graph.
 import type { PrivacyConfig } from './config';
 import {
+  isColumnRuleAction,
+  normalizeCustomLabel,
+  type ColumnRuleAction,
   type PatternName,
   type ColumnPatternRule,
   type XlsxConfig,
@@ -46,7 +49,8 @@ import {
 // Re-export the shared types so existing consumers `import { PatternName,
 // ColumnPatternRule, XlsxConfig } from './xlsx-scrubber'` keep working.
 export type { PatternName, ColumnPatternRule, XlsxConfig } from './xlsx-types';
-export { isPatternName, PATTERN_NAMES } from './xlsx-types';
+export { isPatternName, PATTERN_NAMES, isColumnRuleAction, COLUMN_RULE_ACTIONS } from './xlsx-types';
+export type { ColumnRuleAction } from './xlsx-types';
 
 // ── Public types ─────────────────────────────────────────────────────────────
 //
@@ -68,6 +72,8 @@ export interface ColumnInspection {
   source: ColumnSource;
   /** First non-empty cell value in the column, stringified, max 80 chars. */
   sampleValue: string | null;
+  /** Set when the rule's action is skip/regex/custom (not a PatternName). Engineer-B uses this for UI preview. */
+  resolvedAction?: 'skip' | 'regex' | 'custom';
 }
 
 /** Per-sheet inspection result. */
@@ -98,23 +104,10 @@ export interface ColumnOverride {
   label?: string;
 }
 
-/**
- * Normalize a user-supplied custom label into a token-type identifier:
- * uppercase, alphanumerics + underscores, length 2–24, must start with a
- * letter. Returns null if the input cannot be normalized into a legal
- * identifier — caller treats null as "reject this override."
- */
-export function normalizeCustomLabel(raw: string): string | null {
-  if (typeof raw !== 'string') return null;
-  const cleaned = raw
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9_]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-  if (cleaned.length < 2 || cleaned.length > 24) return null;
-  if (!/^[A-Z]/.test(cleaned)) return null;
-  return cleaned;
-}
+// normalizeCustomLabel is defined in ./xlsx-types so that src/config.ts can
+// import it without forming a circular dependency. Re-export it here so all
+// existing consumers that imported it from './xlsx-scrubber' continue to work.
+export { normalizeCustomLabel } from './xlsx-types';
 
 /** Per-sheet, per-header overrides. Missing entries fall back to auto-resolution. */
 export type CommitOverrides = Record<string, Record<string, ColumnOverride>>;
@@ -226,13 +219,29 @@ const HEURISTICS: readonly HeuristicEntry[] = [
 
 // ── Column resolution ────────────────────────────────────────────────────────
 
+/**
+ * Per-column action resolved at the start of a sheet pass. `skip` =
+ * leave cells untouched. `regex` = run cell text through whole-cell
+ * `scrubText`. `pattern` = force-mint via the column's category.
+ * `custom` = force-mint with a user-supplied token type.
+ *
+ * Promoted to module scope (issue #35) so `resolveColumn` can return it
+ * directly — the explicit `action`/`label` rule shapes resolve to the same
+ * union the row loop in `scrubXlsx` already consumes.
+ */
+export type ColumnAction =
+  | { kind: 'skip' }
+  | { kind: 'regex' }
+  | { kind: 'pattern'; pattern: PatternName }
+  | { kind: 'custom'; tokenType: string };
+
 interface ResolvedColumn {
-  pattern: PatternName | null;
+  action: ColumnAction | null;
   source: ColumnSource;
 }
 
 /**
- * Resolve a header → pattern using the rule list, then heuristics. Pure
+ * Resolve a header → action using the rule list, then heuristics. Pure
  * function — used by both `inspectXlsx` and `scrubXlsx`.
  */
 function resolveColumn(
@@ -241,21 +250,34 @@ function resolveColumn(
   autoDetect: boolean,
 ): ResolvedColumn {
   const trimmed = header.trim();
-  if (!trimmed) return { pattern: null, source: 'unresolved' };
+  if (!trimmed) return { action: null, source: 'unresolved' };
 
   // 1. Explicit rules
   for (const rule of rules) {
-    if (rule.header && rule.header.toLowerCase() === trimmed.toLowerCase()) {
-      return { pattern: rule.pattern, source: 'rule' };
-    }
-    if (rule.headerRegex) {
-      try {
-        const rx = new RegExp(rule.headerRegex, 'i');
-        if (rx.test(trimmed)) return { pattern: rule.pattern, source: 'rule' };
-      } catch {
-        // Malformed user regex — skip rather than crash. Validation in
-        // loadConfig catches the bad PatternName; bad regex source is
-        // a runtime degrade.
+    const headerMatch = rule.header && rule.header.toLowerCase() === trimmed.toLowerCase();
+    const regexMatch = rule.headerRegex
+      ? (() => {
+          try {
+            return new RegExp(rule.headerRegex, 'i').test(trimmed);
+          } catch {
+            return false;
+          }
+        })()
+      : false;
+
+    if (headerMatch || regexMatch) {
+      if (rule.action === 'skip') {
+        return { action: { kind: 'skip' }, source: 'rule' };
+      }
+      if (rule.action === 'regex') {
+        return { action: { kind: 'regex' }, source: 'rule' };
+      }
+      if (rule.action === 'custom') {
+        return { action: { kind: 'custom', tokenType: rule.label! }, source: 'rule' };
+      }
+      // pattern branch (back-compat)
+      if (rule.pattern) {
+        return { action: { kind: 'pattern', pattern: rule.pattern }, source: 'rule' };
       }
     }
   }
@@ -263,11 +285,13 @@ function resolveColumn(
   // 2. Heuristic
   if (autoDetect) {
     for (const h of HEURISTICS) {
-      if (h.rx.test(trimmed)) return { pattern: h.pattern, source: 'heuristic' };
+      if (h.rx.test(trimmed)) {
+        return { action: { kind: 'pattern', pattern: h.pattern }, source: 'heuristic' };
+      }
     }
   }
 
-  return { pattern: null, source: 'unresolved' };
+  return { action: null, source: 'unresolved' };
 }
 
 // ── Cell helpers ─────────────────────────────────────────────────────────────
@@ -521,12 +545,19 @@ export async function inspectXlsx(
     for (let col = 1; col <= colCount; col += 1) {
       const headerCell = headerRow.getCell(col);
       const headerRaw = isEmptyCell(headerCell) ? '' : cellTextValue(headerCell).trim();
-      const { pattern, source } = resolveColumn(headerRaw, rules, autoDetect);
+      const { action, source } = resolveColumn(headerRaw, rules, autoDetect);
+      // Back-compat: resolvedPattern is set from the action when it's a pattern kind.
+      const resolvedPattern = action?.kind === 'pattern' ? action.pattern : null;
+      // For ColumnInspection, report the action kind for skip/regex/custom so the UI (Engineer-B) can use it.
+      const resolvedAction = action && action.kind !== 'pattern'
+        ? (action.kind as 'skip' | 'regex' | 'custom')
+        : undefined;
       columns.push({
         header: headerRaw,
-        resolvedPattern: pattern,
+        resolvedPattern,
         source,
         sampleValue: firstNonEmptyCellText(sheet, col),
+        resolvedAction,
       });
     }
 
@@ -544,17 +575,6 @@ export async function inspectXlsx(
 }
 
 // ── Public: scrubXlsx ────────────────────────────────────────────────────────
-
-/**
- * Per-column action resolved at the start of a sheet pass. `skip` =
- * leave cells untouched. `regex` = run cell text through whole-cell
- * `scrubText`. `PatternName` = force-mint via the column's category.
- */
-type ColumnAction =
-  | { kind: 'skip' }
-  | { kind: 'regex' }
-  | { kind: 'pattern'; pattern: PatternName }
-  | { kind: 'custom'; tokenType: string };
 
 /**
  * Apply force-mint to a single cell, returning the new string value. If
@@ -696,10 +716,17 @@ export async function scrubXlsx(
           label = ov.pattern;
         }
       } else {
-        const { pattern } = resolveColumn(header, rules, autoDetect);
-        if (pattern) {
-          action = { kind: 'pattern', pattern };
-          label = pattern;
+        const { action: resolved, source: resolvedSource } = resolveColumn(header, rules, autoDetect);
+        void resolvedSource; // source is informational; scrubXlsx uses action directly
+        if (resolved) {
+          action = resolved;
+          if (resolved.kind === 'pattern') {
+            label = resolved.pattern;
+          } else if (resolved.kind === 'custom') {
+            label = `custom:${resolved.tokenType}`;
+          } else {
+            label = resolved.kind; // 'skip' or 'regex'
+          }
         } else if (header) {
           // Unresolved column with a header — fall back to whole-cell scrubText.
           action = { kind: 'regex' };

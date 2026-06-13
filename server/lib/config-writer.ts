@@ -20,6 +20,7 @@ import {
   loadConfig,
   type PrivacyConfig,
   type Mode,
+  type ColumnPatternRule,
   UPDATE_CANONICAL_URLS,
 } from '../../src/config';
 import { resolveConfigPath } from './config-resolver';
@@ -219,6 +220,53 @@ export function patchSelfService(patch: SelfServicePatch): PrivacyConfig {
   if (Array.isArray(patch.custom_categories)) {
     doc.set('custom_categories', patch.custom_categories);
   }
+
+  writeConfigFile(path, String(doc));
+
+  return loadConfig(path);
+}
+
+/**
+ * Write (replace) the `xlsx.columnRules` array and preserve `xlsx.autoDetect`.
+ * Last-write-wins: the caller is responsible for merging any existing rules
+ * before calling this. Engineer-B's route handler performs that merge.
+ *
+ * Follows the exact patchSelfService pattern: parseDocument -> ensure xlsx
+ * map node -> set columnRules + preserve autoDetect -> write -> loadConfig.
+ */
+export function patchXlsxColumnRules(rules: ColumnPatternRule[]): PrivacyConfig {
+  const path = resolveConfigPath();
+  const existing = existsSync(path) ? readFileSync(path, 'utf-8') : '';
+
+  let doc: Document;
+  try {
+    doc = parseDocument(existing);
+    if (doc.errors.length > 0) {
+      doc = new Document(new YAMLMap());
+    }
+  } catch {
+    doc = new Document(new YAMLMap());
+  }
+
+  if (!isMap(doc.contents)) {
+    doc.contents = new YAMLMap();
+  }
+
+  // Get or create the xlsx map node.
+  const rawXlsx = doc.get('xlsx', true);
+  let xlsxNode: YAMLMap;
+  if (isMap(rawXlsx)) {
+    xlsxNode = rawXlsx;
+  } else {
+    xlsxNode = new YAMLMap();
+    doc.set('xlsx', xlsxNode);
+  }
+
+  // Preserve existing autoDetect value; default true.
+  const existingAutoDetect = xlsxNode.get('autoDetect');
+  const autoDetect = typeof existingAutoDetect === 'boolean' ? existingAutoDetect : true;
+  xlsxNode.set('autoDetect', autoDetect);
+  xlsxNode.set('columnRules', rules);
 
   writeConfigFile(path, String(doc));
 
