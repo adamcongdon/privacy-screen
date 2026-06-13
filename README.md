@@ -113,6 +113,36 @@ PrivacyScreen ships with deterministic regex coverage for the 8-category taxonom
 
 **Optional LLM secondary validator (opt-in, default off).** A small local LLM (Qwen2.5-1.5B Q4_K_M via `llama-server`) can run as a JUDGE that reads the *already-scrubbed* text and flags PII the regex layer might have missed — multilingual names, regional address formats, novel credential patterns. The judge can only *add* items to the existing review queue; it never mutates scrub output. Runs fully local; the hook refuses any non-loopback endpoint. See `Plans/LLM_RESEARCH.md` for design, `SAFETY_CHECKLIST.md` ("LLM secondary validation") for the enable flow, and `bun cli/PrivacyScreen.ts install-judge --runtime` to start.
 
+## Spreadsheets (xlsx / csv)
+
+Upload a `.xlsx` or `.csv` to the app and PrivacyScreen scrubs it **column by column** instead of per cell. Each column gets one policy, chosen in the review step before any bytes leave:
+
+| Policy | What it does | Maps to |
+|---|---|---|
+| A detected pattern (`Email`, `Phone`, `FQDN`, `IPv4`, …) | Tokenize every cell as that type. Headers like `Email` / `HostName` / `IP Address` auto-resolve by heuristic. | the categories in [What it covers](#what-it-covers) |
+| **Skip** | Leave the column untouched — values pass through **unredacted**. | "ignore an entire column" |
+| **Regex / scan each cell** | Run the normal free-text scrubber over every cell. | "parse column items individually" |
+| **Custom label** | Tokenize the column as a label you name (e.g. `VM`). | per-column custom token |
+
+**Remembered column policies.** Whatever you choose on commit is **persisted to `PRIVACY_CONFIG.yaml`** as an `xlsx.columnRules` entry, keyed by the (case-insensitive) column header. The next upload — any sheet, any future file — auto-resolves a column with that header to the saved policy without you re-choosing; the review UI marks it with a **`remembered`** badge. Re-picking a different policy for the same header overwrites the rule (last-write-wins).
+
+```yaml
+xlsx:
+  autoDetect: true            # heuristic header→pattern matching (default on)
+  columnRules:
+    - header: HostName
+      pattern: FQDN
+    - header: Notes
+      action: regex
+    - header: InternalId        # "ignore an entire column"
+      action: skip
+    - header: VM
+      action: custom
+      label: VM
+```
+
+**Privacy:** `Skip` is the only raw-passthrough path. A persisted skip that lets a column through writes a `redaction_log` entry on every commit, so the pass-through is always auditable. As with all paths, the raw upload never touches disk — staged in memory and dropped right after the scrubbed copy is produced — and a credential anywhere in the workbook blocks the whole file (`BLOCK-ALWAYS`).
+
 ## Modes
 
 | Mode | Behavior | When to use |
