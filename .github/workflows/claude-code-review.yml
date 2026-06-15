@@ -11,7 +11,32 @@ on:
     #   - "web/src/**/*.tsx"
 
 jobs:
+  # Phase 0 — privacy / data-egress screen. Runs FIRST and gates the review.
+  # If gitleaks finds a secret in the PR, this job fails and `claude-review`
+  # (which `needs` it) never starts — so nothing is sent to the Anthropic API.
+  egress-screen:
+    name: Privacy egress screen (gitleaks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # gitleaks needs full history to scan every commit, not just the tip.
+          fetch-depth: 0
+
+      - name: Scan PR for secrets before any egress
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
   claude-review:
+    name: Claude Code Review
+    # Privacy screen first: the review only runs once the egress screen passes.
+    needs: egress-screen
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     permissions:
@@ -30,7 +55,8 @@ jobs:
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # API-key auth (set ANTHROPIC_API_KEY in repo Actions secrets).
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
