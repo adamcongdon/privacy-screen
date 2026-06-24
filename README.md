@@ -74,7 +74,7 @@ privacy-screen ships GitHub releases on two channels:
 
 ```yaml
 update_channel: stable   # or beta — default: off (no network)
-update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
+update_manifest_url: https://github.com/adamcongdon/privacy-screen/releases/latest/download/release-manifest.json
 ```
 
 When enabled, the app polls the manifest URL every 4 hours while open (skipped when the tab is hidden) and surfaces a slim banner when a new version exists. Dismissing the banner remembers that exact version; a newer version brings it back. Click the banner to jump to Settings → Update where you can download and apply the new binary in one click. The app re-launches itself with the verified replacement.
@@ -306,7 +306,7 @@ In the web UI (open the app at http://127.0.0.1:31338 → **settings** → **Upd
 ```yaml
 # PRIVACY_CONFIG.yaml
 update_channel: off               # off | stable | beta. Default off.
-update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
+update_manifest_url: https://github.com/adamcongdon/privacy-screen/releases/latest/download/release-manifest.json
 ```
 
 ### Channels & manifests (auto-published by CI)

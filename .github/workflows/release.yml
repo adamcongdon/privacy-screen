@@ -590,6 +590,12 @@ jobs:
           git checkout -- package.json || true
 
       - name: Update release manifest in repo (for raw URL consumption by the app)
+        # Beta only. The stable app reads its manifest from the latest GitHub
+        # Release asset (releases/latest/download/release-manifest.json — see
+        # src/config.ts UPDATE_CANONICAL_URLS), so stable does NOT commit the
+        # manifest back to the protected main branch. Beta reads from the beta
+        # branch file, and the bot can push there.
+        if: steps.vars.outputs.channel == 'beta'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

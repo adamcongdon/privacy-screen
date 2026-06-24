@@ -35,7 +35,13 @@ export type UpdateChannel = 'off' | 'stable' | 'beta';
 
 /** Canonical manifest URLs for the self-service channel picker (no YAML editing). */
 export const UPDATE_CANONICAL_URLS: Record<'stable' | 'beta', string> = {
-  stable: 'https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json',
+  // Stable serves the manifest straight off the latest full GitHub Release asset.
+  // `releases/latest` always resolves to the newest non-prerelease, and the
+  // release job uploads release-manifest.json as an asset — so the app reads the
+  // manifest without the release job needing to commit it back to the protected
+  // main branch. Beta stays on the beta branch file (betas are prereleases, which
+  // `releases/latest` skips, and the bot can push to the unprotected beta branch).
+  stable: 'https://github.com/adamcongdon/privacy-screen/releases/latest/download/release-manifest.json',
   beta: 'https://raw.githubusercontent.com/adamcongdon/privacy-screen/beta/release-manifest-beta.json',
 };
 
