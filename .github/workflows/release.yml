@@ -535,7 +535,12 @@ jobs:
       - name: Prepare manifest file for GitHub release assets
         run: |
           MANIFEST="${{ steps.vars.outputs.manifest_name }}"
-          cp dist/release-manifest.json "dist/$MANIFEST"
+          # On the stable channel manifest_name IS release-manifest.json, so the
+          # source and destination are the same file — copying it onto itself
+          # errors under `bash -e`. Only copy when the channel-qualified name differs.
+          if [ "dist/$MANIFEST" != "dist/release-manifest.json" ]; then
+            cp dist/release-manifest.json "dist/$MANIFEST"
+          fi
 
       - name: Create GitHub Release and upload assets
         env:
