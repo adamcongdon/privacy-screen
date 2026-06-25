@@ -2,6 +2,7 @@ name: osv-scanner
 
 on:
   push:
+    branches: [main]
   pull_request:
   schedule:
     # Tuesdays 06:37 UTC — staggered against codeql's Monday slot.
