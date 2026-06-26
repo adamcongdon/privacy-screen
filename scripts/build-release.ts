@@ -49,6 +49,8 @@ interface ReleaseManifest {
   channel: 'stable' | 'beta';
   released_at: string;
   notes_url?: string;
+  /** Bun version that compiled these binaries — build provenance (see issue #110). */
+  bun_version?: string;
   platforms: Record<string, PlatformAsset>;
 }
 
@@ -152,6 +154,7 @@ async function main(): Promise<void> {
     channel,
     released_at: new Date().toISOString(),
     notes_url: `https://github.com/adamcongdon/privacy-screen/releases/tag/v${pkg.version}`,
+    bun_version: Bun.version,
     platforms,
   };
   const manifestPath = join(DIST_DIR, 'release-manifest.json');

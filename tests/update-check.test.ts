@@ -167,6 +167,30 @@ describe('checkForUpdate', () => {
     expect(result).toBeNull();
   });
 
+  test('accepts manifest carrying an informational bun_version (issue #110)', async () => {
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(manifest({ bun_version: '1.3.8' })),
+    });
+    expect(result).not.toBeNull();
+    expect(result?.version).toBe('1.2.3');
+  });
+
+  test('rejects manifest with non-string bun_version', async () => {
+    // Optional field, but if present it must be a string — guards against a
+    // malformed/poisoned manifest.
+    const bad = manifest({ bun_version: 138 as unknown as string });
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(bad),
+    });
+    expect(result).toBeNull();
+  });
+
   test('returns null when platform key missing from manifest', async () => {
     const result = await checkForUpdate('1.0.0', {
       channel: 'stable',
