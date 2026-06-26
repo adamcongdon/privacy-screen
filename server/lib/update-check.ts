@@ -38,6 +38,8 @@ export interface ReleaseManifest {
   released_at: string;
   notes_url?: string;
   minimum_supported_version?: string;
+  /** Bun version that compiled the binaries — informational build provenance (issue #110). */
+  bun_version?: string;
   platforms: Record<string, PlatformAsset>;
 }
 
@@ -165,6 +167,7 @@ function isReleaseManifest(v: unknown): v is ReleaseManifest {
   ) {
     return false;
   }
+  if (o.bun_version !== undefined && typeof o.bun_version !== 'string') return false;
   if (!o.platforms || typeof o.platforms !== 'object') return false;
   // Reject the whole manifest if ANY platform entry is malformed —
   // we'd rather refuse than partially trust.
