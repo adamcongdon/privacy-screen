@@ -48,6 +48,10 @@ Branch roles:
 - `beta`: PR into `beta` (from ac-build) → auto beta build + manifest. This is the feeder for betas.
 - `main`: PR from `beta` to `main` → stable release (protected).
 
+**Skipping a release:** every push to `main` (or `beta`) normally cuts a release. To land a maintenance change (CI/workflow/docs/dependency housekeeping) *without* publishing a new version, include `[skip release]` in the head commit message — for the squash-merge flow, put it in the PR title or body. `release.yml`'s `build` job is gated on it, so build → packaging → create-release are all skipped (test still runs). The release tag is tag-derived, so a skipped push simply doesn't advance it.
+
+**Action pinning (issue #101):** every external action in these workflows is pinned to a full 40-char commit SHA with a `# vX.Y.Z` comment. The `pinned-actions` job in `ci.yml` fails the build if any unpinned `@vN` reference appears; Dependabot (github-actions ecosystem) bumps the SHAs weekly.
+
 ## Disabled (`.yml.disabled`)
 
 None. `codeql.yml`, `osv-scanner.yml`, and `dependency-review.yml` were previously disabled because they require GitHub Advanced Security or a public repo for SARIF upload to code scanning and the dependency graph. The repo is now **public**, so all three are active (re-enabled June 2026). If the repo is ever made private again without GHAS, rename them back to `.yml.disabled`.
