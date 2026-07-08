@@ -420,6 +420,8 @@ type State = {
    * (Settings chips, DataPrivacy clear) continue to pass 1 arg and see the real (as
    * those surfaces intentionally display the value). */
   forgetVocab: (realValue: string, toastLabel?: string) => Promise<void>;
+  /** Clear every persisted vocab row in one request (server-side bulk clear, issue #87). */
+  clearAllVocab: () => Promise<{ deleted: number; remaining: number }>;
   /** Mint a selected span as a specific category — drives the context-menu UX. */
   mintSelection: (value: string, category: string) => Promise<void>;
 
@@ -1175,6 +1177,12 @@ export const useStore = create<State>((set, get) => {
         `forget failed: ${err instanceof Error ? err.message : err}`,
       );
     }
+  },
+
+  clearAllVocab: async () => {
+    const result = await api.clearAllVocab();
+    await Promise.all([get().refreshVocab(), get().refreshScrub()]);
+    return result;
   },
 
   send: async () => {

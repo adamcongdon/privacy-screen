@@ -881,13 +881,10 @@ function UpdatesCard(): JSX.Element {
 
 function DataPrivacyCard(): JSX.Element {
   const vocab = useStore((s) => s.vocab);
-  const forgetVocab = useStore((s) => s.forgetVocab);
+  const clearAllVocab = useStore((s) => s.clearAllVocab);
   const pushToast = useStore((s) => s.pushToast);
   const [clearing, setClearing] = useState(false);
 
-  // No dedicated clear-vocab endpoint exists; we drive the REAL per-value forget
-  // action over every persisted row. forgetVocab refreshes vocab + scrub itself,
-  // so the chip lists / tables update as each row drops.
   const onClear = async () => {
     if (vocab.length === 0) {
       pushToast('info', 'Vocabulary is already empty.');
@@ -901,14 +898,10 @@ function DataPrivacyCard(): JSX.Element {
     }
     setClearing(true);
     try {
-      // Snapshot the real values first — the list mutates under us as we forget.
-      const values = vocab.map((v) => v.real_value);
-      for (const value of values) {
-        // eslint-disable-next-line no-await-in-loop -- sequential keeps the
-        // server's per-value delete + re-scrub deterministic; the set is small.
-        await forgetVocab(value);
-      }
-      pushToast('success', `Cleared ${values.length} value${values.length === 1 ? '' : 's'}.`);
+      const { deleted } = await clearAllVocab();
+      pushToast('success', `Cleared ${deleted} value${deleted === 1 ? '' : 's'}.`);
+    } catch (err) {
+      pushToast('error', `clear failed: ${err instanceof Error ? err.message : err}`);
     } finally {
       setClearing(false);
     }
