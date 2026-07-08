@@ -83,7 +83,7 @@ export function CustomCategoryDialog(): JSX.Element | null {
           onClick={close}
         />
         <Dialog.Content
-          className="ps-panel w-[min(440px,calc(100%-32px))]"
+          className="ps-panel fixed left-1/2 top-1/2 z-[90] w-[min(440px,calc(100%-32px))] -translate-x-1/2 -translate-y-1/2"
           style={{ background: 'var(--surface)', boxShadow: 'var(--shadow)' }}
           aria-label="New token category"
         >
