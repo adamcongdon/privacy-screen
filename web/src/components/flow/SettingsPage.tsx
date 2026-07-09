@@ -19,9 +19,8 @@
  *                       + refreshVersion / versionInfo  (api.version). Mirrors
  *                       SettingsDrawer's channel radios (re-skinned as a segmented
  *                       control) + Check now.
- *   - Data & privacy  → store.forgetVocab over every vocab row (no dedicated
- *                       clear-vocab endpoint exists; we drive the real per-value
- *                       forget action). Path string is informational.
+ *   - Data & privacy  → store.clearVocab() (DELETE /api/vocab, bulk). Path
+ *                       string is informational.
  *
  * WCAG: mode rows = role="radiogroup" + role="radio"/aria-checked; the judge
  * toggle uses .ps-toggle with role="switch" + aria-checked; the channel control
@@ -881,13 +880,13 @@ function UpdatesCard(): JSX.Element {
 
 function DataPrivacyCard(): JSX.Element {
   const vocab = useStore((s) => s.vocab);
-  const forgetVocab = useStore((s) => s.forgetVocab);
+  const clearVocab = useStore((s) => s.clearVocab);
   const pushToast = useStore((s) => s.pushToast);
   const [clearing, setClearing] = useState(false);
 
-  // No dedicated clear-vocab endpoint exists; we drive the REAL per-value forget
-  // action over every persisted row. forgetVocab refreshes vocab + scrub itself,
-  // so the chip lists / tables update as each row drops.
+  // #141/#87: DELETE /api/vocab clears every row in one request. Looping
+  // forgetVocab per row instead blew through the server rate limit (429s) and
+  // toasted once per row on large vocabularies.
   const onClear = async () => {
     if (vocab.length === 0) {
       pushToast('info', 'Vocabulary is already empty.');
@@ -901,14 +900,7 @@ function DataPrivacyCard(): JSX.Element {
     }
     setClearing(true);
     try {
-      // Snapshot the real values first — the list mutates under us as we forget.
-      const values = vocab.map((v) => v.real_value);
-      for (const value of values) {
-        // eslint-disable-next-line no-await-in-loop -- sequential keeps the
-        // server's per-value delete + re-scrub deterministic; the set is small.
-        await forgetVocab(value);
-      }
-      pushToast('success', `Cleared ${values.length} value${values.length === 1 ? '' : 's'}.`);
+      await clearVocab();
     } finally {
       setClearing(false);
     }

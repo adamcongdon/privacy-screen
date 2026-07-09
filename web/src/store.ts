@@ -420,6 +420,10 @@ type State = {
    * (Settings chips, DataPrivacy clear) continue to pass 1 arg and see the real (as
    * those surfaces intentionally display the value). */
   forgetVocab: (realValue: string, toastLabel?: string) => Promise<void>;
+  /** Bulk-delete every vocab row in one request (issue #87/#141 — the per-row
+   * loop blows through the server rate limit and spams a toast per row on
+   * large vocabularies). */
+  clearVocab: () => Promise<void>;
   /** Mint a selected span as a specific category — drives the context-menu UX. */
   mintSelection: (value: string, category: string) => Promise<void>;
 
@@ -1173,6 +1177,19 @@ export const useStore = create<State>((set, get) => {
       get().pushToast(
         'error',
         `forget failed: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  },
+
+  clearVocab: async () => {
+    try {
+      const { deleted } = await api.clearVocab();
+      await Promise.all([get().refreshVocab(), get().refreshScrub()]);
+      get().pushToast('success', `Cleared ${deleted} value${deleted === 1 ? '' : 's'}.`);
+    } catch (err) {
+      get().pushToast(
+        'error',
+        `clear failed: ${err instanceof Error ? err.message : err}`,
       );
     }
   },

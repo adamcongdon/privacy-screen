@@ -303,6 +303,10 @@ export const api = {
     );
   },
 
+  async clearVocab(): Promise<{ deleted: number; remaining: number }> {
+    return json(await fetch('/api/vocab', { method: 'DELETE' }));
+  },
+
   async allowlist(pattern: string, isRegex = false): Promise<{ ok: true }> {
     const res = await fetch('/api/vocab/allowlist', {
       method: 'POST',
