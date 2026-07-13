@@ -20,25 +20,96 @@
  * WCAG: category filter chips carry a color DOT *and* a text label (1.4.1);
  * Reveal/Forget icon buttons have aria-label; mask defaults on (real value
  * hidden until the user reveals a specific row).
+ *
+ * #89 (WEB-07): Export is safe-by-default (tokens + categories only). Full
+ * export (includes real_value = deanonymization key) requires an explicit
+ * checkbox confirmation and uses a -SENSITIVE filename.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { Search, Download, Eye, EyeOff, Trash2, Lock } from 'lucide-react';
+import { Search, Download, Eye, EyeOff, Trash2, Lock, AlertTriangle } from 'lucide-react';
+import * as Dialog from '@radix-ui/react-dialog';
 import { useStore } from '../../store';
 import { useContextMenu } from '../../lib/useContextMenu';
 import { getCategoryHue } from '../../lib/colors';
 import { categoryLabel, CATS } from '../../lib/categories';
 import type { Token, VocabRow } from '../../api';
 import { mergeTokenSources } from '../../lib/tokens';
+import { DialogHeader, ScrollableDialogBody, DialogFooter } from '../ui/DialogScroll';
+import { cn } from '../../lib/cn';
 
 /** A unified vocab row for the table — merges the session token streams with the
  * persisted vocab list so the page shows everything the user has tokenized. */
-type Row = {
+export type VocabExportRow = {
   token: string;
   realValue: string;
   category: string;
   /** Persisted hit_count, or null for session-only tokens with no vocab row. */
   uses: number | null;
 };
+
+/** @deprecated alias kept for internal use — prefer VocabExportRow */
+type Row = VocabExportRow;
+
+/** Safe export row: tokens + categories only — never carries real_value (#89). */
+export type SafeExportRow = {
+  token: string;
+  category: string;
+  uses: number | null;
+};
+
+/** Full export row: the deanonymization key. Only produced after explicit confirm. */
+export type FullExportRow = SafeExportRow & {
+  real_value: string;
+};
+
+/**
+ * Build the JSON export payload (#89).
+ * - `includeRealValues === false` (default): tokens + categories (+ uses); no real_value.
+ * - `includeRealValues === true`: includes real_value (deanonymization key).
+ */
+export function buildExportPayload(
+  rows: ReadonlyArray<VocabExportRow>,
+  includeRealValues: boolean,
+): SafeExportRow[] | FullExportRow[] {
+  if (includeRealValues) {
+    return rows.map((r) => ({
+      token: r.token,
+      category: r.category,
+      uses: r.uses,
+      real_value: r.realValue,
+    }));
+  }
+  return rows.map((r) => ({
+    token: r.token,
+    category: r.category,
+    uses: r.uses,
+  }));
+}
+
+/** Filename for downloads. Full export is visibly flagged SENSITIVE (#89). */
+export function exportFilename(
+  includeRealValues: boolean,
+  now: Date = new Date(),
+): string {
+  if (!includeRealValues) return 'privacy-screen-vocabulary.json';
+  const y = now.getUTCFullYear();
+  const m = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(now.getUTCDate()).padStart(2, '0');
+  return `privacy-screen-vocabulary-SENSITIVE-${y}${m}${d}.json`;
+}
+
+/** Trigger a browser JSON download for an already-built payload. */
+export function downloadExportJson(payload: unknown, filename: string): void {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
 /** Build the merged, de-duplicated row set. Mirrors TokenMapBody's union order:
  * current scrub tokens first, then the cross-session union, then persisted vocab.
@@ -354,9 +425,132 @@ export function VocabularyPage({ query }: { query: string }): JSX.Element {
   );
 }
 
+/** #89 warning copy — full export is the deanonymization key. */
+export const FULL_EXPORT_WARNING =
+  'This file contains real values and is the key to deanonymize past conversations. It should not be stored in a synced or backed-up folder.';
+
+/**
+ * Export choice dialog (#89). Default path is tokens+categories only (no
+ * real_value). Full export requires an explicit checkbox acknowledgement.
+ */
+export function VocabExportDialog({
+  open,
+  onOpenChange,
+  rowCount,
+  onExportSafe,
+  onExportFull,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  rowCount: number;
+  onExportSafe: () => void;
+  onExportFull: () => void;
+}): JSX.Element {
+  const [ackFull, setAckFull] = useState(false);
+
+  // Reset the gate whenever the dialog re-opens so a prior ack cannot stick.
+  useEffect(() => {
+    if (open) setAckFull(false);
+  }, [open]);
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm animate-fade-in" />
+        <Dialog.Content
+          className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[min(480px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-zinc-800 bg-zinc-950 shadow-2xl"
+          onOpenAutoFocus={(e) => e.preventDefault()}
+        >
+          <DialogHeader
+            title="Export vocabulary"
+            description={
+              <>
+                Choose what to write to disk. The safe default is tokens and
+                categories only — it does <strong>not</strong> include real values.
+              </>
+            }
+          />
+
+          <ScrollableDialogBody className="space-y-4">
+            <p className="text-xs text-zinc-400">
+              {rowCount} token{rowCount === 1 ? '' : 's'} ready to export. Downloads
+              stay on this device (never a network send).
+            </p>
+
+            <div className="rounded-md border border-amber-900/50 bg-amber-950/30 px-3 py-2.5">
+              <div className="flex items-start gap-2">
+                <AlertTriangle
+                  size={14}
+                  className="mt-0.5 shrink-0 text-amber-400"
+                  aria-hidden="true"
+                />
+                <p className="text-xs leading-relaxed text-amber-100/90">{FULL_EXPORT_WARNING}</p>
+              </div>
+              <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={ackFull}
+                  onChange={(e) => setAckFull(e.target.checked)}
+                  className="mt-0.5"
+                  data-testid="export-full-ack"
+                />
+                <span>
+                  I understand this file is the deanonymization key and will not put it
+                  in a synced folder.
+                </span>
+              </label>
+            </div>
+          </ScrollableDialogBody>
+
+          <DialogFooter className="!items-stretch sm:!items-center">
+            <Dialog.Close asChild>
+              <button
+                type="button"
+                className="rounded-md border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+              >
+                Cancel
+              </button>
+            </Dialog.Close>
+            <button
+              type="button"
+              disabled={!ackFull}
+              onClick={onExportFull}
+              data-testid="export-full-btn"
+              className={cn(
+                'rounded-md border px-3 py-1.5 text-xs font-medium',
+                ackFull
+                  ? 'border-amber-800/80 bg-amber-950/40 text-amber-100 hover:bg-amber-900/50'
+                  : 'cursor-not-allowed border-zinc-800 bg-zinc-900/40 text-zinc-600',
+              )}
+              title={
+                ackFull
+                  ? 'Download full vocabulary including real values'
+                  : 'Check the acknowledgement box to enable full export'
+              }
+            >
+              Export full (SENSITIVE)
+            </button>
+            <button
+              type="button"
+              onClick={onExportSafe}
+              data-testid="export-safe-btn"
+              className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500"
+            >
+              Export tokens only
+            </button>
+          </DialogFooter>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
 /** Header-right controls for the Vocabulary route: a search input + an Export
  * button. The search query is lifted to App so it can be passed into the page
- * body (which lives in the Shell `children`, a sibling of `headerRight`). */
+ * body (which lives in the Shell `children`, a sibling of `headerRight`).
+ *
+ * #89: Export opens a choice dialog — safe default omits real_value; full
+ * export requires explicit checkbox confirmation. */
 export function VocabHeaderRight({
   query,
   setQuery,
@@ -368,31 +562,31 @@ export function VocabHeaderRight({
   const tokenUnion = useStore((s) => s.tokenUnion);
   const vocab = useStore((s) => s.vocab);
   const pushToast = useStore((s) => s.pushToast);
+  const [exportOpen, setExportOpen] = useState(false);
 
-  const onExport = () => {
-    const rows = buildRows(tokens, tokenUnion, vocab);
+  const rows = useMemo(
+    () => buildRows(tokens, tokenUnion, vocab),
+    [tokens, tokenUnion, vocab],
+  );
+
+  const onExportClick = () => {
     if (rows.length === 0) {
       pushToast('info', 'Nothing to export yet.');
       return;
     }
-    // Export the token map as JSON — real values stay local (this download is a
-    // user-initiated, on-device file, never a network send).
-    const payload = rows.map((r) => ({
-      token: r.token,
-      category: r.category,
-      real_value: r.realValue,
-      uses: r.uses,
-    }));
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'privacy-screen-vocabulary.json';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    pushToast('success', `Exported ${rows.length} token${rows.length === 1 ? '' : 's'}.`);
+    setExportOpen(true);
+  };
+
+  const finishExport = (includeRealValues: boolean) => {
+    const payload = buildExportPayload(rows, includeRealValues);
+    const filename = exportFilename(includeRealValues);
+    downloadExportJson(payload, filename);
+    setExportOpen(false);
+    const kind = includeRealValues ? 'full (SENSITIVE)' : 'tokens-only';
+    pushToast(
+      'success',
+      `Exported ${rows.length} token${rows.length === 1 ? '' : 's'} (${kind}).`,
+    );
   };
 
   return (
@@ -413,12 +607,19 @@ export function VocabHeaderRight({
       </div>
       <button
         type="button"
-        onClick={onExport}
+        onClick={onExportClick}
         className="flex items-center gap-1.5 rounded-[8px] border border-border bg-surface-2 px-2.5 text-[12px] font-medium text-text-dim hover:bg-surface-3 hover:text-text"
         style={{ height: 32 }}
       >
         <Download size={14} aria-hidden="true" /> Export
       </button>
+      <VocabExportDialog
+        open={exportOpen}
+        onOpenChange={setExportOpen}
+        rowCount={rows.length}
+        onExportSafe={() => finishExport(false)}
+        onExportFull={() => finishExport(true)}
+      />
     </>
   );
 }
