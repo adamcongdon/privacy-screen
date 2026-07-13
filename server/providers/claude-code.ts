@@ -10,8 +10,13 @@
  * caller; everything else (hooks, MCP, tool calls) is filtered out.
  *
  * Why not `--bare`: bare mode strictly requires ANTHROPIC_API_KEY — it skips
- * OAuth and keychain reads. Defeats the "no API key" requirement. We accept
- * the small overhead of normal-mode hooks for the auth flexibility.
+ * OAuth and keychain reads. Defeats the "no API key" requirement.
+ *
+ * SRV-05 / #78 isolation: we still load auth via normal mode, but strip user
+ * / project / local setting sources and force an empty MCP config so the
+ * user's global hooks + MCP servers do NOT run on relayed prompts.
+ * Residual surface: skills via /skill-name, and any process-env the CLI
+ * reads that is not gated by --setting-sources (documented in issue #78).
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
@@ -35,6 +40,43 @@ export interface StreamOptions {
 }
 
 const DEFAULT_MODEL = 'sonnet';
+
+/** Empty MCP config JSON — used with --strict-mcp-config so no user servers load. */
+export const EMPTY_MCP_CONFIG_JSON = JSON.stringify({ mcpServers: {} });
+
+/**
+ * Build the argv for `claude --print` (without the binary name).
+ * Exported for SRV-05 unit tests.
+ */
+export function buildClaudePrintArgs(opts: StreamOptions): string[] {
+  const args: string[] = [
+    '--print',
+    '--output-format',
+    'stream-json',
+    '--include-partial-messages',
+    '--verbose',
+    '--no-session-persistence',
+    '--exclude-dynamic-system-prompt-sections',
+    '--disable-slash-commands',
+    '--model',
+    opts.model ?? DEFAULT_MODEL,
+    '--tools',
+    '', // disable all tools — pure inference only
+    // SRV-05 / #78: do not load user/project/local settings (hooks live there).
+    '--setting-sources',
+    '',
+    // Only honor MCP servers from the empty config below.
+    '--strict-mcp-config',
+    '--mcp-config',
+    EMPTY_MCP_CONFIG_JSON,
+  ];
+
+  if (opts.system) {
+    args.push('--append-system-prompt', opts.system);
+  }
+
+  return args;
+}
 
 /**
  * Render a multi-message conversation into a single prompt for `claude --print`.
@@ -61,22 +103,7 @@ export async function streamChat(
   cb: StreamCallbacks,
 ): Promise<void> {
   const prompt = formatPrompt(messages);
-
-  const args: string[] = [
-    '--print',
-    '--output-format', 'stream-json',
-    '--include-partial-messages',
-    '--verbose',
-    '--no-session-persistence',
-    '--exclude-dynamic-system-prompt-sections',
-    '--disable-slash-commands',
-    '--model', opts.model ?? DEFAULT_MODEL,
-    '--tools', '', // disable all tools — pure inference only
-  ];
-
-  if (opts.system) {
-    args.push('--append-system-prompt', opts.system);
-  }
+  const args = buildClaudePrintArgs(opts);
 
   let child: ChildProcessWithoutNullStreams;
   try {
