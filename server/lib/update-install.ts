@@ -13,7 +13,8 @@
  *  - Never auto-applies. Apply is a separate explicit action.
  *  - Always verifies the sha256 from the *manifest* before considering the bytes good.
  *  - No telemetry on the download (plain fetch to the release asset URL).
- *  - HTTPS only (enforced by manifest + fetch).
+ *  - HTTPS + GitHub-release host allowlist on declared URLs; redirect hops
+ *    re-validated with redirect:'manual' (issue #102 / REL-02).
  *
  * Dev vs release:
  *  - When running under the bun runtime (bun server/server.ts or `bun run start`),
@@ -30,6 +31,8 @@ import { spawn as nodeSpawn } from 'child_process';
 import {
   checkForUpdate,
   defaultPlatformKey,
+  isValidReleaseAssetUrl,
+  isValidReleaseRedirectTarget,
   type UpdateInfo,
 } from './update-check';
 import { loadConfig } from '../../src/config';
@@ -240,6 +243,58 @@ export async function startUpdateDownload(): Promise<{ ok: true; status: UpdateS
   return { ok: true as const, status: getUpdateStatus() };
 }
 
+/**
+ * Fetch a release asset with redirect:manual, re-validating every hop host.
+ * Declared URL must pass isValidReleaseAssetUrl; subsequent Locations must
+ * pass isValidReleaseRedirectTarget + https. Caps hop count to prevent loops.
+ *
+ * Exported for unit tests (issue #102 redirect re-validation).
+ */
+export async function fetchReleaseAsset(
+  initialUrl: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<Response> {
+  if (!isValidReleaseAssetUrl(initialUrl)) {
+    throw new Error('update asset URL failed allowlist (https + github release path)');
+  }
+
+  const maxHops = 5;
+  let current = initialUrl;
+
+  for (let hop = 0; hop < maxHops; hop++) {
+    const res = await fetchImpl(current, { method: 'GET', redirect: 'manual' });
+
+    if (res.status >= 200 && res.status < 300) {
+      return res;
+    }
+
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location');
+      if (!loc) {
+        throw new Error(`redirect ${res.status} missing Location`);
+      }
+      let next: URL;
+      try {
+        next = new URL(loc, current);
+      } catch {
+        throw new Error('invalid redirect Location');
+      }
+      if (next.protocol !== 'https:') {
+        throw new Error(`redirect scheme not https: ${next.protocol}`);
+      }
+      if (!isValidReleaseRedirectTarget(next.hostname)) {
+        throw new Error(`redirect host not allowlisted: ${next.hostname}`);
+      }
+      current = next.toString();
+      continue;
+    }
+
+    throw new Error(`HTTP ${res.status} ${res.statusText}`);
+  }
+
+  throw new Error('too many redirects following release asset URL');
+}
+
 async function runDownload(
   info: UpdateInfo,
   partPath: string,
@@ -250,7 +305,7 @@ async function runDownload(
   const expectedSha = info.sha256.toLowerCase();
 
   try {
-    const res = await fetch(url, { method: 'GET' });
+    const res = await fetchReleaseAsset(url);
     if (!res.ok || !res.body) {
       throw new Error(`HTTP ${res.status} ${res.statusText}`);
     }

@@ -7,17 +7,27 @@
  *   - checkForUpdate behavior across newer/equal/older/missing-platform,
  *     channel matching, and malformed-manifest cases.
  *   - Timeout via AbortController doesn't leak past timeoutMs + slack.
+ *   - REL-02 / issue #102: HTTPS + GitHub-release host allowlist on asset URLs.
  *
  * Mocks fetch via the `fetchImpl` option — this avoids monkey-patching
  * `globalThis.fetch` and keeps the tests deterministic.
  */
 
 import { describe, test, expect } from 'bun:test';
-import { compareVersions, checkForUpdate, type ReleaseManifest } from '../server/lib/update-check';
+import {
+  compareVersions,
+  checkForUpdate,
+  isValidReleaseAssetUrl,
+  isValidReleaseRedirectTarget,
+  type ReleaseManifest,
+} from '../server/lib/update-check';
 
 const GOOD_SHA = 'a'.repeat(64);
-const URL_ARM64 = 'https://example.invalid/releases/v1.2.3/darwin-arm64';
-const URL_X64 = 'https://example.invalid/releases/v1.2.3/darwin-x64';
+// Fixture URLs must pass isValidReleaseAssetUrl (github.com + release path).
+const URL_ARM64 =
+  'https://github.com/adamcongdon/privacy-screen/releases/download/v1.2.3/privacy-screen-darwin-arm64';
+const URL_X64 =
+  'https://github.com/adamcongdon/privacy-screen/releases/download/v1.2.3/privacy-screen-darwin-x64';
 
 function manifest(overrides: Partial<ReleaseManifest> = {}): ReleaseManifest {
   return {
@@ -389,5 +399,159 @@ describe('checkForUpdate', () => {
       fetchImpl: redirectErrorFetch,
     });
     expect(result).toBeNull();
+  });
+
+  // ── issue #102 / REL-02: HTTPS + GitHub host allowlist on asset URLs ──
+
+  test('rejects manifest with http:// asset URL', async () => {
+    const bad = manifest({
+      platforms: {
+        'darwin-arm64': {
+          url: 'http://github.com/adamcongdon/privacy-screen/releases/download/v1.2.3/x',
+          sha256: GOOD_SHA,
+          size_bytes: 100,
+        },
+      },
+    });
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(bad),
+    });
+    expect(result).toBeNull();
+  });
+
+  test('rejects manifest with evil-host asset URL', async () => {
+    const bad = manifest({
+      platforms: {
+        'darwin-arm64': {
+          url: 'https://evil.example.com/adamcongdon/privacy-screen/releases/download/v1.2.3/x',
+          sha256: GOOD_SHA,
+          size_bytes: 100,
+        },
+      },
+    });
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(bad),
+    });
+    expect(result).toBeNull();
+  });
+
+  test('rejects manifest with wrong repo path on github.com', async () => {
+    const bad = manifest({
+      platforms: {
+        'darwin-arm64': {
+          url: 'https://github.com/evil/other-repo/releases/download/v1.2.3/x',
+          sha256: GOOD_SHA,
+          size_bytes: 100,
+        },
+      },
+    });
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(bad),
+    });
+    expect(result).toBeNull();
+  });
+
+  test('rejects manifest with missing /releases/download/ prefix', async () => {
+    const bad = manifest({
+      platforms: {
+        'darwin-arm64': {
+          url: 'https://github.com/adamcongdon/privacy-screen/archive/refs/tags/v1.2.3.zip',
+          sha256: GOOD_SHA,
+          size_bytes: 100,
+        },
+      },
+    });
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(bad),
+    });
+    expect(result).toBeNull();
+  });
+
+  test('accepts valid github.com release asset URL', async () => {
+    const result = await checkForUpdate('1.0.0', {
+      channel: 'stable',
+      manifestUrl: 'https://example.invalid/manifest.json',
+      platform: 'darwin-arm64',
+      fetchImpl: mockFetch(manifest()),
+    });
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe(URL_ARM64);
+    expect(isValidReleaseAssetUrl(result!.url)).toBe(true);
+  });
+});
+
+describe('isValidReleaseAssetUrl (issue #102)', () => {
+  test('accepts real-shaped github release download URL', () => {
+    expect(
+      isValidReleaseAssetUrl(
+        'https://github.com/adamcongdon/privacy-screen/releases/download/v1.0.0-beta.48/privacy-screen-darwin-arm64',
+      ),
+    ).toBe(true);
+  });
+
+  test('rejects http scheme', () => {
+    expect(
+      isValidReleaseAssetUrl(
+        'http://github.com/adamcongdon/privacy-screen/releases/download/v1/x',
+      ),
+    ).toBe(false);
+  });
+
+  test('rejects non-github host even with matching path', () => {
+    expect(
+      isValidReleaseAssetUrl(
+        'https://objects.githubusercontent.com/adamcongdon/privacy-screen/releases/download/v1/x',
+      ),
+    ).toBe(false);
+  });
+
+  test('rejects empty path after download prefix', () => {
+    expect(
+      isValidReleaseAssetUrl(
+        'https://github.com/adamcongdon/privacy-screen/releases/download/',
+      ),
+    ).toBe(false);
+  });
+
+  test('rejects userinfo in URL', () => {
+    expect(
+      isValidReleaseAssetUrl(
+        'https://user:pass@github.com/adamcongdon/privacy-screen/releases/download/v1/x',
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('isValidReleaseRedirectTarget (issue #102)', () => {
+  test('allows github.com', () => {
+    expect(isValidReleaseRedirectTarget('github.com')).toBe(true);
+  });
+
+  test('allows objects.githubusercontent.com', () => {
+    expect(isValidReleaseRedirectTarget('objects.githubusercontent.com')).toBe(true);
+  });
+
+  test('allows release-assets.githubusercontent.com (current CDN hop)', () => {
+    expect(isValidReleaseRedirectTarget('release-assets.githubusercontent.com')).toBe(true);
+  });
+
+  test('rejects evil host', () => {
+    expect(isValidReleaseRedirectTarget('evil.example.com')).toBe(false);
+  });
+
+  test('rejects empty hostname', () => {
+    expect(isValidReleaseRedirectTarget('')).toBe(false);
   });
 });
