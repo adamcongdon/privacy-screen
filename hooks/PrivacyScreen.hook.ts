@@ -367,6 +367,25 @@ async function handlePostTool(
       .map((t) => t.token)
       .join(', ');
     const more = result.mintedTokens.length > 5 ? ` …+${result.mintedTokens.length - 5} more` : '';
+    const cats = [...new Set(result.mintedTokens.map((t) => t.category).filter(Boolean))];
+    const catList = cats.length ? cats.join(', ') : 'unknown';
+
+    // HOOK-04 / #96: optional enforce-mode block for non-credential PII in tool output.
+    if (cfg.hook.block_pii_in_tool_output && cfg.mode === 'enforce') {
+      process.stderr.write(
+        `[PrivacyScreen] 🚨 PII in ${toolName} output — result blocked from context ` +
+          `(hook.block_pii_in_tool_output=true). Categories: ${catList}. ` +
+          `Tokens: ${preview}${more}. Pre-scrub the source or turn the flag off.\n`,
+      );
+      process.exit(2);
+    }
+
+    if (cfg.mode === 'observe') {
+      process.stderr.write(
+        `[PrivacyScreen:observe] would warn PII in ${toolName} output: ${preview}${more}\n`,
+      );
+      return;
+    }
     process.stderr.write(`[PrivacyScreen] ⚠️  PII in ${toolName} output: ${preview}${more}\n`);
   }
 }

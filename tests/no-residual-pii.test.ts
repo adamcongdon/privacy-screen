@@ -35,7 +35,7 @@ const cfg: PrivacyConfig = {
     enabled: false, model_path: null, runtime: 'llama-server', endpoint: null,
     max_tokens: 256, timeout_ms: 2500, min_confidence: 0.6,
   },
-  hook: { auto_approve_clean: false },
+  hook: { auto_approve_clean: false, block_pii_in_tool_output: false },
 };
 
 // Detectors that should find NOTHING in scrubbed output. Person-name detectors
