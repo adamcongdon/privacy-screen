@@ -141,10 +141,68 @@ export function defaultPlatformKey(): string | null {
   return null;
 }
 
+/**
+ * Declared release-asset URL allowlist (issue #102 / REL-02).
+ *
+ * Manifests ship `https://github.com/<owner>/<repo>/releases/download/...`
+ * links. We refuse any other scheme/host/path so a tampered branch-hosted
+ * manifest cannot point the updater at an arbitrary binary.
+ *
+ * Redirect destinations after the initial GET are validated separately via
+ * `isValidReleaseRedirectTarget` (GitHub CDN hosts have different paths).
+ */
+const RELEASE_ASSET_PATH_PREFIX = '/adamcongdon/privacy-screen/releases/download/';
+
+/** Hosts permitted on the *declared* asset URL in the manifest. */
+const RELEASE_ASSET_HOSTS = new Set(['github.com']);
+
+/**
+ * Hosts permitted on redirect hops while downloading a release asset.
+ * As of 2026 GitHub 302s to `release-assets.githubusercontent.com`; older
+ * flows used `objects.githubusercontent.com`. Keep both; never open the
+ * allowlist to arbitrary hosts.
+ */
+const RELEASE_REDIRECT_HOSTS = new Set([
+  'github.com',
+  'objects.githubusercontent.com',
+  'release-assets.githubusercontent.com',
+]);
+
+/**
+ * True iff `url` is an HTTPS GitHub release download for this repo.
+ * Used when accepting a platform asset from the manifest.
+ */
+export function isValidReleaseAssetUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:') return false;
+    if (u.username || u.password) return false;
+    if (!RELEASE_ASSET_HOSTS.has(u.hostname)) return false;
+    if (!u.pathname.startsWith(RELEASE_ASSET_PATH_PREFIX)) return false;
+    // Require at least tag + filename after the prefix (non-empty remainder).
+    const rest = u.pathname.slice(RELEASE_ASSET_PATH_PREFIX.length);
+    if (!rest || rest.endsWith('/')) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True iff `hostname` is an allowed hop for release-asset redirects.
+ * Does not re-check the GitHub path prefix — CDN paths differ.
+ */
+export function isValidReleaseRedirectTarget(hostname: string): boolean {
+  if (typeof hostname !== 'string' || hostname.length === 0) return false;
+  return RELEASE_REDIRECT_HOSTS.has(hostname.toLowerCase());
+}
+
 function isPlatformAsset(v: unknown): v is PlatformAsset {
   if (!v || typeof v !== 'object') return false;
   const o = v as Record<string, unknown>;
   if (typeof o.url !== 'string' || o.url.length === 0) return false;
+  // REL-02: refuse any-scheme / any-host asset URLs (issue #102).
+  if (!isValidReleaseAssetUrl(o.url)) return false;
   if (typeof o.sha256 !== 'string' || !SHA256_HEX.test(o.sha256)) return false;
   if (typeof o.size_bytes !== 'number' || !Number.isFinite(o.size_bytes) || o.size_bytes < 0) {
     return false;
