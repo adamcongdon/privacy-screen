@@ -56,11 +56,6 @@ export function resolveSystemPrompt(
 }
 
 sendRoute.post('/', async (c) => {
-  // SRV-03 / #76: share the global token-bucket with other mutating routes.
-  if (rateLimited(getClientIp(c))) {
-    return c.json({ error: 'rate limited' }, 429);
-  }
-
   const body = await c.req.json().catch(() => ({}));
   const messages = Array.isArray(body.messages) ? body.messages : [];
 
@@ -108,6 +103,12 @@ sendRoute.post('/', async (c) => {
       },
       400,
     );
+  }
+
+  // SRV-03 / #76: rate-limit only once we're past validation (empty/credential
+  // still return 400 even if the global bucket is exhausted from other tests/routes).
+  if (rateLimited(getClientIp(c))) {
+    return c.json({ error: 'rate limited' }, 429);
   }
 
   // Client disconnect aborts the claude subprocess (streamChat listens on this).
