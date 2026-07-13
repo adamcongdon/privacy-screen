@@ -1,19 +1,16 @@
 /**
- * Hook auto-approve precheck tests (Issue #6).
+ * Hook auto-approve + async judge audit (Issue #6 / #98 HOOK-06).
  *
- * When `cfg.hook.auto_approve_clean = true` AND the judge sync endpoint
- * returns `{ ok: true, suspicious_count: 0 }` AND the scrubber finds zero
- * PII, the hook MUST pass through silently — no stdout, no stderr block,
- * exit 0.
+ * When `cfg.hook.auto_approve_clean = true` AND the scrubber finds zero PII,
+ * the hook MUST pass through silently — no stdout block, exit 0. Gating is
+ * scrubber-only (ISC-20); the judge is best-effort audit only.
  *
- * If the judge sync endpoint reports any suspicion (or is unavailable),
- * auto-approve must NOT fire — the normal scrub/block path takes over.
- *
- * Failure mode: fail-CLOSED. If the judge errors, times out, or returns a
- * non-clean result, auto-approve never fires.
- *
- * We stand up a tiny Bun.serve receiver scripted per-test for the sync
- * judge endpoint and point the hook at it via PRIVACY_SCREEN_JUDGE_ENDPOINT.
+ * #98: the clean path must fire-and-forget POST to the async judge endpoint
+ * (`/api/judge` body with tokenMap + sourceEvent), NOT block up to 400ms on
+ * `/api/judge/sync` and discard the result. Tests pin:
+ *   - receiver receives exactly one POST with tokenMap when flag+llm on
+ *   - dirty scrubber path still blocks (auto-approve cannot fire)
+ *   - default config (flag omitted) never consults the judge
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
@@ -35,14 +32,10 @@ interface ReceiverHandle {
 }
 
 /**
- * Sync judge receiver — speaks the new `{ ok, suspicious_count }` contract.
- * If `opts.suspiciousCount` is set, every POST returns
- * `{ ok: true, suspicious_count: N }`. If `opts.fail` is true, returns 500.
+ * Async judge receiver — accepts POST /api/judge (and any path under override).
+ * Returns 202 so the hook's fire-and-forget path treats the audit as accepted.
  */
-function startSyncReceiver(opts: {
-  suspiciousCount?: number;
-  fail?: boolean;
-}): ReceiverHandle {
+function startAsyncJudgeReceiver(): ReceiverHandle {
   const posts: CapturedPost[] = [];
   const server = Bun.serve({
     hostname: '127.0.0.1',
@@ -54,16 +47,15 @@ function startSyncReceiver(opts: {
       const url = new URL(req.url);
       const body = await req.text();
       posts.push({ body, path: url.pathname, url: req.url });
-      if (opts.fail) return new Response('boom', { status: 500 });
-      const suspiciousCount = opts.suspiciousCount ?? 0;
-      return new Response(
-        JSON.stringify({ ok: true, suspicious_count: suspiciousCount }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
+      return new Response(JSON.stringify({ ok: true, queued: true }), {
+        status: 202,
+        headers: { 'content-type': 'application/json' },
+      });
     },
   });
   return {
-    url: `http://127.0.0.1:${server.port}/api/judge/sync`,
+    // Override keeps full path; dispatchJudge uses resolveJudgeEndpoint('async').
+    url: `http://127.0.0.1:${server.port}/api/judge`,
     posts,
     stop: () => server.stop(),
   };
@@ -136,12 +128,12 @@ async function runHook(
   return { exitCode, stdout, stderr, parsed };
 }
 
-describe('hook auto-approve (Issue #6)', () => {
-  test('(a) fires when scrubber-clean + judge sync clean + flag on', async () => {
-    // Plain text with NO PII whatsoever. Scrubber finds zero findings.
-    // Judge sync returns suspicious_count = 0 → auto-approve fires.
+describe('hook auto-approve (Issue #6 / #98)', () => {
+  test('(a) clean + flag on → silent pass + async judge audit POST', async () => {
+    // Plain text with NO PII. Scrubber clean → auto-approve silent pass.
+    // #98: must POST async /api/judge with tokenMap (not sync precheck discard).
     writeConfig({ autoApproveClean: true, llmEnabled: true });
-    const recv = startSyncReceiver({ suspiciousCount: 0 });
+    const recv = startAsyncJudgeReceiver();
     try {
       const out = await runHook(
         {
@@ -151,28 +143,33 @@ describe('hook auto-approve (Issue #6)', () => {
         { PRIVACY_SCREEN_JUDGE_ENDPOINT: recv.url },
       );
       expect(out.exitCode).toBe(0);
-      // ISC-20: silent pass-through — no stdout block, no stderr block.
+      // ISC-20: silent pass-through — no stdout block, no mutation.
       expect(out.stdout.trim()).toBe('');
-      // Either the receiver got hit (auto-approve precheck consulted it),
-      // OR the scrubber found nothing and the hook silently returned without
-      // even consulting the judge — both satisfy ISC-20 (silent pass-through).
-      // The point of the test is: NO BLOCK and NO MUTATION.
       expect(out.parsed).toBeNull();
+
+      // Pin #98 async audit semantics (hollow "posts optional" is not enough).
+      expect(recv.posts.length).toBe(1);
+      expect(recv.posts[0].path).toBe('/api/judge');
+      const body = JSON.parse(recv.posts[0].body) as {
+        scrubbed?: string;
+        tokenMap?: unknown;
+        sourceEvent?: string;
+      };
+      expect(typeof body.scrubbed).toBe('string');
+      expect(body.scrubbed).toContain('weather forecast');
+      expect(body.tokenMap).toBeDefined();
+      expect(body.sourceEvent).toBe('userPromptSubmit:auto-approve');
     } finally {
       recv.stop();
     }
   });
 
-  test('(b) does NOT fire when judge sync reports suspicious spans', async () => {
-    // Text contains PII the scrubber catches (an IP). Even with the flag
-    // on and the judge "available", the scrubber findings alone disqualify
-    // auto-approve — the BLOCK path must run.
-    //
-    // We additionally script the judge sync to report suspicious_count: 2
-    // so the test covers ISC-24 directly (judge flag-suspicious → no
-    // auto-approve) — the scrubber path provides the test signal.
+  test('(b) scrubber-dirty → BLOCK; auto-approve does not fire', async () => {
+    // Text contains PII the scrubber catches (IP + customer name). Flag on
+    // does not matter — modified path must block. No async judge audit on
+    // this branch (auto-approve gate not entered).
     writeConfig({ autoApproveClean: true, llmEnabled: true });
-    const recv = startSyncReceiver({ suspiciousCount: 2 });
+    const recv = startAsyncJudgeReceiver();
     try {
       const out = await runHook(
         {
@@ -181,22 +178,20 @@ describe('hook auto-approve (Issue #6)', () => {
         },
         { PRIVACY_SCREEN_JUDGE_ENDPOINT: recv.url },
       );
-      // Normal BLOCK path engaged: stdout JSON with decision:'block'.
       expect(out.exitCode).toBe(0);
       expect(out.parsed).toMatchObject({ decision: 'block' });
       const reason = (out.parsed as { reason: string }).reason;
-      // ISC-18 still holds in the block path.
       expect(reason).toContain('Double check it for sensitive data, personal data, PII');
+      // Dirty path does not enter auto-approve → no async judge audit.
+      expect(recv.posts.length).toBe(0);
     } finally {
       recv.stop();
     }
   });
 
   test('default config (auto_approve_clean omitted) → flag is false', async () => {
-    // No `hook:` section in config — auto-approve must default to OFF (ISC-21).
-    // Plain text, no PII. Without the flag, the hook still passes through
-    // silently because there is nothing to block — but it must NOT consult
-    // the judge sync endpoint. We verify by asserting the receiver got 0 POSTs.
+    // No `hook:` section — auto-approve defaults OFF (ISC-21). Clean prompt
+    // still silent-passes (nothing to block) but must NOT consult the judge.
     writeFileSync(
       configPath,
       `mode: enforce\n` +
@@ -205,7 +200,7 @@ describe('hook auto-approve (Issue #6)', () => {
         `llm_validate:\n` +
         `  enabled: true\n`,
     );
-    const recv = startSyncReceiver({ suspiciousCount: 0 });
+    const recv = startAsyncJudgeReceiver();
     try {
       const out = await runHook(
         {
@@ -216,7 +211,25 @@ describe('hook auto-approve (Issue #6)', () => {
       );
       expect(out.exitCode).toBe(0);
       expect(out.stdout.trim()).toBe('');
-      // Default off → no sync judge call attempted.
+      expect(recv.posts.length).toBe(0);
+    } finally {
+      recv.stop();
+    }
+  });
+
+  test('(c) flag on but llm_validate off → silent pass, no judge POST', async () => {
+    writeConfig({ autoApproveClean: true, llmEnabled: false });
+    const recv = startAsyncJudgeReceiver();
+    try {
+      const out = await runHook(
+        {
+          hook_event_name: 'UserPromptSubmit',
+          prompt: 'What is the weather forecast for tomorrow afternoon?',
+        },
+        { PRIVACY_SCREEN_JUDGE_ENDPOINT: recv.url },
+      );
+      expect(out.exitCode).toBe(0);
+      expect(out.stdout.trim()).toBe('');
       expect(recv.posts.length).toBe(0);
     } finally {
       recv.stop();
