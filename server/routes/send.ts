@@ -14,6 +14,9 @@
  *   event: text    data: {"delta": "..."}
  *   event: done    data: {"usage": {...}}
  *   event: error   data: {"message": "..."}
+ *
+ * SRV-03 / #76: abort claude child on client disconnect; rate-limit + max 2
+ * concurrent send streams.
  */
 
 import { Hono } from 'hono';
@@ -26,6 +29,8 @@ import { getMap, getVocab } from '../lib/vocab-store';
 import { loadConfig } from '../../src/config';
 import { publicSettings } from '../secrets';
 import { streamChat, type ChatMessage } from '../providers/claude-code';
+import { getClientIp, rateLimited } from '../lib/rate-limit';
+import { acquireSendSlot } from '../lib/send-concurrency';
 
 export const sendRoute = new Hono();
 
@@ -51,6 +56,11 @@ export function resolveSystemPrompt(
 }
 
 sendRoute.post('/', async (c) => {
+  // SRV-03 / #76: share the global token-bucket with other mutating routes.
+  if (rateLimited(getClientIp(c))) {
+    return c.json({ error: 'rate limited' }, 429);
+  }
+
   const body = await c.req.json().catch(() => ({}));
   const messages = Array.isArray(body.messages) ? body.messages : [];
 
@@ -100,6 +110,16 @@ sendRoute.post('/', async (c) => {
     );
   }
 
+  // Client disconnect aborts the claude subprocess (streamChat listens on this).
+  const abortSignal = c.req.raw.signal;
+
+  let releaseSlot: (() => void) | undefined;
+  try {
+    releaseSlot = await acquireSendSlot(abortSignal);
+  } catch {
+    return c.json({ error: 'aborted' }, 400); // 499 Client Closed Request (nonstandard; cast for Hono)
+  }
+
   return streamSSE(c, async (stream) => {
     let closed = false;
     const safeWrite = async (event: string, data: unknown): Promise<void> => {
@@ -107,28 +127,37 @@ sendRoute.post('/', async (c) => {
       await stream.writeSSE({ event, data: JSON.stringify(data) });
     };
 
-    await new Promise<void>((resolve) => {
-      streamChat(
-        scrubbedMessages,
-        { model: body.model, maxTokens: body.maxTokens, system: sys.system },
-        {
-          onText: (delta) => {
-            void safeWrite('text', { delta });
+    try {
+      await new Promise<void>((resolve) => {
+        void streamChat(
+          scrubbedMessages,
+          {
+            model: body.model,
+            maxTokens: body.maxTokens,
+            system: sys.system,
+            abortSignal,
           },
-          onError: (err) => {
-            void safeWrite('error', { message: err.message }).finally(() => {
-              closed = true;
-              resolve();
-            });
+          {
+            onText: (delta) => {
+              void safeWrite('text', { delta });
+            },
+            onError: (err) => {
+              void safeWrite('error', { message: err.message }).finally(() => {
+                closed = true;
+                resolve();
+              });
+            },
+            onDone: (usage) => {
+              void safeWrite('done', { usage }).finally(() => {
+                closed = true;
+                resolve();
+              });
+            },
           },
-          onDone: (usage) => {
-            void safeWrite('done', { usage }).finally(() => {
-              closed = true;
-              resolve();
-            });
-          },
-        },
-      );
-    });
+        );
+      });
+    } finally {
+      releaseSlot?.();
+    }
   });
 });
