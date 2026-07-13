@@ -67,18 +67,24 @@ export function recommendedManifestUrlForChannel(
 export type LlmRuntime = 'llama-server';
 
 /**
- * Hook-side knobs. Currently a single switch — confidence-gauge auto-approve
- * (Issue #6). When `auto_approve_clean = true` AND the synchronous judge
- * sync endpoint confirms zero suspicious spans AND the scrubber found zero
- * PII, the hook passes through silently instead of blocking.
- *
- * Default is `false`: behavior is unchanged from the v1 contract. This flag
- * is fail-CLOSED — any judge error/timeout/non-clean response disables
- * auto-approve for that call. See `hooks/lib/judge-sync.ts`.
+ * Hook-side knobs:
+ *   - auto_approve_clean (Issue #6): when true AND sync judge confirms clean
+ *     AND scrubber found zero PII, pass through silently. Fail-CLOSED on
+ *     judge error/timeout. See `hooks/lib/judge-sync.ts`.
+ *   - block_pii_in_tool_output (HOOK-04 / #96): when true in enforce mode,
+ *     non-credential PII in PostToolUse output blocks (exit 2). Default false
+ *     = warn-only residual gap documented in README.
  */
 export interface HookConfig {
   /** Opt-in. Default false. See above. */
   auto_approve_clean: boolean;
+  /**
+   * HOOK-04 / #96: when true AND mode is enforce, non-credential PII found in
+   * PostToolUse tool output causes exit 2 (block result from entering context).
+   * Default false preserves the historical warn-only behavior (residual gap —
+   * documented in README). Credentials always block in enforce regardless.
+   */
+  block_pii_in_tool_output: boolean;
 }
 
 export interface LlmValidateConfig {
@@ -220,6 +226,7 @@ const DEFAULTS: PrivacyConfig = {
   },
   hook: {
     auto_approve_clean: false,
+    block_pii_in_tool_output: false,
   },
   xlsx: {
     columnRules: [],
@@ -412,6 +419,10 @@ function mergeHook(base: HookConfig, override: unknown): HookConfig {
       typeof o.auto_approve_clean === 'boolean'
         ? o.auto_approve_clean
         : base.auto_approve_clean,
+    block_pii_in_tool_output:
+      typeof o.block_pii_in_tool_output === 'boolean'
+        ? o.block_pii_in_tool_output
+        : base.block_pii_in_tool_output,
   };
 }
 

@@ -270,6 +270,47 @@ describe('hook contract — PostToolUse', () => {
     expect(out.stderr).toContain('PII');
   });
 
+  // HOOK-04 / #96
+  test('block_pii_in_tool_output=true + enforce → exit 2 on PII (not just warn)', async () => {
+    writeFile(
+      'enforce',
+      'hook:\n  auto_approve_clean: false\n  block_pii_in_tool_output: true\n',
+    );
+    const out = await runHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Read',
+      tool_result: 'server is at 10.66.77.88 with admin@customer.local',
+    });
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toMatch(/blocked|PII/i);
+    expect(out.stderr).toMatch(/block_pii_in_tool_output/i);
+  });
+
+  test('block_pii_in_tool_output=true + observe → does not exit 2 (observe soft)', async () => {
+    writeFile(
+      'observe',
+      'hook:\n  auto_approve_clean: false\n  block_pii_in_tool_output: true\n',
+    );
+    const out = await runHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Read',
+      tool_result: 'server is at 10.66.77.88 with admin@customer.local',
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stderr).toMatch(/PII|observe/i);
+  });
+
+  test('block_pii_in_tool_output default false → still warn-only', async () => {
+    writeFile('enforce');
+    const out = await runHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Read',
+      tool_result: 'contact admin@example.com for details',
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stderr).toContain('PII');
+  });
+
   test('clean output → silent', async () => {
     writeFile('enforce');
     const out = await runHook({

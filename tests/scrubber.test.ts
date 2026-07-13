@@ -223,9 +223,7 @@ const baseCfg: PrivacyConfig = {
     timeout_ms: 2500,
     min_confidence: 0.6,
   },
-  hook: {
-    auto_approve_clean: false,
-  },
+  hook: { auto_approve_clean: false, block_pii_in_tool_output: false },
 };
 
 describe('scrubText — customer_names from config', () => {

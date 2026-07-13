@@ -283,7 +283,7 @@ Either flip the **Enable judge** toggle off in the settings drawer, OR set `llm_
 
 - **Layer A (UserPromptSubmit):** Detects PII → blocks with scrubbed suggestion. You copy + resubmit the clean version.
 - **Layer B (PreToolUse):** Mutates tool input in-place via `hookSpecificOutput.updatedInput`. Bash/Write/WebFetch get scrubbed args. **Edit/MultiEdit/Grep/Glob pattern fields are preserved** (string-match would fail otherwise).
-- **Layer C (PostToolUse):** Scans tool output. Credentials → block (exit 2). PII → stderr warning. Cannot rewrite the result (hook contract limit).
+- **Layer C (PostToolUse):** Scans tool output. Credentials → block (exit 2). Non-credential PII → stderr warning by default (cannot rewrite the result — hook contract limit). Set `hook.block_pii_in_tool_output: true` to also **block** (exit 2) in enforce mode when PII is found — residual gap when the flag is off: warned PII can still enter model context.
 - **Layer D (display reversal):** Not yet built (M3). `cli/PrivacyScreen.ts scrub` can be used for spot-check reversal.
 - **Layer E (LLM judge — opt-in):** Out-of-band local LLM reads scrubbed text after Layer B fires and writes new candidate spans to the review queue. Never mutates hot-path output. See "Optional: LLM secondary validator" above.
 

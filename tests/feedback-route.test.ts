@@ -368,7 +368,7 @@ describe('security regressions', () => {
     const bad: any = {
       mode: 'enforce',
       llm_validate: { enabled: false },
-      hook: { auto_approve_clean: false },
+      hook: { auto_approve_clean: false, block_pii_in_tool_output: false },
       update_channel: 'a'.repeat(65),
       fqdn_allowlist_extra_count: 0,
       customer_names_count: 0,
@@ -382,7 +382,7 @@ describe('security regressions', () => {
     const bad2: any = {
       mode: 'observe',
       llm_validate: { enabled: false },
-      hook: { auto_approve_clean: false },
+      hook: { auto_approve_clean: false, block_pii_in_tool_output: false },
       update_channel: 'stable',
       fqdn_allowlist_extra_count: 0,
       customer_names_count: 0,
