@@ -6,6 +6,12 @@
 #
 # Do NOT broaden these allowlists. If you add new test fixtures with fake
 # credentials, prefer extending the regex list below over loosening paths.
+#
+# Companion gate (#104 / REL-04): scripts/build-release.ts → scanForSecretsInDist
+# scans compiled dist/* binaries for baked /Users|/home paths and long
+# credential forms before release upload. That is a *build artifact* gate;
+# this file remains the *git history* gate. See .release-secret-allowlist
+# (optional) for CI path exceptions on the binary gate.
 
 title = "privacy-screen gitleaks config"
 
