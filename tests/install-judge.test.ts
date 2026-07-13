@@ -45,11 +45,15 @@ function deps(hooks: DepHooks = {}): InstallJudgeDeps {
       writes.set(p, data);
     },
     fsCreateWriteStream: (p) => {
+      const handlers: { finish?: () => void; error?: (e?: Error) => void } = {};
       if (!p.endsWith('.partial')) {
         return {
           write: (d: Uint8Array | Buffer) => { writes.set(p, d instanceof Uint8Array ? d : new Uint8Array(d)); },
-          end: (cb?: () => void) => { if (cb) cb(); },
-          on: (_e: string, _cb: (e?: Error) => void) => {},
+          end: (cb?: () => void) => { if (cb) cb(); handlers.finish?.(); },
+          on: (e: string, cb: (err?: Error) => void) => {
+            if (e === 'finish') handlers.finish = () => cb();
+            if (e === 'error') handlers.error = cb;
+          },
         };
       }
       const partials = (globalThis as any).__fable72_partials || ((globalThis as any).__fable72_partials = new Map<string, Uint8Array>());
@@ -62,8 +66,11 @@ function deps(hooks: DepHooks = {}): InstallJudgeDeps {
           next.set(cur); next.set(add, cur.length);
           partials.set(p, next);
         },
-        end: (cb?: () => void) => { if (cb) cb(); },
-        on: (_e: string, _cb: (e?: Error) => void) => {},
+        end: (cb?: () => void) => { if (cb) cb(); handlers.finish?.(); },
+        on: (e: string, cb: (err?: Error) => void) => {
+          if (e === 'finish') handlers.finish = () => cb();
+          if (e === 'error') handlers.error = cb;
+        },
       };
     },
     fsRename: (oldPath, newPath) => {
