@@ -242,7 +242,12 @@ async function runModel(
     deps.fsMkdir(safeDir);
   }
 
-  let body: Uint8Array;
+  // JDG-08 / #72: stream to dest.partial + incremental hash; rename only after
+  // size+sha validation. Never hold the full ~1GB model in RAM; never leave a
+  // truncated final .gguf on failure.
+  const partPath = destPath + '.partial';
+  let received = 0;
+  let actualSha = '';
   try {
     const res = await deps.fetchImpl(entry.url, { method: 'GET' });
     if (!res.ok) {
@@ -252,9 +257,43 @@ async function runModel(
         message: '',
       };
     }
-    const buf = await res.arrayBuffer();
-    body = new Uint8Array(buf);
+
+    const hasher = createHash('sha256');
+    const ws = deps.fsCreateWriteStream(partPath);
+
+    if (res.body) {
+      const reader = res.body.getReader();
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) {
+          hasher.update(value);
+          ws.write(value);
+          received += value.byteLength;
+        }
+      }
+    } else {
+      // Tiny mock Responses without a ReadableStream body (test fixtures).
+      const buf = new Uint8Array(await res.arrayBuffer());
+      hasher.update(buf);
+      ws.write(buf);
+      received = buf.byteLength;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      ws.on('error', (err) => reject(err ?? new Error('write stream error')));
+      ws.on('finish', () => resolve());
+      ws.end();
+    });
+
+    actualSha = hasher.digest('hex');
   } catch (err) {
+    try {
+      deps.fsUnlink(partPath);
+    } catch {
+      /* best effort */
+    }
     return {
       ok: false,
       stderrMessage: `install-judge: download failed: ${errMessage(err)}\n`,
@@ -266,21 +305,30 @@ async function runModel(
   if (!parsed.expectedSha256) {
     const expectedSize = entry.expectedSizeBytes;
     const sizeTolerance = Math.floor(expectedSize * 0.05);
-    if (Math.abs(body.byteLength - expectedSize) > sizeTolerance) {
+    if (Math.abs(received - expectedSize) > sizeTolerance) {
+      try {
+        deps.fsUnlink(partPath);
+      } catch {
+        /* best effort */
+      }
       return {
         ok: false,
         stderrMessage:
           'install-judge: size sanity band violation — refusing to write file.\n' +
           `  expected: ~${expectedSize} (±5%)\n` +
-          `  actual:   ${body.byteLength}\n`,
+          `  actual:   ${received}\n`,
         message: '',
       };
     }
   }
 
-  const actualSha = sha256Hex(body);
   const expectedSha = parsed.expectedSha256 ?? entry.expectedSha256;
   if (expectedSha && actualSha.toLowerCase() !== expectedSha.toLowerCase()) {
+    try {
+      deps.fsUnlink(partPath);
+    } catch {
+      /* best effort */
+    }
     return {
       ok: false,
       stderrMessage:
@@ -293,8 +341,13 @@ async function runModel(
   }
 
   try {
-    deps.fsWrite(destPath, body);
+    deps.fsRename(partPath, destPath);
   } catch (err) {
+    try {
+      deps.fsUnlink(partPath);
+    } catch {
+      /* best effort */
+    }
     return {
       ok: false,
       stderrMessage: `install-judge: write failed at ${destPath}: ${errMessage(err)}\n`,
@@ -304,7 +357,7 @@ async function runModel(
 
   return {
     ok: true,
-    message: successMessage(name, destPath, actualSha, body.byteLength),
+    message: successMessage(name, destPath, actualSha, received),
   };
 }
 
