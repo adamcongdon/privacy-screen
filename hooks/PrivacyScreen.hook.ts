@@ -27,7 +27,6 @@ import { VocabStore, defaultDbPath } from '../src/vocab';
 import { scrubText, scrubToolInput, type MintedToken } from '../src/scrubber';
 import { loadConfig, type PrivacyConfig } from '../src/config';
 import { mkCredential } from '../src/patterns';
-import { checkJudgeSync } from './lib/judge-sync';
 import { resolveJudgeEndpoint } from './lib/judge-endpoint';
 
 /** True if raw text contains anything matching the credential regex. */
@@ -65,7 +64,6 @@ interface HookInput {
 const MAX_INPUT_BYTES = 1_000_000; // 1MB — anything larger gets logged + passed through
 const SCRUB_BUDGET_MS = 1500;       // soft budget; hook still has 8s outer timeout
 const JUDGE_DISPATCH_BUDGET_MS = 150; // fire-and-forget POST cap to the long-lived server
-const JUDGE_SYNC_BUDGET_MS = 400;   // sync auto-approve precheck cap (Issue #6)
 const JUDGE_MIN_SCRUBBED_LEN = 24;   // mirrors the judge module's MIN_INPUT_LENGTH
 const FINDINGS_PREVIEW_PHRASE =
   'Double check it for sensitive data, personal data, PII';
@@ -174,23 +172,17 @@ async function handlePrompt(
     config: cfg,
   });
 
-  // ── Auto-approve precheck (Issue #6) ─────────────────────────────────────
-  // When the operator has explicitly opted into `hook.auto_approve_clean`
-  // AND the scrubber has nothing to say AND the judge sync endpoint confirms
-  // the payload is clean, the hook is silent. Fail-CLOSED — any uncertainty
-  // (judge unavailable, timeout, or any suspicious_count > 0) just means
-  // we fall through to the normal pipeline (which also passes through here
-  // because `result.modified === false`). Net behavior change on the
-  // clean-input path: an audit-trail POST to /api/judge/sync. The endpoint
-  // itself is opt-in via `llm_validate.enabled`.
+  // ── Auto-approve + async judge audit (Issue #6 / #98 HOOK-06) ─────────────
+  // When the operator opts into `hook.auto_approve_clean` AND the scrubber
+  // found nothing, pass silently. Gating is scrubber-only (ISC-20).
+  //
+  // Previously this path `await checkJudgeSync(...)` up to 400ms and then
+  // discarded the result — pure hot-path latency for a no-op. #98 converts
+  // that to the same fire-and-forget `/api/judge` dispatch used by PreToolUse
+  // (150ms cap, real audit / review_queue side-effect). The judge result is
+  // still not a gate; llm_validate.enabled remains the opt-in for the POST.
   if (cfg.hook.auto_approve_clean && !result.modified) {
-    // Only consult the judge if the scrubber found nothing. If scrubber
-    // found PII (result.modified === true), auto-approve cannot fire per
-    // ISC-20, so the consultation would be wasted work.
-    await checkJudgeSync(prompt, cfg, JUDGE_SYNC_BUDGET_MS);
-    // We do not branch on the result here — when scrubber-findings == 0
-    // the hook is silent regardless. The consultation exists for the
-    // audit-trail / confidence-gauge contract in Issue #6.
+    await dispatchJudge(prompt, map, 'userPromptSubmit:auto-approve', cfg);
     return;
   }
 
@@ -465,6 +457,9 @@ function buildFindingsPreview(
  * Fire-and-forget POST to the privacy-screen server's /api/judge endpoint.
  * Returns void; never throws. Capped at 150 ms via AbortSignal so a slow or
  * dead server cannot block the hook past its outer 8 s timeout.
+ *
+ * Used by PreToolUse (post-mutate audit) and UserPromptSubmit auto-approve
+ * clean path (#98) — both ignore the response; the POST is audit / queue only.
  *
  * Safety:
  *   - No-ops when `cfg.llm_validate.enabled === false`.
