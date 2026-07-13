@@ -1,22 +1,22 @@
 {
-  "version": "1.0.0-beta.43",
+  "version": "1.0.0-beta.44",
   "channel": "beta",
-  "released_at": "2026-07-13T18:47:01.948Z",
-  "notes_url": "https://github.com/adamcongdon/privacy-screen/releases/tag/v1.0.0-beta.43",
+  "released_at": "2026-07-13T18:52:05.668Z",
+  "notes_url": "https://github.com/adamcongdon/privacy-screen/releases/tag/v1.0.0-beta.44",
   "platforms": {
     "darwin-arm64": {
-      "url": "https://github.com/adamcongdon/privacy-screen/releases/download/v1.0.0-beta.43/privacy-screen-darwin-arm64",
-      "sha256": "cc50daf7da21b985250400aad864d5b5c4d7c97736dafafc408bdfe24f8ed271",
+      "url": "https://github.com/adamcongdon/privacy-screen/releases/download/v1.0.0-beta.44/privacy-screen-darwin-arm64",
+      "sha256": "17344e00495b1b5684dd514aba96f7ca09d4103098f93de10be3be7730aec079",
       "size_bytes": 66302690
     },
     "darwin-x64": {
-      "url": "https://github.com/adamcongdon/privacy-screen/releases/download/v1.0.0-beta.43/privacy-screen-darwin-x64",
-      "sha256": "663d481647f576848666ca02894f294663a1fad4b90100137a28c828d7152a66",
+      "url": "https://github.com/adamcongdon/privacy-screen/releases/download/v1.0.0-beta.44/privacy-screen-darwin-x64",
+      "sha256": "2cebeb010b3f1c4aaf98a2d5e55bd0eb997942d89a3b97a32eae5ba75ec8b3fc",
       "size_bytes": 72007760
     },
     "win32-x64": {
-      "url": "https://github.com/adamcongdon/privacy-screen/releases/download/v1.0.0-beta.43/privacy-screen-win32-x64.exe",
-      "sha256": "1b9b220dd6ec5c9f83c82064d9716d6620d71fda61fbb1732595cf3823d848ed",
+      "url": "https://github.com/adamcongdon/privacy-screen/releases/download/v1.0.0-beta.44/privacy-screen-win32-x64.exe",
+      "sha256": "8320274f1fb6c17a39fba46c1eef7171f86ed06e72364165e6647ce4235fe72c",
       "size_bytes": 101317632
     }
   }
