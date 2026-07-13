@@ -28,6 +28,7 @@ import { scrubText, scrubToolInput, type MintedToken } from '../src/scrubber';
 import { loadConfig, type PrivacyConfig } from '../src/config';
 import { mkCredential } from '../src/patterns';
 import { checkJudgeSync } from './lib/judge-sync';
+import { resolveJudgeEndpoint } from './lib/judge-endpoint';
 
 /** True if raw text contains anything matching the credential regex. */
 function rawHasCredential(text: string): boolean {
@@ -68,7 +69,6 @@ const JUDGE_SYNC_BUDGET_MS = 400;   // sync auto-approve precheck cap (Issue #6)
 const JUDGE_MIN_SCRUBBED_LEN = 24;   // mirrors the judge module's MIN_INPUT_LENGTH
 const FINDINGS_PREVIEW_PHRASE =
   'Double check it for sensitive data, personal data, PII';
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -469,10 +469,9 @@ function buildFindingsPreview(
  * Safety:
  *   - No-ops when `cfg.llm_validate.enabled === false`.
  *   - No-ops when scrubbed text is shorter than the judge's MIN_INPUT_LENGTH.
- *   - Endpoint is always `http://127.0.0.1:${PRIVACY_SCREEN_PORT ?? 31338}/api/judge`
- *     unless overridden by `PRIVACY_SCREEN_JUDGE_ENDPOINT` (used by tests).
- *   - Refuses any endpoint whose hostname is not in LOOPBACK_HOSTS — defense
- *     in depth against env-var misconfig leaking PII off-box.
+ *   - Endpoint via `resolveJudgeEndpoint('async')` — default
+ *     `http://127.0.0.1:${PRIVACY_SCREEN_PORT ?? 31338}/api/judge`, or
+ *     `PRIVACY_SCREEN_JUDGE_ENDPOINT` override (tests). Loopback-only.
  */
 async function dispatchJudge(
   scrubbed: string,
@@ -483,7 +482,7 @@ async function dispatchJudge(
   if (!cfg.llm_validate.enabled) return;
   if (scrubbed.length < JUDGE_MIN_SCRUBBED_LEN) return;
 
-  const endpoint = judgeEndpoint();
+  const endpoint = resolveJudgeEndpoint('async');
   if (endpoint === null) return; // non-loopback URL — refused
 
   try {
@@ -503,26 +502,6 @@ async function dispatchJudge(
     }
     // Silent by default. Judge is best-effort; the regex+vocab layer already shipped.
   }
-}
-
-/**
- * Resolve the judge endpoint URL. Honors PRIVACY_SCREEN_JUDGE_ENDPOINT for
- * tests; otherwise builds `http://127.0.0.1:${PRIVACY_SCREEN_PORT ?? 31338}/api/judge`.
- * Returns null if the resolved URL fails parse or is not loopback.
- */
-function judgeEndpoint(): string | null {
-  const override = process.env.PRIVACY_SCREEN_JUDGE_ENDPOINT;
-  const port = process.env.PRIVACY_SCREEN_PORT ?? '31338';
-  const url = override ?? `http://127.0.0.1:${port}/api/judge`;
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== 'http:') return null;
-  if (!LOOPBACK_HOSTS.has(parsed.hostname)) return null;
-  return url;
 }
 
 main().catch((err) => {

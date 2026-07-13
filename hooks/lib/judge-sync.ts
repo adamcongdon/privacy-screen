@@ -21,8 +21,7 @@
  */
 
 import type { PrivacyConfig } from '../../src/config';
-
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+import { resolveJudgeEndpoint } from './judge-endpoint';
 
 /** Result of a sync judge precheck. */
 export interface JudgeSyncResult {
@@ -66,7 +65,7 @@ export async function checkJudgeSync(
 ): Promise<JudgeSyncResult> {
   if (!cfg.llm_validate.enabled) return SYNC_RESULT_FAIL_CLOSED;
 
-  const endpoint = resolveSyncEndpoint();
+  const endpoint = resolveJudgeEndpoint('sync');
   if (endpoint === null) return SYNC_RESULT_FAIL_CLOSED;
 
   try {
@@ -91,29 +90,4 @@ export async function checkJudgeSync(
   }
 }
 
-/**
- * Resolve the sync judge endpoint URL. Same env-var contract as the
- * fire-and-forget dispatcher: `PRIVACY_SCREEN_JUDGE_ENDPOINT` overrides for
- * tests; otherwise build `http://127.0.0.1:${PRIVACY_SCREEN_PORT ?? 31338}/api/judge/sync`.
- *
- * The override URL keeps its full path (so a test receiver can scope itself
- * to whatever path it likes). For the production default, we explicitly
- * append `/sync` to disambiguate the route from the existing fire-and-forget
- * `/api/judge` POST.
- *
- * Returns `null` if the URL fails parse or its host is not loopback.
- */
-function resolveSyncEndpoint(): string | null {
-  const override = process.env.PRIVACY_SCREEN_JUDGE_ENDPOINT;
-  const port = process.env.PRIVACY_SCREEN_PORT ?? '31338';
-  const url = override ?? `http://127.0.0.1:${port}/api/judge/sync`;
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== 'http:') return null;
-  if (!LOOPBACK_HOSTS.has(parsed.hostname)) return null;
-  return url;
-}
+
