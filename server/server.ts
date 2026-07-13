@@ -53,6 +53,7 @@ import { loadConfig } from '../src/config';
 import { embeddedAssets } from './web-assets.generated';
 import { openBrowser } from './lib/open-browser';
 import { isAllowedOrigin, MUTATING_METHODS } from './lib/origin-policy';
+import { apiBodyLimit } from './lib/api-body-limit';
 
 const PORT = Number(process.env.PRIVACY_SCREEN_PORT ?? 31338);
 const HOST = process.env.PRIVACY_SCREEN_BIND_ANY === '1' ? '0.0.0.0' : '127.0.0.1';
@@ -99,6 +100,9 @@ const allowOrigin = (origin: string): boolean => isAllowedOrigin(origin, originP
 // resolves a name to our loopback IP, the Host header it sends is the
 // attacker's domain, not ours. Process-internal calls (Bun.serve→app.fetch
 // in tests) carry no Host header; those pass through.
+// SRV-06 / #79: enforce body size on all /api/* (1MB JSON / 5MB multipart).
+app.use('/api/*', apiBodyLimit());
+
 app.use('/api/*', async (c, next) => {
   const host = c.req.header('host');
   if (host && !HOST_ALLOWLIST.has(host)) {
