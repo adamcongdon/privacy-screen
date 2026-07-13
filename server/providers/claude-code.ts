@@ -19,7 +19,21 @@
  * reads that is not gated by --setting-sources (documented in issue #78).
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'child_process';
+
+/** Spawn-compatible signature for the claude binary (SRV-09 test seam). */
+export type ClaudeSpawnFn = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions,
+) => ChildProcessWithoutNullStreams;
+
+let _claudeSpawn: ClaudeSpawnFn = spawn as ClaudeSpawnFn;
+
+/** SRV-09 / #82: inject a fake spawn in tests; pass null to restore. */
+export function __test_setClaudeSpawn(fn: ClaudeSpawnFn | null): void {
+  _claudeSpawn = fn ?? (spawn as ClaudeSpawnFn);
+}
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -84,7 +98,7 @@ export function buildClaudePrintArgs(opts: StreamOptions): string[] {
  * across invocations. We prefix each turn with a role marker so the model
  * can read prior context.
  */
-function formatPrompt(messages: ChatMessage[]): string {
+export function formatPrompt(messages: ChatMessage[]): string {
   if (messages.length === 1 && messages[0].role === 'user') {
     return messages[0].content;
   }
@@ -107,7 +121,7 @@ export async function streamChat(
 
   let child: ChildProcessWithoutNullStreams;
   try {
-    child = spawn('claude', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    child = _claudeSpawn('claude', args, { stdio: ['pipe', 'pipe', 'pipe'] });
   } catch (err) {
     cb.onError(err instanceof Error ? err : new Error(String(err)));
     return;
