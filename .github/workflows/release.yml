@@ -537,6 +537,28 @@ jobs:
           MANIFEST="${{ steps.vars.outputs.manifest_name }}"
           cp dist/release-manifest.json "dist/$MANIFEST"
 
+      # Issue #49: pin --notes-start-tag to the previous same-channel release so
+      # --generate-notes does not walk back to a stale base (duplicate bodies).
+      - name: Resolve previous release tag for notes
+        id: prev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NO_COLOR: '1'
+          CLICOLOR: '0'
+        run: |
+          CHANNEL="${{ steps.vars.outputs.channel }}"
+          CURRENT_TAG="${{ steps.vars.outputs.tag }}"
+          # Newest-first; empty array is fine for first channel cut.
+          # Force plain JSON (NO_COLOR + --jq) — colored gh output breaks JSON.parse.
+          gh release list --limit 50 --json tagName,isPrerelease --jq '.' > /tmp/ps-releases.json
+          PREV=$(bun scripts/resolve-previous-release-tag.ts "$CHANNEL" "$CURRENT_TAG" /tmp/ps-releases.json)
+          echo "prev_tag=${PREV}" >> "$GITHUB_OUTPUT"
+          if [ -n "$PREV" ]; then
+            echo "Previous $CHANNEL release tag for notes: $PREV"
+          else
+            echo "No previous $CHANNEL release; --generate-notes without --notes-start-tag"
+          fi
+
       - name: Create GitHub Release and upload assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -545,11 +567,19 @@ jobs:
           TITLE="${{ steps.vars.outputs.release_title }}"
           PRERELEASE="${{ steps.vars.outputs.prerelease_flag }}"
           MANIFEST="${{ steps.vars.outputs.manifest_name }}"
+          PREV="${{ steps.prev.outputs.prev_tag }}"
+
+          NOTES_START_ARGS=()
+          if [ -n "$PREV" ]; then
+            NOTES_START_ARGS=(--notes-start-tag "$PREV")
+            echo "Using --notes-start-tag $PREV (issue #49)"
+          fi
 
           gh release create "$TAG" \
             --title "$TITLE" \
             $PRERELEASE \
             --generate-notes \
+            "${NOTES_START_ARGS[@]}" \
             dist/privacy-screen-darwin-arm64 \
             dist/privacy-screen-darwin-x64 \
             dist/privacy-screen-win32-x64.exe \
