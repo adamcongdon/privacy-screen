@@ -166,3 +166,81 @@ describeTokens('tokens (shared lib for #92)', () => {
     expectTokens(m2.map(m => m.token)).toEqual(['{A}']);
   });
 });
+
+// ── WEB-04 / #86 allowlist + URL scheme hardening ───────────────────────────
+import {
+  sanitizeUrlAttr,
+  ALLOWED_TAGS,
+} from '../web/src/lib/sanitizeHtmlWithTokens';
+
+describe('sanitizeUrlAttr (WEB-04 / #86)', () => {
+  test('allows http/https/mailto and relative paths', () => {
+    expect(sanitizeUrlAttr('https://example.com/x')).toBe('https://example.com/x');
+    expect(sanitizeUrlAttr('http://example.com')).toBe('http://example.com');
+    expect(sanitizeUrlAttr('mailto:a@b.com')).toBe('mailto:a@b.com');
+    expect(sanitizeUrlAttr('/path/to')).toBe('/path/to');
+    expect(sanitizeUrlAttr('#frag')).toBe('#frag');
+  });
+
+  test('rejects javascript: including tab/newline obfuscation', () => {
+    expect(sanitizeUrlAttr('javascript:alert(1)')).toBeNull();
+    expect(sanitizeUrlAttr('java\tscript:alert(1)')).toBeNull();
+    expect(sanitizeUrlAttr('java\nscript:alert(1)')).toBeNull();
+    expect(sanitizeUrlAttr('  JavaScript:alert(1)')).toBeNull();
+    expect(sanitizeUrlAttr('javascript\u0000:alert(1)')).toBeNull();
+  });
+
+  test('rejects data: and vbscript:', () => {
+    expect(sanitizeUrlAttr('data:text/html,<script>alert(1)</script>')).toBeNull();
+    expect(sanitizeUrlAttr('vbscript:msgbox(1)')).toBeNull();
+  });
+});
+
+describe('allowlist sanitizer extras (WEB-04 / #86)', () => {
+  test('ALLOWED_TAGS does not include script/iframe/svg', () => {
+    expect(ALLOWED_TAGS.has('script')).toBe(false);
+    expect(ALLOWED_TAGS.has('iframe')).toBe(false);
+    expect(ALLOWED_TAGS.has('svg')).toBe(false);
+  });
+
+  test('data: and tab-obfuscated javascript: hrefs are stripped', () => {
+    const out = sanitizeHtmlWithTokens(
+      '<a href="data:text/html,hi">x</a><a href="java\tscript:alert(1)">y</a>',
+      tokenMap([]),
+    );
+    const lower = out.toLowerCase();
+    expect(lower).not.toContain('data:text/html');
+    expect(lower).not.toContain('javascript:');
+    expect(lower).not.toContain('java\tscript');
+  });
+
+  test('svg and use href are dropped entirely', () => {
+    const out = sanitizeHtmlWithTokens(
+      '<svg><use href="javascript:alert(1)"></use></svg><p>ok</p>',
+      tokenMap([]),
+    );
+    const lower = out.toLowerCase();
+    expect(lower).not.toContain('<svg');
+    expect(lower).not.toContain('<use');
+    expect(out).toContain('ok');
+  });
+
+  test('disallowed tags are unwrapped (children kept)', () => {
+    const out = sanitizeHtmlWithTokens(
+      '<custom-widget><p>inside</p></custom-widget>',
+      tokenMap([]),
+    );
+    expect(out.toLowerCase()).not.toContain('custom-widget');
+    expect(out).toContain('inside');
+  });
+});
+
+describe('HtmlRenderedView sandbox contract (WEB-04 / #86)', () => {
+  test('component source keeps sandbox="" without allow-scripts', async () => {
+    const src = await Bun.file(
+      new URL('../web/src/components/HtmlRenderedView.tsx', import.meta.url),
+    ).text();
+    expect(src).toMatch(/sandbox\s*=\s*["']{2}/);
+    expect(src).not.toMatch(/allow-scripts/);
+  });
+});
