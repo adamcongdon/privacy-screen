@@ -86,10 +86,23 @@ export async function streamChat(
     return;
   }
 
+  const killChild = (): void => {
+    try {
+      child.kill('SIGTERM');
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // SRV-03 / #76: honor disconnect/abort — kill child immediately if already aborted
+  // or when the signal fires later (client closed the SSE).
   if (opts.abortSignal) {
-    opts.abortSignal.addEventListener('abort', () => {
-      try { child.kill('SIGTERM'); } catch { /* ignore */ }
-    }, { once: true });
+    if (opts.abortSignal.aborted) {
+      killChild();
+      cb.onError(new DOMException('The operation was aborted.', 'AbortError'));
+      return;
+    }
+    opts.abortSignal.addEventListener('abort', killChild, { once: true });
   }
 
   child.stdin.write(prompt);
