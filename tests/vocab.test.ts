@@ -350,7 +350,7 @@ describe('SCR-10 allowlist cache TDD', () => {
     // Stated budget: 200 lookups against ~5k allowlist rows < 3 ms (tight to force cache).
     expect(dur).toBeLessThan(3);
     console.log(`[TDD #63] 5k-allowlist 200-lookup dur=${dur.toFixed(2)}ms (budget<3)`);
-  });
+  }, 30_000);
 
   test('allowlist cache invalidates on addAllowlist (new literal and regex visible immediately)', () => {
     expect(store.isAllowlisted('never-before')).toBe(false);

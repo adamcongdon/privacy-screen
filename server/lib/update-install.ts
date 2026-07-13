@@ -337,10 +337,11 @@ async function runDownload(
  * Returns a result object; the caller decides on process exit timing so the
  * HTTP response can be sent first.
  */
-export async function applyStagedUpdate(): Promise<
+export type ApplyStagedUpdateResult =
   | { applied: true; restarted: boolean; oldPath: string; newPath: string }
-  | { applied: false; reason: string; message: string; stagedPath?: string }
-> {
+  | { applied: false; reason: string; message: string; stagedPath?: string };
+
+export async function applyStagedUpdate(): Promise<ApplyStagedUpdateResult> {
   const platformKey = defaultPlatformKey();
   if (!platformKey) {
     return { applied: false, reason: 'unsupported-platform', message: 'No platform key' };

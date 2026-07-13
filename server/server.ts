@@ -48,7 +48,8 @@ import { judgeControlRoute } from './routes/judge-control';
 import { updateRoute } from './routes/update';
 import { feedbackRoute } from './routes/feedback';
 import { reportClaudeCodeStatus } from './lib/claude-code-check';
-import { shutdownLlmProcess, getLlmClient } from './lib/llm-process';
+import { getLlmClient } from './lib/llm-process';
+import { registerServer, installSignalHandlers } from './lib/lifecycle';
 import { loadConfig } from '../src/config';
 import { embeddedAssets } from './web-assets.generated';
 import { openBrowser } from './lib/open-browser';
@@ -241,18 +242,6 @@ if (process.argv.includes('--open') || process.env.PRIVACY_SCREEN_OPEN === '1') 
   }
 }
 
-// Graceful shutdown — drain the LLM subprocess (if any) before stopping the HTTP
-// server so a SIGINT/SIGTERM doesn't orphan llama-server. Cleanup still ends in
-// process.exit(0) so init systems see the expected exit code.
-const cleanup = async (): Promise<void> => {
-  process.stdout.write('\nshutting down…\n');
-  try {
-    await shutdownLlmProcess();
-  } catch {
-    // best effort — never block shutdown on a misbehaving subprocess
-  }
-  server.stop();
-  process.exit(0);
-};
-process.on('SIGINT', () => { void cleanup(); });
-process.on('SIGTERM', () => { void cleanup(); });
+// SRV-07 / #80: shared lifecycle — signals + /api/update/apply both use requestShutdown().
+registerServer(server);
+installSignalHandlers();

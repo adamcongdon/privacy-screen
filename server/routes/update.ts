@@ -16,7 +16,9 @@ import {
   startUpdateDownload,
   applyStagedUpdate,
   type UpdateStatus,
+  type ApplyStagedUpdateResult,
 } from '../lib/update-install';
+import { requestShutdown } from '../lib/lifecycle';
 
 export const updateRoute = new Hono();
 
@@ -34,23 +36,24 @@ updateRoute.post('/download', async (c) => {
 });
 
 updateRoute.post('/apply', async (c) => {
-  const result = await applyStagedUpdate();
+  const result: ApplyStagedUpdateResult = await applyStagedUpdate();
 
   if (!result.applied) {
     // Surface the reason clearly; client decides how to message.
+    // stagedPath is optional on the failure union — no any-cast needed.
     return c.json(
       {
         ok: false,
         reason: result.reason,
         message: result.message,
-        stagedPath: (result as any).stagedPath,
+        stagedPath: result.stagedPath,
       },
       409,
     );
   }
 
-  // Success: we have spawned the replacement. Send a response, then schedule
-  // our own clean shutdown so the HTTP reply reaches the client.
+  // Success: replacement spawned. Respond first, then shared graceful shutdown
+  // so LLM + HTTP drain (SRV-07 / #80 — no process.exit in this route).
   const body = {
     ok: true,
     restarting: true,
@@ -59,33 +62,7 @@ updateRoute.post('/apply', async (c) => {
     newPath: result.newPath,
   };
 
-  // Return the response first.
   const res = c.json(body, 202);
-
-  // Give the runtime a moment to flush the response, then hand off.
-  setTimeout(() => {
-    // Reuse the graceful LLM + server stop path from the main server module
-    // by triggering the same signals the process already listens for.
-    // Using process.kill(self) is racy; instead do the minimal shutdown work here.
-    void (async () => {
-      try {
-        // Dynamic import to avoid circular init at load time.
-        const { shutdownLlmProcess } = await import('../lib/llm-process');
-        await shutdownLlmProcess().catch(() => {});
-      } catch {
-        // ignore
-      }
-      try {
-        // The Bun.serve instance is not directly exported; ask the server to stop
-        // via a private channel isn't possible. Best we can do from here is exit.
-        // In practice the detached child is already running; a hard exit after a
-        // tiny delay is acceptable for a local tool.
-        // (The SIGINT handler in server.ts does the same LLM shutdown + server.stop + exit.)
-      } finally {
-        process.exit(0);
-      }
-    })();
-  }, 80);
-
+  void requestShutdown(80);
   return res;
 });
