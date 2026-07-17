@@ -20,10 +20,10 @@
  * Zustand store (store.mode / store.setMode) so this screen and the Settings
  * radio group share ONE source of truth; store.setMode persists via
  * api.saveSettings({ mode }) and re-runs refreshScrub. The segmented control
- * here writes store.setMode. NOTE: credentials block the send in EVERY mode —
- * store.send() re-scrubs server-side and aborts on hasCredentials regardless of
- * mode — so the credential-block UX here is keyed on hasCredentials, not on
- * Enforce. Tokenization + the credential guard are always on.
+ * here writes store.setMode and shows the TRUE mode (including Disabled — no
+ * coerce-to-Observe). #84 option A: Disabled = emergency bypass — raw text
+ * passes through (no tokens), matching the hook early-return; Send requires
+ * confirm. Credentials block Observe/Enforce only (not Disabled).
  */
 import {
   useCallback,
@@ -221,20 +221,20 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
     }
   }, [composerText, isStreaming, lastAssistant, streamError, resetConversation]);
 
-  // Credentials ALWAYS block the send — store.send() re-scrubs server-side and
-  // aborts on hasCredentials regardless of mode (Observe/Enforce/Disabled). So
-  // the blocked UX (red seam, "Cannot send", banner, blocked chips, footer
-  // count, disabled Send) is keyed on hasCredentials in EVERY mode, not just
-  // Enforce — the UI must match the always-protective store.
+  // #84 option A: Disabled = true emergency bypass (raw passthrough). Credentials
+  // block Observe/Enforce only — store.send() skips scrub + credential gate when
+  // disabled. Confirm-before-Send is the safety valve for the bypass path.
   const disabled = mode === 'disabled';
-  const blocked = hasCredentials;
+  const blocked = !disabled && hasCredentials;
   // #83: a scrub that is in-flight or failed means the preview is NOT a
   // trustworthy "safe" representation. Reflect that in the header + controls so
   // the user never sees "Safe to send" over stale/failed scrub output and can't
   // Copy/Send it. scrubFailed takes precedence; scrubbing is the interim state.
-  const scrubFailed = scrubError !== null && !blocked;
-  const scrubbing = isScrubbing && !blocked;
-  // Copy/Send must be disabled until a fresh successful scrub exists.
+  // Disabled mode never scrubs, so previewUntrustworthy stays false there.
+  const scrubFailed = !disabled && scrubError !== null && !blocked;
+  const scrubbing = !disabled && isScrubbing && !blocked;
+  // Copy/Send must be disabled until a fresh successful scrub exists (or raw
+  // passthrough preview when Disabled).
   const previewUntrustworthy = scrubbing || scrubFailed;
   // "Empty" must mirror store.buildPayload: a file contributes content only when
   // it has `scrubbed` text and no `error` (errored files are skipped). So the
@@ -245,9 +245,9 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
     !composerText.trim() && files.every((f) => f.error || !f.scrubbed);
 
   // ── Live scrub (debounced, ported from Composer.tsx) ───────────────────────
-  // Runs in EVERY mode (incl. Disabled) — send() always tokenizes server-side,
-  // so the preview + credential detection must reflect that too. Skipped only
-  // while streaming. The store's refreshScrub short-circuits on empty payload.
+  // Observe/Enforce: tokenized preview + credential detection via /api/scrub.
+  // Disabled (#84): refreshScrub is a raw passthrough (no API). Skipped while
+  // streaming. Also re-runs when `mode` flips so Disabled↔active is live.
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -258,11 +258,10 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [composerText, refreshScrub, isStreaming]);
+  }, [composerText, refreshScrub, isStreaming, mode]);
 
   const runs = useMemo(() => {
-    // Always show the tokenized preview — even in Disabled mode the send path
-    // tokenizes, so the preview must never imply raw PII goes on the wire.
+    // Tokenized preview when screening; raw passthrough text when Disabled.
     return tokenizeForRender(scrubbed, tokens);
   }, [scrubbed, tokens]);
 
@@ -317,16 +316,26 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
         setCopied(true);
         if (copyTimer.current) clearTimeout(copyTimer.current);
         copyTimer.current = setTimeout(() => setCopied(false), 2000);
-        pushToast('success', 'Scrubbed text copied');
+        pushToast('success', disabled ? 'Raw text copied (screening disabled)' : 'Scrubbed text copied');
       },
       (err) => pushToast('error', `Copy failed: ${err instanceof Error ? err.message : String(err)}`),
     );
-  }, [scrubbed, pushToast]);
+  }, [scrubbed, pushToast, disabled]);
 
   const onSend = useCallback(() => {
-    if (blocked || empty || isStreaming) return;
+    if (blocked || empty || isStreaming || previewUntrustworthy) return;
+    // #84 option A: confirm-before-Send while disabled (raw leaves the machine).
+    if (disabled) {
+      const ok = globalThis.confirm(
+        'Screening is DISABLED — emergency bypass.\n\n' +
+          'Your text will leave this machine unmodified (no tokens, no redaction). ' +
+          'This matches the Claude Code hook no-op.\n\n' +
+          'Send raw text to Claude anyway?',
+      );
+      if (!ok) return;
+    }
     void send();
-  }, [blocked, empty, isStreaming, send]);
+  }, [blocked, empty, isStreaming, previewUntrustworthy, disabled, send]);
 
   const onNewMessage = useCallback(() => {
     resetConversation();
@@ -443,14 +452,16 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
                           : 'var(--acc)',
                     }}
                   >
-                    {/* #83: precedence — credential block > scrub failed > scrubbing > safe */}
+                    {/* #83/#84: credential block > scrub failed > scrubbing > disabled passthrough > safe */}
                     {blocked
                       ? 'Cannot send'
                       : scrubFailed
                         ? 'Scrub failed'
                         : scrubbing
                           ? 'Scrubbing…'
-                          : 'Safe to send'}
+                          : disabled
+                            ? 'Passthrough — not scrubbed'
+                            : 'Safe to send'}
                   </span>
                 </span>
                 <div className="flex items-center gap-2">
@@ -661,7 +672,7 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
           ) : (
             <span className="text-[12px] text-text-faint">
               {disabled
-                ? 'Screening disabled — values are still tokenized before sending.'
+                ? 'Screening disabled — emergency bypass; text passes through untouched.'
                 : 'No sensitive values detected yet.'}
             </span>
           )}
@@ -694,23 +705,31 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
               >
                 {blocked
                   ? 'Send disabled while a credential is present.'
-                  : 'Tokens stay on this device.'}
+                  : disabled
+                    ? 'Raw text will leave this device.'
+                    : 'Tokens stay on this device.'}
               </span>
               <button
                 type="button"
                 disabled={blocked || empty || previewUntrustworthy}
                 onClick={onSend}
                 className="flex items-center gap-1.5 rounded-lg px-5 text-[14px] font-semibold disabled:cursor-not-allowed disabled:opacity-50"
-                style={{ height: 42, background: 'var(--acc)', color: 'var(--acc-ink)' }}
+                style={{
+                  height: 42,
+                  background: disabled ? 'var(--danger)' : 'var(--acc)',
+                  color: disabled ? '#fff' : 'var(--acc-ink)',
+                }}
                 title={
                   blocked
                     ? 'Send disabled — credential present'
                     : empty
                       ? 'Nothing to send'
-                      : 'Send scrubbed text to Claude'
+                      : disabled
+                        ? 'Send raw text (screening disabled) — confirm required'
+                        : 'Send scrubbed text to Claude'
                 }
               >
-                <Send size={16} aria-hidden="true" /> Send to Claude
+                <Send size={16} aria-hidden="true" /> {disabled ? 'Send raw' : 'Send to Claude'}
               </button>
             </>
           )}
@@ -721,8 +740,9 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
 }
 
 /** Header-right controls for the Scrub route: a claude-ready status chip + the
- * Observe/Enforce screening-mode segmented control. Exported so App composes it
- * into the route's Shell `headerRight`. */
+ * Observe/Enforce/Disabled screening-mode segmented control (#84: true Disabled
+ * state — no coerce-to-Observe). Exported so App composes it into Shell
+ * `headerRight`. */
 export function ScrubHeaderRight({
   mode,
   setMode,
@@ -748,11 +768,12 @@ export function ScrubHeaderRight({
       </span>
       <Segmented<ScreenMode>
         label="Screening mode"
-        value={mode === 'disabled' ? 'observe' : mode}
+        value={mode}
         onChange={setMode}
         options={[
           { value: 'observe', label: 'Observe' },
           { value: 'enforce', label: 'Enforce' },
+          { value: 'disabled', label: 'Disabled' },
         ]}
       />
     </>
