@@ -4,8 +4,10 @@
  * Body: { messages: [{role, content}], model?, maxTokens? }
  *
  * Behavior:
- *   1. Each message.content is scrubbed via the shared ScrubMap (idempotent for
- *      already-scrubbed text from /api/scrub previews).
+ *   0. When cfg.mode === 'disabled' (#84 option A): raw passthrough — no
+ *      scrubbing of messages or system prompt (matches hook early-return).
+ *   1. Otherwise each message.content is scrubbed via the shared ScrubMap
+ *      (idempotent for already-scrubbed text from /api/scrub previews).
  *   2. If hasCredentials → respond 400 immediately; do NOT relay.
  *   3. Otherwise stream Anthropic response as SSE. Each chunk is forwarded as-is
  *      (still tokenized — deanonymization is the client's job).
@@ -48,6 +50,10 @@ export function resolveSystemPrompt(
   cfg: PrivacyConfig,
 ): { system?: string; hasCredentials: boolean; credentialSnippets: string[] } {
   if (!raw || !raw.trim()) return { hasCredentials: false, credentialSnippets: [] };
+  // #84 option A: disabled = emergency bypass — system prompt leaves raw too.
+  if (cfg.mode === 'disabled') {
+    return { system: raw, hasCredentials: false, credentialSnippets: [] };
+  }
   const result = scrubText(raw, map, vocab, { sourceEvent: 'app:send:system', config: cfg });
   if (result.hasCredentials) {
     return { hasCredentials: true, credentialSnippets: result.credentialSnippets };
@@ -67,10 +73,21 @@ sendRoute.post('/', async (c) => {
   const map = getMap();
   const vocab = getVocab();
 
-  // Scrub every message. Idempotent on already-tokenized text.
+  // #84 option A: disabled mode = true emergency bypass (matches hook early-return).
+  // Messages and system prompt leave unmodified — no tokens, no credential gate.
+  const passthrough = cfg.mode === 'disabled';
+
+  // Scrub every message (or passthrough). Idempotent on already-tokenized text.
   const scrubbedMessages: ChatMessage[] = [];
   for (const m of messages) {
     if (!m || typeof m.content !== 'string') continue;
+    if (passthrough) {
+      scrubbedMessages.push({
+        role: m.role === 'assistant' ? 'assistant' : 'user',
+        content: m.content,
+      });
+      continue;
+    }
     const result = scrubText(m.content, map, vocab, {
       sourceEvent: 'app:send',
       config: cfg,
@@ -91,8 +108,9 @@ sendRoute.post('/', async (c) => {
     });
   }
 
-  // SRV-04 (#77): wire the saved system prompt into the send path — scrubbed,
-  // behind the same credential gate. Previously it was persisted but ignored.
+  // SRV-04 (#77): wire the saved system prompt into the send path — scrubbed
+  // (or raw passthrough when disabled), behind the same credential gate when
+  // screening is on. Previously it was persisted but ignored.
   const sys = resolveSystemPrompt(publicSettings().system_prompt, map, vocab, cfg);
   if (sys.hasCredentials) {
     return c.json(

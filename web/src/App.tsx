@@ -43,10 +43,11 @@ export default function App(): JSX.Element {
   const startVersionPoller = useStore((s) => s.startVersionPoller);
   const stopVersionPoller = useStore((s) => s.stopVersionPoller);
 
-  // Screening mode now lives in the Zustand store (store.mode / store.setMode) so
-  // the Scrub screen and the Settings radio group share ONE source of truth.
-  // Client-side only — there is no /api/settings mode field (see store ScreenMode
-  // docs). setMode re-runs refreshScrub so the Scrub view updates live.
+  // Screening mode lives in the Zustand store (store.mode / store.setMode),
+  // hydrated from /api/settings and persisted via saveSettings({ mode }) so the
+  // Scrub header, Settings radio, and hook share one source of truth. setMode
+  // re-runs refreshScrub so the Scrub view updates live (incl. Disabled
+  // passthrough per #84).
   const mode = useStore((s) => s.mode);
   const setMode = useStore((s) => s.setMode);
 

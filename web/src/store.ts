@@ -363,7 +363,7 @@ type State = {
   /**
    * Set the screening mode and re-run the current scrub so the Scrub screen
    * reflects the new mode immediately (Enforce blocks credentials; Disabled
-   * passes through). Client-side only — see ScreenMode docs.
+   * is raw passthrough — no tokens). Persists via /api/settings — see ScreenMode.
    */
   setMode: (m: ScreenMode) => void;
   /** Set the active route — updates location.hash to `#/<route>`. */
@@ -800,6 +800,21 @@ export const useStore = create<State>((set, get) => {
   },
 
   refreshScrub: async (opts) => {
+    // #84 option A: Disabled = emergency bypass. Preview shows raw payload;
+    // no /api/scrub, no tokens, no credential gate (matches hook early-return).
+    if (get().mode === 'disabled') {
+      const raw = get().buildPayload(true);
+      set({
+        scrubbed: raw,
+        tokens: [],
+        unsureSpans: [],
+        hasCredentials: false,
+        credentialSnippets: [],
+        isScrubbing: false,
+        scrubError: null,
+      });
+      return;
+    }
     const payload = get().buildPayload();
     if (!payload.trim()) {
       set({
@@ -1188,42 +1203,50 @@ export const useStore = create<State>((set, get) => {
   send: async () => {
     const state = get();
     if (state.isStreaming) return;
-    const payload = state.buildPayload();
+    // #84 option A: disabled = raw passthrough (file originals, not scrubbed chips).
+    const bypass = state.mode === 'disabled';
+    const payload = state.buildPayload(bypass);
     if (!payload.trim()) {
       get().pushToast('error', 'composer is empty');
       return;
     }
-    if (state.hasCredentials) {
+    // Credential gate only when screening is on — disabled is a true emergency
+    // bypass matching the hook early-return (no tokens, no credential block).
+    if (!bypass && state.hasCredentials) {
       get().pushToast('error', 'credential detected — cannot send');
       return;
     }
 
-    // Step 1: persist-scrub the payload to lock in tokens for the conversation.
+    // Step 1: persist-scrub the payload to lock in tokens — or skip when disabled.
     let scrubbedPayload: string;
-    let mintedTokens: Token[];
-    try {
-      const r = await api.scrub(payload, true);
-      if (r.hasCredentials) {
-        set({
-          hasCredentials: true,
-          credentialSnippets: r.credentialSnippets,
-          scrubbed: r.scrubbed,
-          tokens: r.tokens,
-        });
-        get().pushToast('error', 'credential detected during send — aborted');
+    let mintedTokens: Token[] = [];
+    if (bypass) {
+      scrubbedPayload = payload;
+    } else {
+      try {
+        const r = await api.scrub(payload, true);
+        if (r.hasCredentials) {
+          set({
+            hasCredentials: true,
+            credentialSnippets: r.credentialSnippets,
+            scrubbed: r.scrubbed,
+            tokens: r.tokens,
+          });
+          get().pushToast('error', 'credential detected during send — aborted');
+          return;
+        }
+        scrubbedPayload = r.scrubbed;
+        mintedTokens = r.tokens ?? [];
+      } catch (err) {
+        get().pushToast(
+          'error',
+          `scrub-before-send failed: ${err instanceof Error ? err.message : err}`,
+        );
         return;
       }
-      scrubbedPayload = r.scrubbed;
-      mintedTokens = r.tokens;
-    } catch (err) {
-      get().pushToast(
-        'error',
-        `scrub-before-send failed: ${err instanceof Error ? err.message : err}`,
-      );
-      return;
     }
 
-    // Step 2: append the user message to history (always tokenized).
+    // Step 2: append the user message to history (tokenized, or raw when disabled).
     const history = [...state.messages];
     history.push({ role: 'user', content_tokens: scrubbedPayload });
     const wireMessages: ChatMessage[] = history.map((m) => ({
