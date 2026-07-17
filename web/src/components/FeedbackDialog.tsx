@@ -19,13 +19,18 @@
  * controls, dark-mode treatment throughout.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Loader2 } from 'lucide-react';
 import { useStore } from '../store';
 import { cn } from '../lib/cn';
 import { api, ApiError, type FeedbackType } from '../api';
 import { DialogHeader, ScrollableDialogBody, DialogFooter } from './ui/DialogScroll';
+import {
+  FEEDBACK_SCREENSHOT_ACCEPT,
+  FEEDBACK_SCREENSHOT_ATTACH_NOTE,
+  formatFeedbackAttachmentNames,
+} from './feedbackScreenshotPicker';
 
 const MAX_SUMMARY_LEN = 8_000;
 
@@ -47,7 +52,10 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
   const [summary, setSummary] = useState('');
   const [preview, setPreview] = useState<PreviewState>({ kind: 'idle' });
   const [sending, setSending] = useState(false);
+  /** Local filenames only — option A never uploads bytes (#140). */
+  const [screenshotNames, setScreenshotNames] = useState<string[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Refresh preview + reset form state every time the dialog opens.
   // Closing leaves the last summary in place only if it was a Cancel — on
@@ -56,6 +64,8 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
     if (!open) return;
     let cancelled = false;
     setPreview({ kind: 'loading' });
+    setScreenshotNames([]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     void (async () => {
       try {
         const res = await fetch('/api/feedback/preview');
@@ -133,8 +143,14 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
         currentType.tag,
       );
       startFeedbackJob(jobId);
-      pushToast('success', 'Sending your feedback…');
+      const shotNote =
+        screenshotNames.length > 0
+          ? ' Screenshots were not sent — use "Open on GitHub instead" and attach them there.'
+          : '';
+      pushToast('success', `Sending your feedback…${shotNote}`);
       setSummary('');
+      setScreenshotNames([]);
+      if (fileInputRef.current) fileInputRef.current.value = '';
       onOpenChange(false);
     } catch (err) {
       const msg =
@@ -161,15 +177,42 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
       `App: Privacy Screen (Flow)`,
       `Type: ${currentType.label}`,
     );
+    if (screenshotNames.length > 0) {
+      lines.push(
+        '',
+        `Screenshots to attach in this editor: ${formatFeedbackAttachmentNames(screenshotNames)}`,
+        '(Privacy Screen does not upload images — drag them in from your machine.)',
+      );
+    }
     const url =
       `https://github.com/adamcongdon/privacy-screen/issues/new` +
       `?labels=${encodeURIComponent(currentType.tag + ',feedback')}` +
       `&title=${encodeURIComponent(`[${currentType.label}] ${trimmed.slice(0, 80)}`)}` +
       `&body=${encodeURIComponent(lines.join('\n'))}`;
     window.open(url, '_blank', 'noopener');
-    pushToast('success', 'Opening GitHub to file your feedback…');
+    const attachHint =
+      screenshotNames.length > 0
+        ? ` Attach: ${formatFeedbackAttachmentNames(screenshotNames)}`
+        : '';
+    pushToast('success', `Opening GitHub to file your feedback…${attachHint}`);
     setSummary('');
+    setScreenshotNames([]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     onOpenChange(false);
+  };
+
+  const onScreenshotPick = (e: ChangeEvent<HTMLInputElement>): void => {
+    const files = e.target.files;
+    if (!files || files.length === 0) {
+      setScreenshotNames([]);
+      return;
+    }
+    const names: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files.item(i);
+      if (f?.name) names.push(f.name);
+    }
+    setScreenshotNames(names);
   };
 
   return (
@@ -258,6 +301,30 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps): JSX
                 {summary.length} / {MAX_SUMMARY_LEN}
               </span>
             </label>
+
+            {/* #140 option A — client file picker; attach in GitHub editor (no upload). */}
+            <div className="mt-5 flex flex-col gap-1.5">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+                Screenshots (optional)
+              </span>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={FEEDBACK_SCREENSHOT_ACCEPT}
+                multiple
+                onChange={onScreenshotPick}
+                data-testid="feedback-screenshot-input"
+                className="block w-full text-xs text-zinc-300 file:mr-3 file:rounded-md file:border file:border-zinc-700 file:bg-zinc-900 file:px-2.5 file:py-1 file:text-xs file:font-medium file:text-zinc-200 hover:file:bg-zinc-800"
+              />
+              {screenshotNames.length > 0 && (
+                <p className="text-[11px] text-zinc-300" data-testid="feedback-screenshot-names">
+                  Selected: {formatFeedbackAttachmentNames(screenshotNames)}
+                </p>
+              )}
+              <p className="text-[11px] leading-relaxed text-zinc-500" data-testid="feedback-screenshot-note">
+                {FEEDBACK_SCREENSHOT_ATTACH_NOTE}
+              </p>
+            </div>
           </ScrollableDialogBody>
 
           <DialogFooter>
