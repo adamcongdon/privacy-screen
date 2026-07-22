@@ -135,7 +135,7 @@ export default function App(): JSX.Element {
   return (
     <div className="flex h-screen min-h-0 bg-bg text-text">
       <Rail />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {/* Global update strip — slim, sits above the routed screen. Self-hides
             when no update is available or the current version was dismissed. */}
         <UpdateAvailableBanner />

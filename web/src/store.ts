@@ -373,6 +373,12 @@ type State = {
 
   addFiles: (incoming: FileList | File[]) => Promise<void>;
   removeFile: (id: string) => void;
+  /**
+   * Download a scrubbed copy of an attached file. Text-like chips download
+   * their scrubbed content directly (same extension); PDFs are regenerated
+   * server-side into a clean PDF. No-op for errored or credential-bearing chips.
+   */
+  exportScrubbedFile: (id: string) => Promise<void>;
 
   /** Build the payload string that gets sent to the model (composer + files). */
   buildPayload: (useOriginal?: boolean) => string;
@@ -797,6 +803,45 @@ export const useStore = create<State>((set, get) => {
   removeFile: (id) => {
     set((s) => ({ files: s.files.filter((f) => f.id !== id) }));
     void get().refreshScrub();
+  },
+
+  exportScrubbedFile: async (id) => {
+    const chip = get().files.find((f) => f.id === id);
+    if (!chip) return;
+    if (chip.error) {
+      get().pushToast('error', `${chip.name}: cannot export — ${chip.error}`);
+      return;
+    }
+    if (chip.hasCredentials) {
+      get().pushToast('error', `${chip.name}: credential detected — remove it before exporting`);
+      return;
+    }
+    const scrubbed = chip.scrubbed;
+    if (typeof scrubbed !== 'string' || scrubbed.length === 0) {
+      get().pushToast('error', `${chip.name}: nothing scrubbed to export`);
+      return;
+    }
+    const isPdf = /\.pdf$/i.test(chip.name) || chip.mime === 'application/pdf';
+    try {
+      if (isPdf) {
+        // PDFs are rebuilt server-side into a clean, reflowed PDF (never an
+        // overlay on the original bytes) so no source glyph survives.
+        const r = await api.renderScrubbedPdf(scrubbed, chip.name);
+        triggerDownload(bytesFromBase64(r.base64), r.fileName, 'application/pdf');
+        get().pushToast('success', `exported ${r.fileName}`);
+      } else {
+        // Text-like chips already hold their scrubbed content — download it
+        // directly with the same extension, no server round-trip.
+        const dot = chip.name.lastIndexOf('.');
+        const base = dot > 0 ? chip.name.slice(0, dot) : chip.name;
+        const ext = dot > 0 ? chip.name.slice(dot) : '.txt';
+        const outName = `${base}.scrubbed${ext}`;
+        triggerDownload(scrubbed, outName, 'text/plain;charset=utf-8');
+        get().pushToast('success', `exported ${outName}`);
+      }
+    } catch (err) {
+      get().pushToast('error', `export failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   },
 
   refreshScrub: async (opts) => {
@@ -1350,17 +1395,24 @@ export const useStore = create<State>((set, get) => {
  * Kept module-private (not exported on the store) because it has no React
  * surface — pure DOM side effect.
  */
-function triggerXlsxDownload(base64: string, fileName: string): void {
-  // Defensive: skip in non-browser contexts (tests, SSR). The store actions
-  // that call this only run in the browser, but a unit test that exercises
-  // `commitXlsxReview` against a mocked api should not blow up on document.
-  if (typeof document === 'undefined') return;
+function bytesFromBase64(base64: string): Uint8Array<ArrayBuffer> {
   const bin = atob(base64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const blob = new Blob([bytes], {
-    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  });
+  return bytes;
+}
+
+/**
+ * Browser-side download helper: wraps bytes (or a text string) in a typed Blob
+ * and surfaces it via a synthetic `<a download>` click. Revokes the object URL
+ * after the click so many downloads in one session don't leak memory.
+ *
+ * Kept module-private — pure DOM side effect, no React surface. Skips in
+ * non-browser contexts (tests, SSR) so mocked-api unit tests don't blow up.
+ */
+function triggerDownload(data: BlobPart, fileName: string, mime: string): void {
+  if (typeof document === 'undefined') return;
+  const blob = new Blob([data], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -1371,4 +1423,12 @@ function triggerXlsxDownload(base64: string, fileName: string): void {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+function triggerXlsxDownload(base64: string, fileName: string): void {
+  triggerDownload(
+    bytesFromBase64(base64),
+    fileName,
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  );
 }

@@ -31,7 +31,7 @@ export function Shell({
   children: ReactNode;
 }): JSX.Element {
   return (
-    <div className="flex min-w-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="flex items-center justify-between gap-4 px-6 py-[15px]">
         <div className="flex flex-col gap-[3px]">
           <span className="text-[20px] font-semibold leading-tight tracking-[-0.01em] text-text">
