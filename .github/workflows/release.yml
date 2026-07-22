@@ -12,6 +12,17 @@ permissions:
   contents: write   # create releases + upload assets; push updated manifest back to the branch
   pull-requests: read
 
+# Serialize release runs per branch (#195, regression of #107). Two pushes to
+# beta in quick succession previously fired two overlapping release runs that
+# raced on the git tag and the manifest push — one failed with a non-fast-forward
+# 'failed to push some refs', and the release ended up with mixed-version assets.
+# cancel-in-progress: false lets an in-flight run finish (creating its tag +
+# pushing its manifest) before the next starts, so the next recomputes the
+# version from the now-updated tags and cuts the following beta cleanly.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Always run the normal test/lint before producing a release artifact.
   test:
@@ -37,6 +48,11 @@ jobs:
     name: build (${{ github.ref_name }})
     needs: test
     runs-on: ubuntu-latest
+    # Expose the computed qualified version so the installer-packaging jobs use
+    # the exact same string as the tag/manifest/baked binary (#196, regression
+    # of #106) instead of re-deriving it from raw package.json + run_number.
+    outputs:
+      qual_version: ${{ steps.vars.outputs.qual_version }}
     # Only the build portion is conditioned on direct pushes; actual release creation
     # (which needs signed artifacts) runs in the create-release job with its own guard.
     # PRs do not trigger release builds.
@@ -213,16 +229,20 @@ jobs:
           name: build-binaries
           path: dist/
 
-      - name: Compute version
+      - name: Resolve version (from build job — single source of truth, #196)
         id: vars
         shell: bash
         run: |
-          BASE_VERSION=$(jq -r .version package.json)
-          if [ "${{ github.ref_name }}" = "beta" ]; then
-            echo "version=${BASE_VERSION}-beta.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
+          # Use the build job's computed qualified version so the installer
+          # filename matches the tag/manifest/baked binary exactly. The old
+          # 'jq .version package.json + github.run_number' path produced
+          # 0.0.1-beta.<run_number>, drifting from the real 1.0.0-beta.<n>.
+          VERSION="${{ needs.build.outputs.qual_version }}"
+          if [ -z "$VERSION" ]; then
+            echo "::error::build job did not provide qual_version"
+            exit 1
           fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
@@ -264,15 +284,19 @@ jobs:
           name: build-binaries
           path: dist/
 
-      - name: Compute version
+      - name: Resolve version (from build job — single source of truth, #196)
         id: vars
         run: |
-          BASE_VERSION=$(jq -r .version package.json)
-          if [ "${{ github.ref_name }}" = "beta" ]; then
-            echo "version=${BASE_VERSION}-beta.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
+          # Use the build job's computed qualified version so the .dmg filename
+          # matches the tag/manifest/baked binary exactly. The old
+          # 'jq .version package.json + github.run_number' path produced
+          # 0.0.1-beta.<run_number>, drifting from the real 1.0.0-beta.<n>.
+          VERSION="${{ needs.build.outputs.qual_version }}"
+          if [ -z "$VERSION" ]; then
+            echo "::error::build job did not provide qual_version"
+            exit 1
           fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build .app + .dmg (arm64 + x64)
         run: |
