@@ -177,6 +177,11 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
   const resetConversation = useStore((s) => s.resetConversation);
   const tokenUnion = useStore((s) => s.tokenUnion);
   const pushToast = useStore((s) => s.pushToast);
+  // #185: surface judge findings in-context. reviewItems is the live pending
+  // queue; isJudging is true while the LLM judge is analyzing an upload.
+  const reviewItems = useStore((s) => s.reviewItems);
+  const isJudging = useStore((s) => s.isJudging);
+  const setRoute = useStore((s) => s.setRoute);
   // #83: surface in-flight + failed scrub state. Previously the store set these
   // but no component read them, so a stale/failed scrub showed under a green
   // "Safe to send" header and Copy copied the stale text.
@@ -260,21 +265,48 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
     };
   }, [composerText, refreshScrub, isStreaming, mode]);
 
+  // Preview tokens = current-turn scrub tokens ∪ every attached file's tokens.
+  // A file-only upload re-scrubs to an EMPTY token list (the payload is already
+  // tokenized, so /api/scrub finds no new PII). Without folding in each file
+  // chip's own tokens the preview would render bare {TOKEN} text with no
+  // category color and the footer would read "No sensitive values detected"
+  // over a fully-scrubbed document (#185). Disabled mode is raw passthrough —
+  // no tokens, no protected count — so it keeps the empty list.
+  const previewTokens = useMemo(() => {
+    if (disabled) return tokens;
+    const fileTokens = files.flatMap((f) => (!f.error && f.tokens ? f.tokens : []));
+    return mergeTokenSources(tokens, fileTokens);
+  }, [tokens, files, disabled]);
+
   const runs = useMemo(() => {
     // Tokenized preview when screening; raw passthrough text when Disabled.
-    return tokenizeForRender(scrubbed, tokens);
-  }, [scrubbed, tokens]);
+    return tokenizeForRender(scrubbed, previewTokens);
+  }, [scrubbed, previewTokens]);
 
   const categories = useMemo(() => {
     const seen: string[] = [];
-    for (const t of tokens) {
+    for (const t of previewTokens) {
       if (!seen.includes(t.category)) seen.push(t.category);
     }
     return seen;
-  }, [tokens]);
+  }, [previewTokens]);
+
+  // Left-pane readout for file uploads: the extracted (pre-scrub) text of every
+  // attached file. The composer <textarea> only holds typed input, so without
+  // this a PDF/file-only upload leaves the "Your text" pane blank with nothing
+  // to read or review (#185). Shown read-only when the composer is empty.
+  const fileText = useMemo(() => {
+    const parts: string[] = [];
+    for (const f of files) {
+      if (f.error || typeof f.original !== 'string' || f.original.length === 0) continue;
+      parts.push(files.length > 1 ? `--- ${f.name} ---\n${f.original}` : f.original);
+    }
+    return parts.join('\n\n');
+  }, [files]);
+  const showFileText = !composerText.trim() && fileText.length > 0;
 
   const credCount = credentialSnippets.length;
-  const protectedCount = tokens.length;
+  const protectedCount = previewTokens.length;
 
   const replyTokens = useMemo(() => {
     // Merge via shared utility (current + cross-session union) so deanon resolves
@@ -370,33 +402,54 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
               </button>
             )}
           </div>
-          <textarea
-            ref={taRef}
-            value={composerText}
-            onChange={(e) => setComposerText(e.target.value)}
-            onContextMenu={(e) => {
-              const ta = taRef.current;
-              if (!ta) return;
-              const sel = composerText.slice(ta.selectionStart, ta.selectionEnd).trim();
-              if (!sel) return; // empty selection → let native menu
-              e.preventDefault();
-              openCtxMenu(e.clientX, e.clientY, sel);
-            }}
-            spellCheck={false}
-            autoComplete="off"
-            aria-label="Text to scrub"
-            placeholder="Paste or type text containing sensitive data…"
-            className="ps-mono min-h-0 flex-1"
-            style={{
-              padding: 16,
-              fontSize: 12.5,
-              lineHeight: 1.7,
-              border: 0,
-              background: 'transparent',
-              color: 'var(--text-dim)',
-              resize: 'none',
-            }}
-          />
+          {showFileText ? (
+            // Read-only extracted-text view for file-only uploads (#185). The
+            // scrubbed/tokenized version renders in the right panel; this is the
+            // pre-scrub source so the upload is actually reviewable. Typing (or
+            // clearing the files) swaps back to the editable composer.
+            <div
+              className="ps-mono min-h-0 flex-1 overflow-auto"
+              aria-label="Extracted file text (read-only)"
+              style={{
+                padding: 16,
+                fontSize: 12.5,
+                lineHeight: 1.7,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                color: 'var(--text-dim)',
+              }}
+            >
+              {fileText}
+            </div>
+          ) : (
+            <textarea
+              ref={taRef}
+              value={composerText}
+              onChange={(e) => setComposerText(e.target.value)}
+              onContextMenu={(e) => {
+                const ta = taRef.current;
+                if (!ta) return;
+                const sel = composerText.slice(ta.selectionStart, ta.selectionEnd).trim();
+                if (!sel) return; // empty selection → let native menu
+                e.preventDefault();
+                openCtxMenu(e.clientX, e.clientY, sel);
+              }}
+              spellCheck={false}
+              autoComplete="off"
+              aria-label="Text to scrub"
+              placeholder="Paste or type text containing sensitive data…"
+              className="ps-mono min-h-0 flex-1"
+              style={{
+                padding: 16,
+                fontSize: 12.5,
+                lineHeight: 1.7,
+                border: 0,
+                background: 'transparent',
+                color: 'var(--text-dim)',
+                resize: 'none',
+              }}
+            />
+          )}
           {/* Drag-and-drop / browse file scrubbing — restored after the Flow
               redesign dropped the old Composer's FileDropZone. Reads/writes the
               same store surface (files / addFiles / removeFile); the scrubbed
@@ -510,6 +563,40 @@ export function ScrubSend({ mode }: { mode: ScreenMode }): JSX.Element {
                   <span style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600 }}>
                     Credential detected — remove it to send. Credentials are never tokenized.
                   </span>
+                </div>
+              )}
+
+              {/* #185: the LLM judge runs on uploads and files its findings to
+                  the Review queue on a different page. Surface that in-context so
+                  a document upload doesn't silently hide suggestions elsewhere. */}
+              {files.length > 0 && (isJudging || reviewItems.length > 0) && (
+                <div
+                  className="mx-3 mt-3 flex items-center gap-2.5 rounded-[9px] px-3 py-2"
+                  style={{ background: 'var(--acc-tint)', border: '1px solid var(--acc-line)' }}
+                  role={reviewItems.length > 0 ? undefined : 'status'}
+                >
+                  <Sparkles size={15} color="var(--acc)" aria-hidden="true" />
+                  {isJudging && reviewItems.length === 0 ? (
+                    <span className="text-[12px] font-medium text-acc">
+                      The judge is analyzing this document…
+                    </span>
+                  ) : (
+                    <>
+                      <span className="flex-1 text-[12px] font-medium text-acc">
+                        The judge flagged {reviewItems.length} item
+                        {reviewItems.length === 1 ? '' : 's'} to review
+                        {isJudging ? ' (still analyzing…)' : ''} — on the Review page.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setRoute('review')}
+                        className="flex flex-none items-center gap-1 rounded-md px-2 py-1 text-[12px] font-semibold"
+                        style={{ background: 'var(--acc)', color: 'var(--acc-ink)' }}
+                      >
+                        Review <ArrowRight size={13} aria-hidden="true" />
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
 

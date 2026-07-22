@@ -377,6 +377,23 @@ export const api = {
   },
 
   /**
+   * Regenerate a clean, scrubbed PDF from already-scrubbed text —
+   * POST /api/files/pdf/render. The server re-scrubs defensively and refuses
+   * (throws via `json()`) when a credential is present. Returns base64 bytes.
+   */
+  async renderScrubbedPdf(
+    text: string,
+    fileName: string,
+  ): Promise<{ ok: true; fileName: string; base64: string }> {
+    const res = await fetch('/api/files/pdf/render', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, fileName }),
+    });
+    return json(res);
+  },
+
+  /**
    * Stream the Anthropic response via SSE.
    *
    * Uses fetch + ReadableStream because EventSource cannot send a POST body.

@@ -25,6 +25,7 @@ import { getMap, getVocab } from '../lib/vocab-store';
 import { loadConfig } from '../../src/config';
 import { inspectXlsx } from '../../src/xlsx-scrubber';
 import { extractPdfText } from '../../src/pdf-text';
+import { renderTextToPdf } from '../../src/pdf-render';
 import { stageUpload } from '../lib/xlsx-uploads';
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -203,4 +204,69 @@ filesRoute.post('/', async (c) => {
   }
 
   return c.json({ files: results });
+});
+
+/**
+ * POST /api/files/pdf/render — regenerate a clean, scrubbed PDF from text.
+ *
+ * Body: { text: string, fileName?: string }
+ *
+ * `text` is the already-scrubbed (tokenized) content the web chip holds. We
+ * re-run scrubText server-side as defense in depth — the emitted PDF can never
+ * carry real PII even if a caller sends raw text — and refuse outright when a
+ * credential is present (mirrors the xlsx BLOCK-ALWAYS policy in files-xlsx.ts).
+ * The PDF is rebuilt from text (reflowed), never by editing original bytes, so
+ * no original glyph can survive underneath. Returns { ok, fileName, base64 }.
+ */
+filesRoute.post('/pdf/render', async (c) => {
+  const raw: unknown = await c.req.json().catch(() => null);
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return c.json({ ok: false, error: 'invalid json body' }, 400);
+  }
+  const body = raw as Record<string, unknown>;
+
+  const text = body.text;
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    return c.json({ ok: false, error: "missing 'text'" }, 400);
+  }
+  const srcName =
+    typeof body.fileName === 'string' && body.fileName.trim().length > 0
+      ? body.fileName
+      : 'document.pdf';
+
+  const cfg = loadConfig();
+  const map = getMap();
+  const vocab = getVocab();
+  const r = scrubText(text, map, vocab, {
+    sourceEvent: `app:pdf-export:${srcName}`,
+    config: cfg,
+  });
+
+  // BLOCK-ALWAYS on credentials — never emit a file that carries a secret.
+  if (r.hasCredentials) {
+    return c.json(
+      {
+        ok: false,
+        error: 'credential detected',
+        credentialSnippets: r.credentialSnippets,
+        message:
+          'A credential was detected in the document. Remove it from the source before exporting.',
+      },
+      400,
+    );
+  }
+
+  let pdfBytes: Uint8Array;
+  try {
+    pdfBytes = await renderTextToPdf(r.scrubbed);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ ok: false, error: `failed to render pdf: ${msg}` }, 500);
+  }
+
+  const scrubbedName = srcName.replace(/\.pdf$/i, '') + '.scrubbed.pdf';
+  return c.json(
+    { ok: true, fileName: scrubbedName, base64: Buffer.from(pdfBytes).toString('base64') },
+    200,
+  );
 });

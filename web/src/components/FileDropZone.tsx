@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
-import { Paperclip, Upload, X, AlertTriangle, CheckCircle2, FileWarning, Loader2 } from 'lucide-react';
+import { Paperclip, Upload, X, AlertTriangle, CheckCircle2, FileWarning, Loader2, Download } from 'lucide-react';
 import { useStore, type FileChip } from '../store';
 import { cn } from '../lib/cn';
 
@@ -20,6 +20,7 @@ export function FileDropZone(): JSX.Element {
   const files = useStore((s) => s.files);
   const addFiles = useStore((s) => s.addFiles);
   const removeFile = useStore((s) => s.removeFile);
+  const exportScrubbedFile = useStore((s) => s.exportScrubbedFile);
   const isUploading = useStore((s) => s.isUploading);
   const [isDragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -143,6 +144,20 @@ export function FileDropZone(): JSX.Element {
               <ChipStatusIcon chip={f} />
               <span className="flex-1 truncate font-mono text-zinc-200">{f.name}</span>
               <span className="text-zinc-500">{formatSize(f.size)}</span>
+              {!f.error && !f.hasCredentials && !!f.scrubbed && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void exportScrubbedFile(f.id);
+                  }}
+                  className="rounded p-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                  aria-label={`download scrubbed ${f.name}`}
+                  title="Download scrubbed copy"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                </button>
+              )}
               <button
                 type="button"
                 onClick={(e) => {
