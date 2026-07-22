@@ -134,7 +134,9 @@ state; vocab persists but no automatic relay happens until you re-open the UI.
 
 1. **Inference via `claude` CLI only** — requires Claude Code installed and
    logged in. No API key fallback (intentional — keeps the "no key" promise).
-2. **Text-like files only** (`.txt .md .log .json .csv .yaml ...`). PDF/DOCX in M2.
+2. **Text-like files, `.xlsx`/`.csv` (column review), and `.pdf` (text layer
+   extracted in memory and scrubbed — #185; scanned/image-only PDFs are
+   rejected with a clear error). DOCX still deferred.
 3. **No conversation persistence across sessions** — refreshing the tab clears
    the visible history (vocab stays). Sessions list in M2.
 4. **No system hotkey / clipboard mode** — copy-paste workflow only. M2.
