@@ -122,7 +122,7 @@ export function FileDropZone(): JSX.Element {
         multiple
         className="hidden"
         onChange={onInputChange}
-        accept=".txt,.md,.log,.json,.csv,.yaml,.yml,.conf,.config,.env,.ini,.toml,.xml,.html,.htm,.tsv,.sql,.sh,.bash,.zsh,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        accept=".txt,.md,.log,.json,.csv,.yaml,.yml,.conf,.config,.env,.ini,.toml,.xml,.html,.htm,.tsv,.sql,.sh,.bash,.zsh,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.pdf,application/pdf"
       />
 
       {files.length > 0 && (

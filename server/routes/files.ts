@@ -8,13 +8,15 @@
  * (instead of per-item review). Both return the same `kind: 'xlsx-inspection'`
  * shape (the UI and commit endpoint are reused; the "xlsx" label is historical).
  * A multipart POST containing a mix returns heterogeneous `files` array.
+ * #185: .pdf extracts the text layer in memory (src/pdf-text.ts) and scrubs
+ * it exactly like a text file; scanned/image-only PDFs get a per-file error.
  *
  * Body: multipart/form-data with one or more `file` fields.
  *
  * The raw upload is never persisted — text extraction + scrubbing happen in
  * memory, and xlsx bytes are staged in `server/lib/xlsx-uploads.ts` (also
- * in-memory, lazy-pruned at 10 minutes). Other binary formats (.pdf .docx,
- * etc.) still return the deferred-to-M2 error.
+ * in-memory, lazy-pruned at 10 minutes). Other binary formats (.docx, etc.)
+ * still return the deferred error.
  */
 
 import { Hono } from 'hono';
@@ -22,6 +24,7 @@ import { scrubText } from '../../src/scrubber';
 import { getMap, getVocab } from '../lib/vocab-store';
 import { loadConfig } from '../../src/config';
 import { inspectXlsx } from '../../src/xlsx-scrubber';
+import { extractPdfText } from '../../src/pdf-text';
 import { stageUpload } from '../lib/xlsx-uploads';
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -49,6 +52,10 @@ function isXlsxLike(name: string, mime: string): boolean {
 
 function isCsvLike(name: string, mime: string): boolean {
   return /\.csv$/i.test(name) || mime === 'text/csv';
+}
+
+function isPdfLike(name: string, mime: string): boolean {
+  return /\.pdf$/i.test(name) || mime === 'application/pdf';
 }
 
 export const filesRoute = new Hono();
@@ -106,12 +113,61 @@ filesRoute.post('/', async (c) => {
       continue;
     }
 
+    // PDF dispatch (#185): extract the text layer in memory, then run it
+    // through the same scrubText path text files use — the result shape
+    // matches, so the web chip/judge flow lights up with zero store changes.
+    // Scanned/image-only PDFs have no text layer; those surface an explicit
+    // per-file error instead of an empty success.
+    if (isPdfLike(name, mime)) {
+      const ab = await entry.arrayBuffer();
+      try {
+        const { text, pages } = await extractPdfText(new Uint8Array(ab));
+        if (text.trim().length === 0) {
+          results.push({
+            name,
+            size,
+            mime,
+            error: 'no extractable text — scanned/image-only PDFs are not supported yet',
+          });
+          continue;
+        }
+        const r = scrubText(text, map, vocab, {
+          sourceEvent: `app:file:${name}`,
+          config: cfg,
+        });
+        results.push({
+          name,
+          size,
+          mime,
+          pages,
+          original: text,
+          scrubbed: r.scrubbed,
+          tokens: r.mintedTokens.map((t) => ({
+            realValue: t.realValue,
+            token: t.token,
+            isNew: t.isNew,
+            category: t.category,
+          })),
+          hasCredentials: r.hasCredentials,
+          credentialSnippets: r.credentialSnippets,
+          unsureSpans: r.unsureSpans,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const friendly = /password/i.test(msg)
+          ? 'password-protected PDF — remove the password and re-upload'
+          : `failed to parse pdf: ${msg}`;
+        results.push({ name, size, mime, error: friendly });
+      }
+      continue;
+    }
+
     if (!isTextLike(name, mime)) {
       results.push({
         name,
         size,
         mime,
-        error: 'binary file types deferred to M2-app (.pdf .docx not yet supported)',
+        error: 'binary file types deferred (.docx not yet supported)',
       });
       continue;
     }
