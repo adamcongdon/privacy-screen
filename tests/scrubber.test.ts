@@ -324,6 +324,36 @@ describe('scrubText — new categories', () => {
     expect(tok!.token).toMatch(/^\{ACCOUNT/);
   });
 
+  test('SSN tokenized as SSN — dash and space separated', () => {
+    const map = new ScrubMap();
+    const r = scrubText('SSN 402-55-1839 and 123 45 6789 here', map, null, { sourceEvent: 'test' });
+    const ssn = r.mintedTokens.filter((t) => t.category === 'ssn');
+    expect(ssn.length).toBe(2);
+    expect(ssn[0]!.token).toMatch(/^\{SSN/);
+    expect(r.scrubbed).not.toContain('402-55-1839');
+    expect(r.scrubbed).not.toContain('123 45 6789');
+  });
+
+  test('SSN rejects invalid area/group/serial and bare 9-digit runs', () => {
+    const map = new ScrubMap();
+    const r = scrubText(
+      '000-12-3456 666-01-0001 900-11-2222 123-00-4567 123-45-0000 402551839',
+      map,
+      null,
+      { sourceEvent: 'test' },
+    );
+    expect(r.mintedTokens.filter((t) => t.category === 'ssn').length).toBe(0);
+    expect(r.scrubbed).toContain('000-12-3456');
+    expect(r.scrubbed).toContain('402551839');
+  });
+
+  test('SSN (3-2-4) does not collide with phone (3-3-4)', () => {
+    const map = new ScrubMap();
+    const r = scrubText('call 555-123-4567 re SSN 402-55-1839', map, null, { sourceEvent: 'test' });
+    expect(r.mintedTokens.find((t) => t.category === 'phone')).toBeDefined();
+    expect(r.mintedTokens.find((t) => t.category === 'ssn')).toBeDefined();
+  });
+
   test('JWT triggers hasCredentials', () => {
     const map = new ScrubMap();
     const jwt =

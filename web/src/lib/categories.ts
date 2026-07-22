@@ -26,6 +26,7 @@ export const CATS: Record<string, CategoryMeta> = {
   addr: { hue: '#fb923c', label: 'Address' },
   url: { hue: '#2dd4bf', label: 'URL' },
   account: { hue: '#fb7185', label: 'Account' },
+  ssn: { hue: '#e879f9', label: 'SSN' },
   user: { hue: '#f0a5c0', label: 'User' },
   path: { hue: '#94a3b8', label: 'Path' },
   credential: { hue: '#f76d6d', label: 'Credential' },

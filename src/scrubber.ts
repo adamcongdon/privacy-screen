@@ -9,7 +9,7 @@
 
 import {
   mkIpv4, mkIpv6, mkEmail, mkUncPath, mkDomainUser, mkFqdn,
-  mkPhone, mkStreetAddress, mkCreditCard, mkUrlPath, mkSensitiveKV,
+  mkPhone, mkStreetAddress, mkCreditCard, mkSsn, mkUrlPath, mkSensitiveKV,
   mkCredential, mkMac, mkGuid, mkCorpEntity, isFqdnAllowed,
   mkPersonFromHeader, mkPersonAdjacentToEmail, mkSignOffName,
   isValidPersonName, looksLikeIdentifier, looksLikeDate,
@@ -210,6 +210,9 @@ export function scrubText(
   }
   for (const m of text.matchAll(mkCreditCard())) {
     maybeRecordMint(map, vocab, 'ACCOUNT', m[0], 'account_number', 0.95, minted);
+  }
+  for (const m of text.matchAll(mkSsn())) {
+    maybeRecordMint(map, vocab, 'SSN', m[0], 'ssn', 0.95, minted);
   }
   // URL paths — only catch the full URL once; mkFqdn covers the bare host case
   for (const m of text.matchAll(mkUrlPath())) {

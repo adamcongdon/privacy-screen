@@ -89,6 +89,12 @@ const CLASS_PALETTE: Record<string, TokenStyle> = {
     text: 'text-[color-mix(in_srgb,#fb7185_55%,var(--text))]',
     ring: 'ring-[color-mix(in_srgb,#fb7185_42%,transparent)]',
   },
+  ssn: {
+    bg: 'bg-[color-mix(in_srgb,#e879f9_17%,transparent)]',
+    border: 'border-[color-mix(in_srgb,#e879f9_42%,transparent)]',
+    text: 'text-[color-mix(in_srgb,#e879f9_55%,var(--text))]',
+    ring: 'ring-[color-mix(in_srgb,#e879f9_42%,transparent)]',
+  },
   user: {
     bg: 'bg-[color-mix(in_srgb,#f0a5c0_17%,transparent)]',
     border: 'border-[color-mix(in_srgb,#f0a5c0_42%,transparent)]',
