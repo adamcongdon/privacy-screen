@@ -164,8 +164,9 @@ function resolvePatternRegex(pattern: PatternName): RegExp | null {
       // person name" → trust that signal.)
       return null;
     case 'SSN':
-      // No built-in SSN regex today (see Plans/use-architect-to-floating-sky.md
-      // §HEURISTIC_MAP). Force-mint whole cell when explicitly configured.
+      // `mkSsn` exists now (free-text scrubber), but for a column the user has
+      // explicitly labeled "SSN" we still force-mint the whole cell — trust the
+      // signal rather than require the value match the AAA-GG-SSSS shape.
       return null;
   }
 }

@@ -94,6 +94,22 @@ export const mkCreditCard = (): RegExp =>
   /\b(?:4\d{3}|5[1-5]\d{2}|3[47]\d{2}|6011)[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b/g;
 
 /**
+ * US Social Security Number — AAA-GG-SSSS (area-group-serial).
+ *
+ * Requires an explicit dash or space separator (never a bare 9-digit run) to
+ * keep the false-positive rate low, and the backreference forces BOTH
+ * separators to match — so `402-55-1839` and `402 55 1839` match but a mixed
+ * `402-55 1839` does not. Structurally-invalid parts are rejected per SSA
+ * allocation rules, which also excludes phone-shaped runs:
+ *   - area   ≠ 000, 666, or 900–999
+ *   - group  ≠ 00
+ *   - serial ≠ 0000
+ * SSN is 3-2-4, distinct from the 3-3-4 phone shape, so the two never collide.
+ */
+export const mkSsn = (): RegExp =>
+  /\b(?!000|666|9\d\d)\d{3}([ \-])(?!00)\d{2}\1(?!0000)\d{4}\b/g;
+
+/**
  * URLs with paths (beyond bare FQDN).
  * `mkFqdn` already catches the host portion of a URL; this catches the path
  * + query portion so query-param tokens, paths with usernames, etc. don't

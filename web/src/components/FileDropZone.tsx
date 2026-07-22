@@ -144,20 +144,28 @@ export function FileDropZone(): JSX.Element {
               <ChipStatusIcon chip={f} />
               <span className="flex-1 truncate font-mono text-zinc-200">{f.name}</span>
               <span className="text-zinc-500">{formatSize(f.size)}</span>
-              {!f.error && !f.hasCredentials && !!f.scrubbed && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void exportScrubbedFile(f.id);
-                  }}
-                  className="rounded p-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
-                  aria-label={`download scrubbed ${f.name}`}
-                  title="Download scrubbed copy"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                </button>
-              )}
+              {!f.error &&
+                (f.hasCredentials ? (
+                  <span
+                    className="flex flex-none items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-red-300/80"
+                    title="Remove the detected credential before exporting a scrubbed copy"
+                  >
+                    <Download className="h-3.5 w-3.5" /> blocked
+                  </span>
+                ) : f.scrubbed ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void exportScrubbedFile(f.id);
+                    }}
+                    className="flex flex-none items-center gap-1 rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-300 hover:bg-emerald-500/20"
+                    aria-label={`download scrubbed copy of ${f.name}`}
+                    title="Download a scrubbed copy of this file"
+                  >
+                    <Download className="h-3.5 w-3.5" /> Scrubbed copy
+                  </button>
+                ) : null)}
               <button
                 type="button"
                 onClick={(e) => {
