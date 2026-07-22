@@ -30,6 +30,7 @@ import { spawn as nodeSpawn } from 'child_process';
 
 import {
   checkForUpdate,
+  compareVersions,
   defaultPlatformKey,
   isValidReleaseAssetUrl,
   isValidReleaseRedirectTarget,
@@ -147,9 +148,12 @@ export function getUpdateStatus(): UpdateStatus {
 
   if (platform) {
     const side = readSidecar(platform);
-    if (side && side.version) {
-      // Treat a present sidecar as "there is a candidate". The apply path will
-      // do the final version comparison + hash re-check.
+    // Only treat a staged sidecar as an applyable candidate when it is
+    // genuinely newer than the running version. A stale sidecar left over from
+    // an older attempt (older than what we're currently running) must not be
+    // surfaced as "ready to apply" — the apply path would (correctly) reject it
+    // with 409 not-newer, but the UI would have already mislabeled it as ready.
+    if (side && side.version && compareVersions(side.version, currentVersion) === 1) {
       ready = true;
       if (!effectiveUpdateInfo) {
         effectiveUpdateInfo = {

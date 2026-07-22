@@ -465,7 +465,10 @@ function UpdatesCard(): JSX.Element {
       ? Math.min(100, Math.round((dl.bytesDownloaded / dl.totalBytes) * 100))
       : 0;
   const fmtMb = (n: number): string => `${(n / 1024 / 1024).toFixed(1)} MB`;
-  const stagedVersion = dl?.version ?? versionInfo?.updateInfo?.version ?? '';
+  const stagedVersion =
+    dl?.version ??
+    (downloadedReady ? updateStatus?.updateInfo?.version : versionInfo?.updateInfo?.version) ??
+    '';
 
   const onChannel = (c: Channel) => {
     if (c === channel) return;
