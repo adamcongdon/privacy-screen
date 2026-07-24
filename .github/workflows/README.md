@@ -15,6 +15,9 @@
   - The manifest's `sha256` values (consumed by the in-app updater) are *always* taken from the final artifacts that users will actually download.
 - `gitleaks.yml` — secret-scanning on push + PR
 - `semgrep.yml` — SAST/code security scanning (Semgrep p/ci + p/security + p/secrets rules) on push + PR. No GitHub Advanced Security required.
+- `codeql.yml` — GitHub CodeQL SAST (javascript-typescript) on push to `main` + PR + weekly schedule (Mon 04:23 UTC). Uploads SARIF to code scanning.
+- `osv-scanner.yml` — Google OSV dependency vulnerability scanner on push to `main` + PR + weekly schedule (Tue 06:37 UTC).
+- `dependency-review.yml` — GitHub dependency review on PRs; flags PRs introducing deps with moderate+ severity advisories.
 - Release workflow also performs VirusTotal scanning of the built platform binaries (when `VT_API_KEY` secret is configured).
 - Release workflow supports optional code signing (see "Code signing" section below).
 
@@ -45,15 +48,13 @@ Branch roles:
 - `beta`: PR into `beta` (from ac-build) → auto beta build + manifest. This is the feeder for betas.
 - `main`: PR from `beta` to `main` → stable release (protected).
 
+**Skipping a release:** every push to `main` (or `beta`) normally cuts a release. To land a maintenance change (CI/workflow/docs/dependency housekeeping) *without* publishing a new version, include `[skip release]` in the head commit message — for the squash-merge flow, put it in the PR title or body. `release.yml`'s `build` job is gated on it, so build → packaging → create-release are all skipped (test still runs). The release tag is tag-derived, so a skipped push simply doesn't advance it.
+
+**Action pinning (issue #101):** every external action in these workflows is pinned to a full 40-char commit SHA with a `# vX.Y.Z` comment. The `pinned-actions` job in `ci.yml` fails the build if any unpinned `@vN` reference appears; Dependabot (github-actions ecosystem) bumps the SHAs weekly.
+
 ## Disabled (`.yml.disabled`)
 
-These require GitHub Advanced Security (or making the repo public) for full features like SARIF upload to code scanning and dependency graph:
-
-- `codeql.yml.disabled` — GitHub CodeQL SAST
-- `osv-scanner.yml.disabled` — Google OSV dependency vulnerability scanner (scheduled)
-- `dependency-review.yml.disabled` — GitHub dependency review on PRs (blocks PRs introducing vulnerable deps)
-
-They can be re-enabled by renaming the files once GHAS is available.
+None. `codeql.yml`, `osv-scanner.yml`, and `dependency-review.yml` were previously disabled because they require GitHub Advanced Security or a public repo for SARIF upload to code scanning and the dependency graph. The repo is now **public**, so all three are active (re-enabled June 2026). If the repo is ever made private again without GHAS, rename them back to `.yml.disabled`.
 
 ## Additional security tooling (no GHAS needed)
 - Semgrep (active via `semgrep.yml`)

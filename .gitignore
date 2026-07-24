@@ -16,3 +16,6 @@ web/dist/
 
 # Release build outputs (created by scripts/build-release.ts)
 dist/
+
+# local identity denylist for .githooks/pre-commit (never commit)
+.identity-denylist

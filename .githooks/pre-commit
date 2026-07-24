@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Identity / PII guard — blocks commits that reintroduce banned identity
+# strings (in content OR in the author email). Shift-left companion to the
+# gitleaks CI scan, which only catches secrets, not identity strings.
+#
+# The banned terms are NOT stored in this (public, committed) file. They live
+# in a gitignored denylist so the repo never re-leaks the very strings it
+# guards against. One case-insensitive ERE pattern per line; '#' lines and
+# blank lines ignored. If the denylist is absent, this hook is a no-op
+# (so contributors without one are never blocked).
+#
+#   denylist file:  .identity-denylist   (gitignored; create locally)
+#   enable once:    git config core.hooksPath .githooks
+#   bypass:         git commit --no-verify
+#
+# Portable POSIX ERE only — works with macOS BSD grep and GNU grep (no -P).
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+denyfile="$root/.identity-denylist"
+[ -f "$denyfile" ] || exit 0   # nothing configured → allow
+
+# Build one alternation regex from the non-comment, non-blank lines.
+banned="$(grep -vE '^\s*(#|$)' "$denyfile" | paste -sd'|' -)"
+[ -n "$banned" ] || exit 0
+
+fail=0
+
+# 1. Author email
+author_email="$(git config user.email || true)"
+if printf '%s' "$author_email" | grep -iqE "$banned"; then
+  echo "✗ commit author email '$author_email' matches the identity denylist."
+  echo "  Fix your commit identity: git config user.email <personal-email>"
+  fail=1
+fi
+
+# 2. Staged added lines (tests/ excluded — intentional fake fixtures live there)
+added="$(git diff --cached --no-color -U0 \
+  -- . ':(exclude)tests/**' ':(exclude).identity-denylist' \
+       ':(exclude)*.lock' ':(exclude)bun.lockb' \
+  | grep -E '^\+[^+]' || true)"
+hits="$(printf '%s\n' "$added" | grep -inE "$banned" || true)"
+if [ -n "$hits" ]; then
+  echo "✗ staged changes contain denylisted identity strings:"
+  printf '%s\n' "$hits" | sed 's/^/    /'
+  echo "  Remove them, or put intentional test fixtures under tests/."
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "Commit blocked by .githooks/pre-commit (override: git commit --no-verify)."
+  exit 1
+fi
+exit 0

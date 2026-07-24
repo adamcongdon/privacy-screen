@@ -33,7 +33,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "exceljs": "^4.4.0",
-    "hono": "^4.6.14",
+    "hono": "^4.12.25",
     "keytar": "^7.9.0",
     "lucide-react": "^1.24.0",
     "pdf-lib": "^1.17.1",
@@ -44,5 +44,8 @@
     "unpdf": "^1.6.2",
     "yaml": "^2.9.0",
     "zustand": "^5.0.2"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
   }
 }
