@@ -55,6 +55,11 @@ jobs:
         with:
           fetch-depth: 0
           ref: main
+          # Without this, checkout persists the read-only GITHUB_TOKEN as an
+          # Authorization header in .git/config, which takes precedence over the
+          # PROMOTE_TOKEN embedded in the push URL — the push then authenticates
+          # as github-actions[bot] and 403s (observed in run 30578887516).
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -115,8 +120,15 @@ jobs:
 
       - name: Preview the stable version release.yml will cut
         run: |
+          set -euo pipefail
+          # Run compute-version from the PROMOTED tree, not this checkout (main).
+          # release.yml runs on the pushed commit, so main's older copy of the
+          # script can preview the wrong version (run 30578531395 said v0.0.5
+          # when the actual cut was v1.0.0).
+          git worktree add --detach .promoted "${{ steps.pick.outputs.sha }}"
           echo "On the main push, release.yml will cut this stable version:"
-          bun scripts/compute-version.ts stable
+          (cd .promoted && bun scripts/compute-version.ts stable)
+          git worktree remove --force .promoted
 
       - name: Require PROMOTE_TOKEN (unless dry run)
         if: ${{ inputs.dry_run != true }}
