@@ -4,10 +4,10 @@ Local-first PII anonymization layer for AI providers. Two modes of use, same eng
 
 | Mode | Audience | Status |
 |---|---|---|
-| **App** — three-pane web UI on `localhost:31338` for paste-prompt-and-send workflow against the Anthropic API | Anyone who wants a privacy gate between their prompts and the cloud | **M1-app in progress** |
+| **App** — three-pane web UI on `localhost:31338` for paste-prompt-and-send workflow against the Anthropic API | Anyone who wants a privacy gate between their prompts and the cloud | **Shipped** — installers + opt-in auto-update; text, spreadsheet, and PDF scrubbing |
 | **Hook** — Claude Code hook that intercepts every prompt and tool call inside Claude Code sessions | Claude Code power users | M1-hook shipped, not yet registered |
 
-In both modes, customer names, IPs, phone numbers, addresses, credit cards, emails, hostnames, and credentials are replaced with stable tokens (`{CUSTOMER}`, `{IP_2}`, `{PHONE}`) before anything leaves the machine. Tokens are stored locally in SQLite. The cloud only ever sees tokens.
+In both modes, customer names, IPs, phone numbers, SSNs, addresses, credit cards, emails, hostnames, and credentials are replaced with stable tokens (`{CUSTOMER}`, `{IP_2}`, `{PHONE}`) before anything leaves the machine. Tokens are stored locally in SQLite. The cloud only ever sees tokens.
 
 ## Quick start — App
 
@@ -55,7 +55,9 @@ User-visible capabilities, newest first. `🆕` marks the latest release; the ba
   - **vX.Y.Z** — one-line user-visible blurb
 -->
 
-_No features tracked yet — this list populates from the next published release._
+- 🆕 **v1.0.0-beta.53** — SSN detection (`{SSN}`, SSA-valid 3-2-4 with required separators) + labeled **⬇ Scrubbed copy** download button with an explicit blocked state when a credential is present
+- **v1.0.0-beta.52** — PDF review UX: extracted text shown in the left pane, category-colored token pills + counts for file uploads, in-context judge callout, and scrubbed-PDF export (rebuilt via pdf-lib, server-side re-scrub)
+- **v1.0.0-beta.50** — PDF upload + scrub: drop a `.pdf`, its text layer is extracted fully in memory and anonymized exactly like pasted text; explicit errors for scanned/image-only, corrupt, and password-protected PDFs
 
 <!-- features:end -->
 
@@ -67,14 +69,14 @@ privacy-screen ships GitHub releases on two channels:
 
 | Channel | Source branch | Cadence |
 |---|---|---|
-| `stable` | `main` | Tagged releases only |
+| `stable` | `main` | Cut when a tested beta is promoted via the manual `promote-to-production` workflow |
 | `beta` | `beta` | Auto-built on every push (pre-release tags) |
 
 **Opt-in via `PRIVACY_CONFIG.yaml`:**
 
 ```yaml
 update_channel: stable   # or beta — default: off (no network)
-update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
+update_manifest_url: https://github.com/adamcongdon/privacy-screen/releases/latest/download/release-manifest.json
 ```
 
 When enabled, the app polls the manifest URL every 4 hours while open (skipped when the tab is hidden) and surfaces a slim banner when a new version exists. Dismissing the banner remembers that exact version; a newer version brings it back. Click the banner to jump to Settings → Update where you can download and apply the new binary in one click. The app re-launches itself with the verified replacement.
@@ -97,6 +99,7 @@ PrivacyScreen ships with deterministic regex coverage for the 8-category taxonom
 | Sensitive KV (REDACT) | `password=…`, `api_key=…`, `secret=…` | `[REDACTED]` | Custom |
 | Account number | `4111-1111-1111-1111` (Visa/MC/Amex/Discover) | `{ACCOUNT}` | OpenAI `account_number` |
 | Phone | `(555) 123-4567`, `+44 20 7946 0958` | `{PHONE}` | OpenAI `private_phone` |
+| SSN | `402-55-1839` (SSA-valid 3-2-4; separator required, never a bare 9-digit run) | `{SSN}` | Custom |
 | Street address | `123 Main Street` (US suffix set) | `{ADDR}` | OpenAI `private_address` |
 | Email | `user@customer.local` | `{EMAIL}` | OpenAI `private_email` |
 | URL with path | `https://internal.acme.com/secret/123` | `{URL}` | OpenAI `private_url` |
@@ -112,6 +115,12 @@ PrivacyScreen ships with deterministic regex coverage for the 8-category taxonom
 **Honest limits** (per OpenAI's own framing): PrivacyScreen is one layer of defense, not a blanket anonymization guarantee. It uses regex, not ML — it will miss novel name formats, regional naming conventions, multilingual text, and any pattern not enumerated above. Treat it as a high-floor first line of defense, not a ceiling. Tune through `customer_names` + the review queue.
 
 **Optional LLM secondary validator (opt-in, default off).** A small local LLM (Qwen2.5-1.5B Q4_K_M via `llama-server`) can run as a JUDGE that reads the *already-scrubbed* text and flags PII the regex layer might have missed — multilingual names, regional address formats, novel credential patterns. The judge can only *add* items to the existing review queue; it never mutates scrub output. Runs fully local; the hook refuses any non-loopback endpoint. See `Plans/LLM_RESEARCH.md` for design, `SAFETY_CHECKLIST.md` ("LLM secondary validation") for the enable flow, and `bun cli/PrivacyScreen.ts install-judge --runtime` to start.
+
+## PDFs
+
+Drop a `.pdf` into the app and PrivacyScreen extracts its **text layer fully in memory** (via [unpdf](https://github.com/unjs/unpdf) — local pdf.js, no network, bytes never persisted) and scrubs it exactly like pasted text: same tokens, same review flow, same judge integration. Scanned/image-only, corrupt, and password-protected PDFs surface explicit per-file errors instead of silent empty results.
+
+Every file chip gets a **⬇ Scrubbed copy** button. Text files download their scrubbed content directly; PDFs are rebuilt as a clean document via `POST /api/files/pdf/render` (pdf-lib) — **reflowed from scrubbed text, never by editing the original bytes**, so the exported PDF can't leak hidden content. The server re-scrubs defensively (it never trusts the client), and a credential anywhere in the document blocks the export with a visible blocked state (`BLOCK-ALWAYS`).
 
 ## Spreadsheets (xlsx / csv)
 
@@ -172,7 +181,7 @@ cp privacy-config.example.yaml PRIVACY_CONFIG.yaml
 ### 3. Verify before registering
 
 ```bash
-bun test                # Expect 339+ passing (regex layer + LLM judge unit tests)
+bun test                # Expect 730+ passing (patterns, scrubber, xlsx/PDF, hook contract, server routes, LLM judge)
 bun cli/PrivacyScreen.ts scrub <<< 'Customer Acme Corp at 10.0.5.3 emailed me'
 # Inspect the scrubbed output + token map; confirm it matches expectation.
 ```
@@ -301,7 +310,7 @@ Add your own via `skip_scrub_fields:` in `PRIVACY_CONFIG.yaml`.
 
 ## Verification
 
-- **Unit + integration:** `bun test` — 339+ tests across patterns, scrubber, vocab, config, hook contract, LLM judge unit tests, install-judge CLI.
+- **Unit + integration:** `bun test` — 730+ tests across 55 files: patterns, scrubber, vocab, config, xlsx/PDF routes, hook contract, LLM judge unit tests, install-judge CLI.
 - **Hook contract:** `tests/hook-contract.test.ts` spawns the real hook binary and pipes synthetic Claude Code event payloads through stdin, verifying decision/updatedInput/exit-code shapes.
 - **Hook → judge handoff:** `tests/hook-judge-handoff.test.ts` spawns the hook with a tiny Hono receiver listening on a loopback ephemeral port, verifies the POST body shape, and asserts stdout is byte-identical whether the receiver succeeds, hangs (150 ms abort), or refuses.
 - **Live spot-check:** `bun cli/PrivacyScreen.ts scrub <<< 'test text'`.
@@ -314,11 +323,12 @@ Workflows live in [`.github/workflows/`](.github/workflows/) .
 - [`ci.yml`](.github/workflows/ci.yml) — lint + test on push to ac-build / beta / main and all PRs. Also enforces two `main`-targeting rules as required status checks:
   - Only PRs **from `beta`** are allowed to target `main` (hard fail otherwise).
   - PRs to `main` require an approving review **from the repo owner** (`@adamcongdon`).
-- [`release.yml`](.github/workflows/release.yml) — **beta builds** are auto-deployed when PRs land on the `beta` branch (as GitHub prereleases, with `channel: "beta"` in the manifest and `release-manifest-beta.json` committed to the `beta` branch). **Full stable releases** are generated on merges from `beta` to `main` (regular GitHub releases + `release-manifest.json` on `main`). Also runs VirusTotal scans on the built platform binaries (when `VT_API_KEY` secret is set).
+- [`release.yml`](.github/workflows/release.yml) — **beta builds** are auto-deployed when PRs land on the `beta` branch (as GitHub prereleases, with `channel: "beta"` in the manifest and `release-manifest-beta.json` committed to the `beta` branch). **Full stable releases** cut on pushes to `main` (regular GitHub releases with `release-manifest.json` attached as a release asset). Versions are computed from existing git tags by `scripts/compute-version.ts`. Also runs VirusTotal scans on the built platform binaries (when `VT_API_KEY` secret is set).
+- [`promote-to-production.yml`](.github/workflows/promote-to-production.yml) — manual, guarded promotion of a **tested** beta to stable. Fast-forwards `main` to the chosen beta tag (default: highest) after verifying the tag has a published release and that `beta` is a superset of `main` (aborts on drift, never force-pushes); the push then triggers `release.yml` to cut the stable release. Supports `dry_run`. Requires the `PROMOTE_TOKEN` secret.
 - [`gitleaks.yml`](.github/workflows/gitleaks.yml) — git history secret scan via gitleaks, configured by [`.gitleaks.toml`](.gitleaks.toml). Catches accidentally committed credentials. Fake fixtures under `tests/` are allowlisted.
 - [`semgrep.yml`](.github/workflows/semgrep.yml) — static application security testing (SAST) using Semgrep with `p/ci`, `p/security`, and `p/secrets` rule packs. Runs on push + PRs. No GitHub Advanced Security required.
 
-See [`.github/workflows/README.md`](.github/workflows/README.md) for the full list of workflows, branch protection requirements on `main`, and notes on disabled scans (CodeQL, OSV, dependency-review) that need GHAS or a public repo.
+Also active: CodeQL, OSV-Scanner (`fail-on-vuln`), and dependency-review (re-enabled now that the repo is public), plus a `pinned-actions` check that fails CI if any workflow references an action by tag instead of a full commit SHA. See [`.github/workflows/README.md`](.github/workflows/README.md) for the full list of workflows and branch protection requirements on `main`.
 
 All workflows use least-privilege `permissions:` blocks. The release workflow requires `contents: write` to create releases and push manifest updates.
 
@@ -336,23 +346,23 @@ In the web UI (open the app at http://127.0.0.1:31338 → **settings** → **Upd
 ```yaml
 # PRIVACY_CONFIG.yaml
 update_channel: off               # off | stable | beta. Default off.
-update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/main/release-manifest.json
+update_manifest_url: https://github.com/adamcongdon/privacy-screen/releases/latest/download/release-manifest.json
 ```
 
 ### Channels & manifests (auto-published by CI)
 
-- `stable` (most users): points at `main/release-manifest.json`. Full releases are generated only when a PR from `beta` lands on `main`.
+- `stable` (most users): points at the latest release's `release-manifest.json` **asset** (`releases/latest/download/release-manifest.json`). Stable releases cut only when a tested beta is promoted to `main`.
 - `beta`: set `update_channel: beta` and point the manifest at the `beta` branch:
   ```yaml
   update_channel: beta
   update_manifest_url: https://raw.githubusercontent.com/adamcongdon/privacy-screen/beta/release-manifest-beta.json
   ```
-  Every time a PR lands on the `beta` branch (typically merged from your primary `ac-build` branch), it triggers an automatic beta build (GitHub prerelease + updated beta manifest). Beta manifests use qualified versions like `1.2.3-beta.42` (based on workflow run number) so the update check can offer newer betas.
+  Every time a PR lands on the `beta` branch (typically merged from your primary `ac-build` branch), it triggers an automatic beta build (GitHub prerelease + updated beta manifest). Beta versions like `1.0.0-beta.54` are computed from existing git tags (`scripts/compute-version.ts` — highest `v*-beta.N` plus one) so the update check can offer newer betas.
 
 Branch flow:
 - `ac-build` — your primary day-to-day branch.
-- `beta` — PR into `beta` deploys beta.
-- `main` — PR from `beta` to `main` deploys stable release (protected, only you approve).
+- `beta` — the **default/integration branch**; every PR landing here auto-cuts a beta prerelease.
+- `main` — **production**. Promoted by the manual `promote-to-production` workflow, which fast-forwards `main` to a blessed beta tag (guards: the tag has a published release, and `beta` is a superset of `main`); the push then triggers the stable release. Direct PRs to `main` are restricted to `beta` as the source and require owner approval.
 
 See `privacy-config.example.yaml` for the commented examples and [`Plans/INSTALLER.md`](Plans/INSTALLER.md) for design rationale (local-first, content-addressed, no surprises).
 
