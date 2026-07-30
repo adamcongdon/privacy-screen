@@ -1,0 +1,158 @@
+name: promote-to-production
+
+# Manual, deliberate promotion of a TESTED beta to the production (stable)
+# release on `main`.
+#
+# What it does: it does NOT build anything itself. It fast-forwards `main` to
+# the exact commit of the chosen beta tag; that push to `main` then triggers
+# release.yml, which cuts the stable release (e.g. v1.0.0) with signed binaries,
+# installers, and the stable manifest.
+#
+# Branch model (decided 2026-07-23): `beta` is the integration/dev line and is
+# the DEFAULT branch; `main` is production. `beta` MUST be a superset of `main`.
+# Promotion moves `main` forward to a blessed `beta` commit by FAST-FORWARD
+# ONLY. If `main` has commits not contained in `beta` (drift), this aborts
+# instead of force-overwriting — so main-only work (e.g. CI/security hardening)
+# can never be silently dropped. Reconcile by bringing those commits onto beta
+# first (make beta the superset), then re-run.
+#
+# ── One-time setup (required) ────────────────────────────────────────────────
+#   PROMOTE_TOKEN secret — a PAT (fine-grained: this repo, Contents: read/write)
+#   or classic (repo scope). REQUIRED because a push made with the default
+#   GITHUB_TOKEN does NOT trigger release.yml (GitHub's recursive-run guard), so
+#   the stable release would never cut. The PAT push fires release.yml normally.
+#   If `main` is a protected branch, allow this token/actor to push to it (or
+#   add it to the bypass list) so the fast-forward isn't rejected.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      beta_tag:
+        description: 'Beta tag to promote (blank = highest v*-beta.* tag)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Validate + report only; do not touch main'
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: promote-to-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read      # reads only; the actual push uses PROMOTE_TOKEN (see above)
+
+jobs:
+  promote:
+    name: promote beta → main (stable)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history + tags)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Resolve the beta tag to promote
+        id: pick
+        run: |
+          set -euo pipefail
+          git fetch --tags --force --quiet
+          git fetch origin beta:refs/remotes/origin/beta --quiet
+          TAG="${{ inputs.beta_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG=$(git tag -l 'v*-beta.*' | sort -V | tail -n1)
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::No beta tag found to promote."; exit 1
+          fi
+          if ! git rev-parse -q --verify "refs/tags/${TAG}^{commit}" >/dev/null; then
+            echo "::error::Tag ${TAG} does not exist."; exit 1
+          fi
+          SHA=$(git rev-parse "${TAG}^{commit}")
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "Promoting ${TAG} (${SHA})"
+
+      - name: Verify the beta has a published release (proves it ran the pipeline)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.pick.outputs.tag }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::${TAG} has no GitHub release. Only promote a beta that went through release.yml (tests + build green)."
+            exit 1
+          fi
+          echo "${TAG} has a published release."
+
+      - name: Guard — commit is on beta AND main is an ancestor (no drift)
+        run: |
+          set -euo pipefail
+          SHA="${{ steps.pick.outputs.sha }}"
+          # 1. The promoted commit must be on the beta line.
+          if ! git merge-base --is-ancestor "$SHA" origin/beta; then
+            echo "::error::${SHA} is not an ancestor of origin/beta — refusing to promote a commit that isn't on the beta line."
+            exit 1
+          fi
+          # 2. SAFETY GATE: main must be an ancestor of the beta commit, i.e. main
+          #    has NO commits that beta lacks. Otherwise promotion would drop
+          #    main-only work. Reconcile the drift first (make beta the superset).
+          if ! git merge-base --is-ancestor origin/main "$SHA"; then
+            echo "::error::main has commits not contained in the beta commit being promoted."
+            echo "::error::Reconcile first: bring main's unique commits onto beta (make beta the superset), then re-run."
+            echo "main-only commits:"
+            git log --oneline "${SHA}..origin/main" || true
+            exit 1
+          fi
+          echo "Guard OK — promotion is a clean fast-forward of main → ${SHA}"
+
+      - name: Preview the stable version release.yml will cut
+        run: |
+          echo "On the main push, release.yml will cut this stable version:"
+          bun scripts/compute-version.ts stable
+
+      - name: Require PROMOTE_TOKEN (unless dry run)
+        if: ${{ inputs.dry_run != true }}
+        env:
+          PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
+        run: |
+          if [ -z "${PROMOTE_TOKEN:-}" ]; then
+            echo "::error::PROMOTE_TOKEN secret is not set. A GITHUB_TOKEN push would not trigger release.yml (no stable release would cut). See this workflow's header for setup."
+            exit 1
+          fi
+          echo "PROMOTE_TOKEN present."
+
+      - name: Fast-forward main → beta commit (triggers release.yml)
+        if: ${{ inputs.dry_run != true }}
+        env:
+          PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
+        run: |
+          set -euo pipefail
+          SHA="${{ steps.pick.outputs.sha }}"
+          # Push authenticated with the PAT so release.yml (on: push → main) fires.
+          # The guard proved main is an ancestor of SHA, so this is a fast-forward.
+          git push "https://x-access-token:${PROMOTE_TOKEN}@github.com/${{ github.repository }}.git" \
+            "${SHA}:refs/heads/main"
+          echo "Pushed main → ${SHA}. release.yml will now cut the stable release."
+
+      - name: Summary
+        run: |
+          {
+            echo "### Promote to production"
+            echo ""
+            echo "- Beta tag promoted: \`${{ steps.pick.outputs.tag }}\`"
+            echo "- Commit: \`${{ steps.pick.outputs.sha }}\`"
+            echo "- Dry run: \`${{ inputs.dry_run }}\`"
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "- No changes pushed (dry run). Guards passed; safe to run for real."
+            else
+              echo "- \`main\` fast-forwarded; release.yml is cutting the stable release."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
