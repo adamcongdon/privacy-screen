@@ -28,8 +28,11 @@ jobs:
         with:
           # Full history so Claude can diff against previous tags
           fetch-depth: 0
-          # Default branch (main). The Features section + CHANGELOG live here regardless of channel.
-          ref: main
+          # beta is the default/integration branch (branch model 2026-07-23):
+          # docs live here and reach main via the next promotion. Basing docs
+          # PRs on main would create main-only commits that beta lacks, which
+          # the promote-to-production drift guard (correctly) refuses.
+          ref: beta
 
       - name: Resolve previous tag in the same channel
         id: prev
@@ -155,7 +158,7 @@ jobs:
                  git commit -m "docs: sync README + CHANGELOG for ${{ steps.prev.outputs.this_tag }}"
                  git push origin "${{ steps.branch.outputs.branch }}"
                  gh pr create \
-                   --base main \
+                   --base beta \
                    --head "${{ steps.branch.outputs.branch }}" \
                    --title "docs: sync README + CHANGELOG for ${{ steps.prev.outputs.this_tag }}" \
                    --body  "Automated docs sync for release ${{ steps.prev.outputs.this_tag }} (${{ github.event.release.html_url }}). Review the wording before merging."

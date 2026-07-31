@@ -609,8 +609,16 @@ jobs:
 
       - name: Create GitHub Release and upload assets
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT, not GITHUB_TOKEN: a release published with the default token
+          # does NOT emit `release: published` to other workflows (GitHub's
+          # recursive-run guard), so readme-sync.yml never fired — same guard
+          # that required PROMOTE_TOKEN for the promotion push.
+          GH_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
         run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::PROMOTE_TOKEN secret is not set — required to publish the release so downstream workflows (readme-sync) trigger. See promote-to-production.yml header for setup."
+            exit 1
+          fi
           TAG="${{ steps.vars.outputs.tag }}"
           TITLE="${{ steps.vars.outputs.release_title }}"
           PRERELEASE="${{ steps.vars.outputs.prerelease_flag }}"
