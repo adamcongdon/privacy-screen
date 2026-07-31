@@ -15,6 +15,12 @@ updates:
           - "*"
     # Security updates are always created even if this is set.
     # You can ignore specific packages if needed.
+    ignore:
+      # Deliberate v3 pin (#190/#191): tailwind 4 broke the v3-style PostCSS
+      # config. Adopt via a dedicated migration PR with visual verification;
+      # until then, don't propose 4.x majors.
+      - dependency-name: "tailwindcss"
+        update-types: ["version-update:semver-major"]
 
   # GitHub Actions used in workflows
   - package-ecosystem: "github-actions"
