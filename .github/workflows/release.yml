@@ -623,7 +623,12 @@ jobs:
             echo "Using --notes-start-tag $PREV (issue #49)"
           fi
 
+          # --target pins the minted tag to the exact commit this run built.
+          # Without it, GitHub creates the tag at the DEFAULT branch's HEAD
+          # (beta) — v1.0.0 initially landed on a beta-only commit that way
+          # (run 30635569910) instead of the promoted main commit.
           gh release create "$TAG" \
+            --target "${GITHUB_SHA}" \
             --title "$TITLE" \
             $PRERELEASE \
             --generate-notes \
