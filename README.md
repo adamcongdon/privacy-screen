@@ -55,7 +55,8 @@ User-visible capabilities, newest first. `🆕` marks the latest release; the ba
   - **vX.Y.Z** — one-line user-visible blurb
 -->
 
-- 🆕 **v1.0.0-beta.53** — SSN detection (`{SSN}`, SSA-valid 3-2-4 with required separators) + labeled **⬇ Scrubbed copy** download button with an explicit blocked state when a credential is present
+- 🆕 **v1.0.0** — first stable release: local-first PII scrubbing for text, spreadsheets, and PDFs, with desktop installers, opt-in auto-update, and an optional local LLM judge
+- **v1.0.0-beta.53** — SSN detection (`{SSN}`, SSA-valid 3-2-4 with required separators) + labeled **⬇ Scrubbed copy** download button with an explicit blocked state when a credential is present
 - **v1.0.0-beta.52** — PDF review UX: extracted text shown in the left pane, category-colored token pills + counts for file uploads, in-context judge callout, and scrubbed-PDF export (rebuilt via pdf-lib, server-side re-scrub)
 - **v1.0.0-beta.50** — PDF upload + scrub: drop a `.pdf`, its text layer is extracted fully in memory and anonymized exactly like pasted text; explicit errors for scanned/image-only, corrupt, and password-protected PDFs
 
