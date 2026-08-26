@@ -21,7 +21,7 @@
     "@vitejs/plugin-react": "^6.0.3",
     "autoprefixer": "^10.4.20",
     "happy-dom": "^20.9.0",
-    "postcss": "^8.5.25",
+    "postcss": "^8.5.26",
     "tailwindcss": "^3.4.19",
     "typescript": "^7.0.2",
     "vite": "^8.1.4"
@@ -33,7 +33,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "exceljs": "^4.4.0",
-    "hono": "^4.12.25",
+    "hono": "^4.13.5",
     "keytar": "^7.9.0",
     "lucide-react": "^1.24.0",
     "pdf-lib": "^1.17.1",
@@ -47,6 +47,8 @@
   },
   "overrides": {
     "uuid": "^11.1.1",
-    "brace-expansion": "^5.0.8"
+    "brace-expansion": "^5.0.8",
+    "nanoid": "3.3.18",
+    "postcss": "8.5.26"
   }
 }
