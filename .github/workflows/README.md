@@ -24,6 +24,7 @@
 ### Claude automation
 
 - `claude.yml` — `@claude` mention handler. Replies on issues, issue comments, PR review comments, and PR reviews that contain `@claude`. Uses [`anthropics/claude-code-action@v1`](https://github.com/anthropics/claude-code-action). Requires secret `CLAUDE_CODE_OAUTH_TOKEN` (generate via `claude setup-token`). Without the secret, the workflow runs but the action step fails — the rest of the repo is unaffected.
+- `readme-sync.yml` — after a GitHub Release is published, a kick job re-dispatches this workflow as `workflow_dispatch` (claude-code-action v1.0.183 rejects event type `release`). Claude then diffs the tag and opens a docs PR against `beta`. Manual replay: Actions → README + CHANGELOG sync → Run workflow.
 - `claude-code-review.yml` — auto code review on every PR open/sync/reopen/ready_for_review. Calls the `code-review:code-review` plugin via `claude-code-action`. Same `CLAUDE_CODE_OAUTH_TOKEN` secret as `claude.yml`.
 - `claude-triage.yml` — fires when a new issue opens; posts an `@claude` triage request (labels + root-cause hypothesis + suggested fix + effort estimate) so `claude.yml` picks it up. Uses a PAT (`PRIVACY_SCREEN_TRIAGE_PAT`, fine-scoped `repo` scope) instead of `GITHUB_TOKEN` so the comment fires a downstream `issue_comment` event — `GITHUB_TOKEN`-authored comments are intentionally muted by GitHub to prevent loops. Without the PAT, the `gh issue comment` step fails and the new issue stays untriaged; the repo is otherwise unaffected.
 
