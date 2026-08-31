@@ -1,0 +1,44 @@
+name: dependabot-auto-merge
+
+# Auto-merge Dependabot PATCH + MINOR updates (security AND routine) into beta
+# once the required `test` check passes. Semver-MAJOR bumps are never
+# auto-merged -- they wait for a human review.
+#
+# Why this exists: OSV-scanner went red on `beta` almost every week from ~07-13
+# because advisory fixes arrive as patch/minor Dependabot bumps that piled up
+# unmerged (the nightly maintenance agent is forbidden from merging). Letting
+# green-CI patch/minor bumps land automatically keeps the dependency tree ahead
+# of newly-disclosed advisories.
+#
+# `pull_request_target` is used so the built-in GITHUB_TOKEN carries the write
+# access needed to enable auto-merge WITHOUT a stored PAT / App token. This is
+# safe here because the job never checks out or runs any PR-authored code -- it
+# only reads Dependabot metadata and calls the GitHub merge API. Do NOT add a
+# checkout of the PR head to this workflow.
+
+on: pull_request_target
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    # Only ever act on Dependabot's own PRs, and only in this repo (never a fork).
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.repository == 'adamcongdon/privacy-screen'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Enable auto-merge for patch & minor updates
+        if: >-
+          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+          steps.meta.outputs.update-type == 'version-update:semver-minor'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
