@@ -686,29 +686,60 @@ jobs:
       # back to the protected `main` branch (a push would be rejected by branch
       # protection, and the release asset is the source of truth anyway). Beta reads
       # its manifest from the raw beta-branch file, so beta still commits it.
-      - name: Update release manifest in repo (beta channel — raw URL consumption)
+      #
+      # Via PR, not a direct push: the `require-pr-and-test` ruleset rejects direct
+      # pushes to beta (GH013), which silently froze the beta manifest at beta.57
+      # while beta.58/59 released. The PR is opened with PROMOTE_TOKEN so its
+      # required checks (test, osv-scan) actually run — a PR opened by
+      # GITHUB_TOKEN never triggers workflows — then auto-merge lands it.
+      # `[skip release]` keeps that merge from cutting another release, and the
+      # commit deliberately has no `[skip ci]`, which would skip the required checks.
+      - name: Update release manifest in repo via auto-merged PR (beta channel — raw URL consumption)
         if: steps.vars.outputs.channel == 'beta'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
         run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::PROMOTE_TOKEN secret is not set — required to open the manifest PR so its required checks run."
+            exit 1
+          fi
           BRANCH="${{ steps.vars.outputs.branch }}"
           MANIFEST_NAME="${{ steps.vars.outputs.manifest_name }}"
           TAG="${{ steps.vars.outputs.tag }}"
+          PR_BRANCH="release/manifest-${TAG}"
+          TITLE="chore(release): update ${MANIFEST_NAME} for ${TAG} [skip release]"
 
-          echo "Updating ${MANIFEST_NAME} on ${BRANCH} from dist/release-manifest.json"
+          echo "Updating ${MANIFEST_NAME} on ${BRANCH} from dist/release-manifest.json via ${PR_BRANCH}"
 
+          # Branch from the current tip of beta, not this run's commit, so the PR
+          # is up to date for the ruleset's strict status-check policy.
+          git fetch origin "${BRANCH}"
+          git checkout -B "${PR_BRANCH}" "origin/${BRANCH}"
           cp dist/release-manifest.json "./${MANIFEST_NAME}"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add "${MANIFEST_NAME}"
-          if git commit -m "chore(release): update ${MANIFEST_NAME} for ${TAG} [skip ci]"; then
-            git push origin "HEAD:${BRANCH}"
-            echo "Pushed updated ${MANIFEST_NAME} to ${BRANCH}"
-          else
+          if ! git commit -m "${TITLE}"; then
             echo "No changes to ${MANIFEST_NAME} (already up to date or identical)"
+            exit 0
           fi
+
+          # An older manifest PR still open is now stale; close it so it can't
+          # land after this one and roll the manifest back.
+          gh pr list --base "${BRANCH}" --state open --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("release/manifest-")) | .number' \
+            | while read -r OLD; do
+                gh pr close "$OLD" --delete-branch --comment "Superseded by the manifest PR for ${TAG}."
+              done
+
+          git push --force-with-lease origin "HEAD:refs/heads/${PR_BRANCH}"
+          PR_URL=$(gh pr create --base "${BRANCH}" --head "${PR_BRANCH}" --title "${TITLE}" \
+            --body "Automated: points \`${MANIFEST_NAME}\` at ${TAG} so beta clients see the update. Auto-merges once required checks pass.")
+          gh pr merge "${PR_URL}" --auto --squash --subject "${TITLE}"
+          echo "Opened ${PR_URL} with auto-merge enabled"
 
       - name: Summary
         run: |
