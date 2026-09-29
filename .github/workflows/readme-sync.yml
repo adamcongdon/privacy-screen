@@ -121,6 +121,9 @@ jobs:
         uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c # v1.0.233
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The `kick` job re-dispatches this run with GITHUB_TOKEN, so the actor
+          # is github-actions[bot]; without this the action refuses non-human actors.
+          allowed_bots: github-actions
           claude_args: '--allowed-tools Bash(git *) Bash(gh *) Bash(jq *) Bash(cat *) Bash(grep *) Bash(sed *) Edit Read Glob Grep'
           prompt: |
             You are syncing user-facing documentation for the `adamcongdon/privacy-screen` repo
