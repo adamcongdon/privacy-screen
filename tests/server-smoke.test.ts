@@ -7,9 +7,19 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { fileURLToPath } from 'node:url';
 
-const SERVER_PATH = new URL('../server/server.ts', import.meta.url).pathname;
-const PORT = 31339; // separate from default to avoid colliding with a running server
+const SERVER_PATH = fileURLToPath(new URL('../server/server.ts', import.meta.url));
+// Ask the OS for a free port instead of hardcoding one: a fixed port collides
+// with whatever else the dev machine happens to run there.
+function freePort(): number {
+  const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+  const port = probe.port;
+  if (port === undefined) throw new Error("could not allocate a free port");
+  probe.stop(true);
+  return port;
+}
+const PORT = freePort();
 
 let workDir: string;
 let configPath: string;

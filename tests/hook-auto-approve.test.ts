@@ -16,8 +16,9 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { fileURLToPath } from 'node:url';
 
-const HOOK_PATH = new URL('../hooks/PrivacyScreen.hook.ts', import.meta.url).pathname;
+const HOOK_PATH = fileURLToPath(new URL('../hooks/PrivacyScreen.hook.ts', import.meta.url));
 
 interface CapturedPost {
   body: string;
