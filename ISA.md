@@ -191,3 +191,12 @@ Why: on a public repo the README is the product's promise. A dead link there rea
 - 2026-10-05: Hook-recommendation bar set by principal: 14-day observe soak, <1 FP/day, 0 golden-set misses (ISC-33..35). Hook fog graduated.
 - 2026-10-05: Judge bar set (ISC-36) and spec-scaled tiers added (ISC-37..39) per principal: better hardware gets bigger, more accurate judge models, always opt-in to download.
 - 2026-10-05: refined: split bundled ISC-9, ISC-15, ISC-37 into .1/.2 children per Splitting Test (ISAGate advisory). Parents kept as tombstones for ID stability.
+- 2026-10-05: ISC-1 fix opened as PR #226 (751 pass / 0 fail locally). ISC-1 stays open until #226 merges to `beta` and CI is green there.
+
+## Learning
+
+- **conjectured:** all 42 local test failures came from one cause, URL-encoded paths (`%20`) in spawned subprocesses.
+  **refuted by:** after the `fileURLToPath` fix, one failure remained: `server-smoke` timed out because another local process already held its hardcoded port 31339.
+  **learned:** "green on this machine" depends on the environment as well as the code. Fixed ports and encoded paths both break it, and only on the machines that happen to collide.
+  **criterion now:** ISC-1 covers any developer machine: the suite must not depend on the checkout path or on a specific free port. PR #226 fixes both and adds a guard test.
+
