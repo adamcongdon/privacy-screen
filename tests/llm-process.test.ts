@@ -8,6 +8,7 @@
  */
 
 import { describe, test, expect, afterEach } from 'bun:test';
+import { fileURLToPath } from 'node:url';
 import {
   configureLlmProcess,
   getLlmClient,
@@ -125,7 +126,7 @@ describe('llm-process FSM', () => {
 
   test('lazy spawn happy path with health-check success', async () => {
     // Use the running test file itself as a "model" so existsSync passes.
-    const modelPath = new URL(import.meta.url).pathname;
+    const modelPath = fileURLToPath(import.meta.url);
     const { spawn, calls } = makeFakeSpawn();
     const fetchImpl = (async () =>
       new Response('ok', { status: 200 })) as unknown as typeof fetch;
@@ -154,7 +155,7 @@ describe('llm-process FSM', () => {
   });
 
   test('health-poll timeout marks state failed and kills subprocess', async () => {
-    const modelPath = new URL(import.meta.url).pathname;
+    const modelPath = fileURLToPath(import.meta.url);
     const { spawn, handles } = makeFakeSpawn();
     const fetchImpl = (async () => {
       throw new Error('connection refused');
@@ -180,7 +181,7 @@ describe('llm-process FSM', () => {
   });
 
   test('no retry after failed state', async () => {
-    const modelPath = new URL(import.meta.url).pathname;
+    const modelPath = fileURLToPath(import.meta.url);
     const { spawn, calls } = makeFakeSpawn();
     const fetchImpl = (async () => {
       throw new Error('refused');
@@ -219,7 +220,7 @@ describe('llm-process FSM', () => {
     expect(getLlmProcessState().kind).toBe('idle');
 
     // bring up to ready, then shutdown once
-    const modelPath = new URL(import.meta.url).pathname;
+    const modelPath = fileURLToPath(import.meta.url);
     const c = await getLlmClient(cfg({ enabled: true, model_path: modelPath }));
     expect(c).not.toBeNull();
     await shutdownLlmProcess();

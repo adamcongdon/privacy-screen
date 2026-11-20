@@ -13,8 +13,9 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { fileURLToPath } from 'node:url';
 
-const HOOK_PATH = new URL('../hooks/PrivacyScreen.hook.ts', import.meta.url).pathname;
+const HOOK_PATH = fileURLToPath(new URL('../hooks/PrivacyScreen.hook.ts', import.meta.url));
 
 interface HookOutput {
   exitCode: number;
@@ -493,7 +494,7 @@ describe('hook contract — PostToolUse object tool_response', () => {
  * Spawns exactly `bun cli/PrivacyScreen.ts scrub`, pipes raw text, asserts
  * tokenized (not silent empty from the readFileSync bug).
  */
-const CLI_PATH = new URL('../cli/PrivacyScreen.ts', import.meta.url).pathname;
+const CLI_PATH = fileURLToPath(new URL('../cli/PrivacyScreen.ts', import.meta.url));
 
 async function runCliScrub(inputText: string): Promise<{exitCode: number; stdout: string; stderr: string}> {
   const home = mkdtempSync(join(tmpdir(), 'ps-cli-100-'));
